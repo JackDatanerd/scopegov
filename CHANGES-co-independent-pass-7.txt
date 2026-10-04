@@ -1,0 +1,12 @@
+CO logic (c10) - independent pass 7
+
+B1  Revise of a COUNTERED change order left a stray draft + still-countered original when the approval lookup threw,
+    and a retry then returned that draft without ever superseding the original (draft unsendable, countered CO
+    cannot be withdrawn).
+    app/api/co/[id]/revise/route.ts
+      - cancelCoApprovals failure now removes the just-inserted draft before surfacing the 500.
+      - a failed supersede write is a retryable error (draft removed), no longer reported as "acted on by someone else".
+      - an open draft beside a countered original is ADOPTED as the revision and the supersede is completed; an adopted
+        draft is never deleted by a back-out path (it may hold user edits). Non-countered originals unchanged.
+    tests/co-independent-pass-7.test.ts (3 of 4 fail on pre-fix code; the 4th guards unchanged behaviour)
+No migration. tsc clean; full suite 2595 passed.

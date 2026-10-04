@@ -107,72 +107,85 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       .or(`id.eq.${rootId},root_co_id.eq.${rootId}`).neq('id', co.id)
     const others: any[] = siblings || []
     const openDraft = others.find(o => o.status === 'draft')
-    if (openDraft) return NextResponse.json({ coId: openDraft.id, version: openDraft.version, existing: true })
-    const newer = others.find(o => o.version > co.version)
-    if (newer)
-      return NextResponse.json({ error: `A newer version (v${newer.version}) of this change order exists — revise that one instead.` }, { status: 409 })
-    const live = others.find(o => ['awaiting_response', 'stalled', 'awaiting_countersignature', 'accepted'].includes(o.status))
-    if (live)
-      return NextResponse.json({ error: `Version ${live.version} of this change order is ${String(live.status).replace(/_/g, ' ')}.` }, { status: 409 })
-
-    const lineItems = parseStoredLineItems(co.line_items)
-
-    // FIX (section-10 re-pass): this used to read `MAX(version) WHERE
-    // project_id = X` — project-wide, unguarded, and the wrong scope. A
-    // project can have several independent CO lineages living side by
-    // side (every new top-level CO starts at v1 via the column default),
-    // so a project-wide max both races under concurrent revises AND can
-    // jump this CO's version number to whatever an unrelated CO in the
-    // same project happens to be at. insertNextCoVersion scopes the
-    // query and the uniqueness constraint (migration 037) to this CO's
-    // own lineage, and retries on a version collision instead of racing.
-    const rootCoId = rootId
-    const result = await insertNextCoVersion(service, rootCoId, {
-      project_id:   co.project_id,
-      workspace_id: session.workspaceId,
-      parent_co_id: co.id,
-      status:       'draft',
-      title:        co.title,
-      note:         co.note,
-      flag_id:      co.flag_id,
-      line_items:   lineItems,
-      subtotal:     co.subtotal,
-      tax_rate:     co.tax_rate,
-      tax_inclusive: co.tax_inclusive,
-      total:        co.total,
-      is_credit:            !!co.is_credit,
-      is_retainer_renewal:  co.is_retainer_renewal,
-      renewal_term_months:  co.renewal_term_months,
-      timeline_impact_days: co.timeline_impact_days,
-      scope_impact_note:    co.scope_impact_note,
-      created_by:   session.id,
-      // Deliberately NOT copied: token, sent_at, expires_at,
-      // document_number, counter/accept/decline/close fields. The
-      // revision has to earn all of those through a real send.
-    })
-
-    if (!result.ok) {
-      console.error('CO revise: insert failed', result.error)
-      return NextResponse.json({ error: 'Could not create a revision' }, { status: 500 })
-    }
-    const revision = { id: result.id!, version: result.version! }
+    // CO logic pass 7: an open draft next to a COUNTERED original is not a finished revision - revising a countered CO also
+    // supersedes (closes) the original, and a crash or failed write between the draft insert and that supersede leaves exactly
+    // this state. Handing the draft back alone left the original countered, so the draft could never be sent (the original
+    // is a live sibling) and a countered CO cannot be withdrawn. Adopt the draft as THE revision and finish the supersede
+    // below. For any other status the original is already dead and the draft is simply returned.
+    if (openDraft && co.status !== 'countered')
+      return NextResponse.json({ coId: openDraft.id, version: openDraft.version, existing: true })
+    const adopted = !!openDraft
+    let revision: { id: string; version: number }
     let clientNotified = true
+    if (openDraft) {
+      revision = { id: openDraft.id, version: openDraft.version }
+    } else {
+      const newer = others.find(o => o.version > co.version)
+      if (newer)
+        return NextResponse.json({ error: `A newer version (v${newer.version}) of this change order exists — revise that one instead.` }, { status: 409 })
+      const live = others.find(o => ['awaiting_response', 'stalled', 'awaiting_countersignature', 'accepted'].includes(o.status))
+      if (live)
+        return NextResponse.json({ error: `Version ${live.version} of this change order is ${String(live.status).replace(/_/g, ' ')}.` }, { status: 409 })
 
-    // CO-3: the open-draft check above and the insert are separate statements, so two concurrent revises (two tabs, a
-    // double click) both passed it and left two sibling drafts (v2 and v3). insertNextCoVersion already gives them
-    // distinct versions; settle the tie deterministically here — the LOWEST-versioned open draft wins and any later one
-    // withdraws itself and hands back the winner, exactly like the early "existing" return. A draft sibling that lost
-    // the race is deleted before it can be sent, so it never becomes a second live version of the same change.
-    const { data: earlierDrafts } = await (service as any)
-      .from('change_orders').select('id, version')
-      .or(`id.eq.${rootId},root_co_id.eq.${rootId}`)
-      .eq('status', 'draft').neq('id', revision.id).lt('version', revision.version)
-      .order('version', { ascending: true }).limit(1)
-    if (earlierDrafts && earlierDrafts.length > 0) {
-      await (service as any).from('co_attachments').delete().eq('co_id', revision.id)
-      const { error: dropErr } = await (service as any).from('change_orders').delete().eq('id', revision.id).eq('status', 'draft')
-      if (dropErr) console.error('CO revise: could not drop duplicate draft', dropErr.message)
-      else return NextResponse.json({ coId: earlierDrafts[0].id, version: earlierDrafts[0].version, existing: true })
+      const lineItems = parseStoredLineItems(co.line_items)
+
+      // FIX (section-10 re-pass): this used to read `MAX(version) WHERE
+      // project_id = X` — project-wide, unguarded, and the wrong scope. A
+      // project can have several independent CO lineages living side by
+      // side (every new top-level CO starts at v1 via the column default),
+      // so a project-wide max both races under concurrent revises AND can
+      // jump this CO's version number to whatever an unrelated CO in the
+      // same project happens to be at. insertNextCoVersion scopes the
+      // query and the uniqueness constraint (migration 037) to this CO's
+      // own lineage, and retries on a version collision instead of racing.
+      const rootCoId = rootId
+      const result = await insertNextCoVersion(service, rootCoId, {
+        project_id:   co.project_id,
+        workspace_id: session.workspaceId,
+        parent_co_id: co.id,
+        status:       'draft',
+        title:        co.title,
+        note:         co.note,
+        flag_id:      co.flag_id,
+        line_items:   lineItems,
+        subtotal:     co.subtotal,
+        tax_rate:     co.tax_rate,
+        tax_inclusive: co.tax_inclusive,
+        total:        co.total,
+        is_credit:            !!co.is_credit,
+        is_retainer_renewal:  co.is_retainer_renewal,
+        renewal_term_months:  co.renewal_term_months,
+        timeline_impact_days: co.timeline_impact_days,
+        scope_impact_note:    co.scope_impact_note,
+        created_by:   session.id,
+        // Deliberately NOT copied: token, sent_at, expires_at,
+        // document_number, counter/accept/decline/close fields. The
+        // revision has to earn all of those through a real send.
+      })
+
+      if (!result.ok) {
+        console.error('CO revise: insert failed', result.error)
+        return NextResponse.json({ error: 'Could not create a revision' }, { status: 500 })
+      }
+      revision = { id: result.id!, version: result.version! }
+
+      // CO-3: the open-draft check above and the insert are separate statements, so two concurrent revises (two tabs, a
+      // double click) both passed it and left two sibling drafts (v2 and v3). insertNextCoVersion already gives them
+      // distinct versions; settle the tie deterministically here — the LOWEST-versioned open draft wins and any later one
+      // withdraws itself and hands back the winner, exactly like the early "existing" return. A draft sibling that lost
+      // the race is deleted before it can be sent, so it never becomes a second live version of the same change.
+      const { data: earlierDrafts } = await (service as any)
+        .from('change_orders').select('id, version')
+        .or(`id.eq.${rootId},root_co_id.eq.${rootId}`)
+        .eq('status', 'draft').neq('id', revision.id).lt('version', revision.version)
+        .order('version', { ascending: true }).limit(1)
+      if (earlierDrafts && earlierDrafts.length > 0) {
+        await (service as any).from('co_attachments').delete().eq('co_id', revision.id)
+        const { error: dropErr } = await (service as any).from('change_orders').delete().eq('id', revision.id).eq('status', 'draft')
+        if (dropErr) console.error('CO revise: could not drop duplicate draft', dropErr.message)
+        else return NextResponse.json({ coId: earlierDrafts[0].id, version: earlierDrafts[0].version, existing: true })
+      }
+
     }
 
     // A 'countered' CO is still live from the client's point of view —
@@ -183,7 +196,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (co.status === 'countered') {
       // The revision draft above was inserted BEFORE the supersede below, so every early exit from here on must remove
       // it again (it can never be sent while the original is live, and the caller must not be told it succeeded).
+      // An ADOPTED draft pre-dates this request (the user may have edited it), so it is never deleted - only a draft this
+      // request created itself is.
       const dropOrphanRevision = async () => {
+        if (adopted) return
         await (service as any).from('co_attachments').delete().eq('co_id', revision.id)
         const { error: orphanErr } = await (service as any).from('change_orders').delete().eq('id', revision.id).eq('status', 'draft')
         if (orphanErr) console.error('CO revise: could not remove the orphaned revision draft', orphanErr.message)
@@ -195,11 +211,19 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       // handler stamped the send claim, the cancel was refused, the original was closed anyway, and the auto
       // counter-acceptance then failed against a closed CO — a false "Approved — not sent" that can never be retried.
       // Cancel FIRST, and when a send is live back out (drop the draft, leave the original countered).
-      const cancelled = await cancelCoApprovals(service, {
-        workspaceId: session.workspaceId, coId: co.id,
-        actorId: session.id, actorEmail: session.email, actorName: session.name,
-        reason: `Superseded by revision v${revision.version}`, types: ['co_counter'],
-      })
+      // cancelCoApprovals THROWS on a failed approval lookup/cancel write. The draft is already inserted, so remove it before
+      // surfacing the error: the route's catch-all used to 500 and leave a stray draft beside a still-countered original.
+      let cancelled: Awaited<ReturnType<typeof cancelCoApprovals>>
+      try {
+        cancelled = await cancelCoApprovals(service, {
+          workspaceId: session.workspaceId, coId: co.id,
+          actorId: session.id, actorEmail: session.email, actorName: session.name,
+          reason: `Superseded by revision v${revision.version}`, types: ['co_counter'],
+        })
+      } catch (cancelErr) {
+        await dropOrphanRevision()
+        throw cancelErr
+      }
       if (cancelled.blockedBySend) {
         await dropOrphanRevision()
         return NextResponse.json({ error: SEND_IN_FLIGHT_MESSAGE }, { status: 409 })
@@ -219,7 +243,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       // (accepted, or already closed for a different reason). Capture the
       // result and only treat the supersede as real if a row actually
       // matched.
-      const { data: superseded } = await (service as any).from('change_orders')
+      const { data: superseded, error: supersedeErr } = await (service as any).from('change_orders')
         .update({
           status: 'closed',
           close_reason: `Superseded by revision v${revision.version}`,
@@ -227,6 +251,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         })
         .eq('id', co.id).eq('status', 'countered')
         .select('id').maybeSingle()
+      // A failed write is not a lost race: reporting it as "just acted on by someone else" sent the user hunting for a
+      // conflict that did not exist. Back the draft out and surface it as the retryable error it is.
+      if (supersedeErr) {
+        await dropOrphanRevision()
+        throw new Error(`could not supersede the countered change order: ${supersedeErr.message}`)
+      }
 
       if (superseded) {
         // FIX (deep audit, CO logic re-pass round 4 — flagship finding):
@@ -304,9 +334,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         // CO-B2: the revision draft was inserted BEFORE this compare-and-swap. If accept-counter won, the original is
         // now awaiting_countersignature (live), so the draft can never be sent (send-co refuses while a sibling is live)
         // and the caller was told the revision succeeded and the client was notified. Remove the orphan and say so.
-        await (service as any).from('co_attachments').delete().eq('co_id', revision.id)
-        const { error: orphanErr } = await (service as any).from('change_orders').delete().eq('id', revision.id).eq('status', 'draft')
-        if (orphanErr) console.error('CO revise: could not remove the orphaned revision draft', orphanErr.message)
+        // (An adopted draft pre-dates this request and is kept - see dropOrphanRevision.)
+        if (!adopted) {
+          await (service as any).from('co_attachments').delete().eq('co_id', revision.id)
+          const { error: orphanErr } = await (service as any).from('change_orders').delete().eq('id', revision.id).eq('status', 'draft')
+          if (orphanErr) console.error('CO revise: could not remove the orphaned revision draft', orphanErr.message)
+        }
         return NextResponse.json(
           { error: 'This counter-offer was just acted on by someone else — refresh to see where it stands.' },
           { status: 409 }
