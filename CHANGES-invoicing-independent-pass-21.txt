@@ -1,0 +1,16 @@
+Invoicing - independent pass 21 (section 12)
+
+B1 (low, client-facing): a MANUAL reminder on an invoice that is not yet due (status sent /
+partially_paid, due date today or later) told the client "Due date was <future date>". The email
+template only says "It is due on" for the cron's dueSoon flag, which the manual route never set.
+
+Fix:
+- app/api/invoices/[id]/remind/route.ts: also selects clients.timezone and workspaces.timezone,
+  computes dueInFuture on the client's calendar (client zone, then workspace zone, then UTC - same
+  rule as the cron due-soon scan) and passes it to the email.
+- lib/email/templates.ts: sendInvoiceReminderEmail takes optional dueInFuture; only the date
+  sentence changes ("It is due on"). Headline/subject stay "Reminder:". Cron dueSoon, overdue and
+  past-due-not-yet-flipped wording are unchanged.
+- tests/invoicing-independent-pass-21.test.ts (4 tests).
+
+Verified: tsc --noEmit clean; full vitest run 259 files / 2601 tests pass.

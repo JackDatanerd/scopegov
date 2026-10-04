@@ -1489,12 +1489,14 @@ export async function sendInvoiceReminderEmail(params: {
   portalUrl: string; brandColour?: string; isOverdue?: boolean
   /** A heads-up BEFORE the due date (cron/client-reminders "due soon"): wording says "due on", not "was due". */
   dueSoon?: boolean
+  /** The due date has not passed yet (manual reminder): only the date sentence reads "It is due on", the headline/subject stay "Reminder". */
+  dueInFuture?: boolean
   paymentInstructions?: string | null
   /** clients.payment_terms_note — free text, escaped here. */
   paymentTerms?: string | null
 }) {
   const { to, cc, clientName: clientNameRaw, agencyName: agencyNameRaw, projectName: projectNameRaw, invoiceNumber, title: titleRaw,
-    balanceDue, currency, dueDate, portalUrl, brandColour, isOverdue, dueSoon, paymentInstructions: paymentInstructionsRaw } = params
+    balanceDue, currency, dueDate, portalUrl, brandColour, isOverdue, dueSoon, dueInFuture, paymentInstructions: paymentInstructionsRaw } = params
   const clientName  = escapeHtml(clientNameRaw)
   const agencyName  = escapeHtml(agencyNameRaw)
   const projectName = escapeHtml(projectNameRaw)
@@ -1513,7 +1515,7 @@ export async function sendInvoiceReminderEmail(params: {
         A friendly reminder that <strong>${money(balanceDue, currency)}</strong> is
         ${isOverdue ? 'now overdue' : dueSoon ? 'coming due' : 'outstanding'} on invoice${invoiceNumber ? ` ${invoiceNumber}` : ''} for
         <strong>${projectName}</strong>.
-        ${dueDate ? ` ${dueSoon ? 'It is due on' : 'Due date was'} ${new Date(dueDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' })}.` : ''}
+        ${dueDate ? ` ${dueSoon || dueInFuture ? 'It is due on' : 'Due date was'} ${new Date(dueDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' })}.` : ''}
       </p>
       ${paymentInstructions ? `
       <div style="background:${C.bg};border:1px solid ${C.border};border-radius:6px;padding:14px 16px;margin:16px 0;">

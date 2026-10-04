@@ -12,6 +12,7 @@ import { withPrimaryContactCc } from '@/lib/utils/client-contacts'
 import { resolveReplyTo } from '@/lib/email/reply-to'
 import { checkedSend } from '@/lib/email/delivery'
 import { isPaymentClaimOpen } from '@/lib/utils/invoice-registry'
+import { dateStringInZone, isValidTimeZone } from '@/lib/utils/timezone'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -29,7 +30,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       .from('invoices')
       .select(`id, title, amount, amount_paid, currency, status, due_date, token, expires_at, invoice_number, project_id, payment_instructions,
         disputed_at, dispute_resolved_at, payment_claimed_at, payment_claim_cleared_at,
-        projects(id, name, client_id, clients(name, email, cc_emails, payment_terms_note), workspaces(agency_name, brand_colour))`)
+        projects(id, name, client_id, clients(name, email, cc_emails, payment_terms_note, timezone), workspaces(agency_name, brand_colour, timezone))`)
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!invoice) return NextResponse.json({ error: 'Invoice not found' }, { status: 404 })
@@ -115,6 +116,13 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // branch could never fire. Removed rather than left as a misleading guard.
     const cc = await withPrimaryContactCc(service, project?.client_id, client.email, client.cc_emails, 'invoice')
     const replyTo = await resolveReplyTo(service, session.workspaceId, session.email)
+    // FIX (invoicing independent pass 21): a manual reminder on an invoice that is not yet due (status 'sent' /
+    // 'partially_paid' with a due date today or later) told the client "Due date was <future date>" — the template only
+    // switches to "It is due on" for the cron's dueSoon flag, which this route never set. Judged on the client's calendar
+    // (client zone, then workspace zone, then UTC), exactly like the cron's due-soon scan.
+    const clientTz = client.timezone
+    const clientToday = dateStringInZone(isValidTimeZone(clientTz) ? clientTz : workspace?.timezone, new Date())
+    const dueInFuture = invoice.status !== 'overdue' && !!invoice.due_date && String(invoice.due_date).slice(0, 10) >= clientToday
     const delivery = await checkedSend(() => sendInvoiceReminderEmail({
       to:          client.email,
       cc,
@@ -129,6 +137,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       portalUrl,
       brandColour: workspace?.brand_colour,
       isOverdue:   invoice.status === 'overdue',
+      dueInFuture,
       paymentInstructions: invoice.payment_instructions,
       paymentTerms: client.payment_terms_note || null,
       replyTo,
