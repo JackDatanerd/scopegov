@@ -21,8 +21,13 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (!(await canReadProject(service, session, id)))
       return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
-    const { data: project } = await (service as any)
+    // FIX (Projects & Dashboard pass 10, B1): a failed read answered 404 "Not found" for a project that exists.
+    const { data: project, error: projectErr } = await (service as any)
       .from('projects').select('id,name,status').eq('id', id).eq('workspace_id', session.workspaceId).is('deleted_at', null).maybeSingle()
+    if (projectErr) {
+      console.error('Project unarchive: project read failed:', projectErr)
+      return NextResponse.json({ error: 'Could not unarchive the project' }, { status: 500 })
+    }
     if (!project) return NextResponse.json({ error: 'Not found' }, { status: 404 })
     if (project.status !== 'Archived')
       return NextResponse.json({ error: 'Only Archived projects can be unarchived' }, { status: 400 })

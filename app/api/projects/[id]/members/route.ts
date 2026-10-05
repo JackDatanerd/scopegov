@@ -45,24 +45,28 @@ export async function POST(
     // to a project belonging to Workspace B, which then satisfied
     // canReadProject() for that foreign project (see fix in
     // lib/utils/project-access.ts). Verify the project up front.
-    const { data: project } = await (service as any)
+    // FIX (Projects & Dashboard pass 10, B1): both reads used .single() and ignored `error`, so a failed read was indistinguishable from "no such
+    // project / member" and answered 404 ("Member not found") for a person who exists. maybeSingle() + a thrown error (the catch below -> 500).
+    const { data: project, error: projectErr } = await (service as any)
       .from('projects')
       .select('id, name')
       .eq('id', projectId)
       .eq('workspace_id', session.workspaceId)
       .is('deleted_at', null)
-      .single()
+      .maybeSingle()
+    if (projectErr) throw new Error(projectErr.message)
 
     if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 })
 
     // Verify the member belongs to this workspace
-    const { data: member } = await (service as any)
+    const { data: member, error: memberErr } = await (service as any)
       .from('workspace_members')
       .select('id, user_id, users!workspace_members_user_id_fkey(name, email)')
       .eq('id', memberId)
       .eq('workspace_id', session.workspaceId)
       .eq('status', 'active')
-      .single()
+      .maybeSingle()
+    if (memberErr) throw new Error(memberErr.message)
 
     if (!member) return NextResponse.json({ error: 'Member not found' }, { status: 404 })
 
@@ -162,18 +166,23 @@ export async function DELETE(
     if (!(await canReadProject(service, session, projectId)))
       return NextResponse.json({ error: 'Project not found' }, { status: 404 })
 
-    const { data: project } = await (service as any)
+    // FIX (Projects & Dashboard pass 10, B1): .single() + ignored `error` — a failed read answered 404.
+    const { data: project, error: projectErr } = await (service as any)
       .from('projects').select('id, name')
-      .eq('id', projectId).eq('workspace_id', session.workspaceId).is('deleted_at', null).single()
+      .eq('id', projectId).eq('workspace_id', session.workspaceId).is('deleted_at', null).maybeSingle()
+    if (projectErr) throw new Error(projectErr.message)
     if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 })
 
     // FIX (deep audit, section 7): fetch who's being removed before the
     // delete, so the audit entry below can name them the same way the add
     // path does above.
-    const { data: member } = await (service as any)
+    // FIX (Projects & Dashboard pass 10, B1): a failed read left `member` null and the removal went ahead anyway — the audit row then named
+    // "Unknown" and the removed person was never told. Fail before anything is deleted.
+    const { data: member, error: memberErr } = await (service as any)
       .from('workspace_members')
       .select('id, user_id, users!workspace_members_user_id_fkey(name, email)')
       .eq('id', memberId).eq('workspace_id', session.workspaceId).maybeSingle()
+    if (memberErr) throw new Error(memberErr.message)
 
     // Read the result: the delete's error was ignored and a project.member
     // "removed" audit row was written even when nothing was removed.

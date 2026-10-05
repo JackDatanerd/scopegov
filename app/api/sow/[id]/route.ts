@@ -189,15 +189,18 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
     const service = createServiceClient()
-    const { data: sow } = await (service as any)
+    // FIX (Projects & Dashboard pass 10, B1 — traced from the SOW editor page): `error` was never read and the read used .single(), so a failed
+    // read answered 404 and the editor said "SOW not found" for a SOW that exists. maybeSingle() + a 500 (the catch below).
+    const { data: sow, error: sowErr } = await (service as any)
       .from('sow_documents')
       // FIX (section-9 audit, 9-B9): signed_by was never selected, but
       // app/(app)/projects/[id]/sow/[sowId]/page.tsx renders
       // `Signed {date} by {sow.signed_by}` — which printed "by undefined"
       // on every signed SOW.
       .select('id, version, status, sent_at, signed_at, signed_by, sections, metadata, expires_at, project_id, projects(contract_value, currency)')
-      .eq('id', id).eq('workspace_id', session.workspaceId).single()
+      .eq('id', id).eq('workspace_id', session.workspaceId).maybeSingle()
 
+    if (sowErr) throw new Error(`SOW fetch failed: ${sowErr.message}`)
     if (!sow) return NextResponse.json({ error: 'Not found' }, { status: 404 })
     if (!(await canReadProject(service, session, sow.project_id)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })

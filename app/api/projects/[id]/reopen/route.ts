@@ -22,8 +22,13 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (!(await canReadProject(service, session, id)))
       return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
-    const { data: project } = await (service as any)
+    // FIX (Projects & Dashboard pass 10, B1): a failed read answered 404 "Not found" for a project that exists.
+    const { data: project, error: projectErr } = await (service as any)
       .from('projects').select('id,name,status').eq('id', id).eq('workspace_id', session.workspaceId).is('deleted_at', null).maybeSingle()
+    if (projectErr) {
+      console.error('Project reopen: project read failed:', projectErr)
+      return NextResponse.json({ error: 'Could not reopen the project' }, { status: 500 })
+    }
     if (!project) return NextResponse.json({ error: 'Not found' }, { status: 404 })
     if (project.status !== 'Complete')
       return NextResponse.json({ error: 'Only Complete projects can be reopened (unarchive an archived project first)' }, { status: 400 })
@@ -49,9 +54,15 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // Lost the count-then-write race to a concurrent create/reopen: put it back (guarded on the status
     // we just wrote so a later legitimate change isn't clobbered).
     if (await isOverLimit(service, session.workspaceId, session.planTier)) {
-      await (service as any).from('projects')
+      // FIX (Projects & Dashboard pass 10, B1): the put-back's result was never read — a failed revert left the workspace over its plan
+      // limit while telling the person only that the limit was hit. Log it, and say so when the project was NOT put back.
+      const { error: revertErr } = await (service as any).from('projects')
         .update({ status: 'Complete', updated_at: new Date().toISOString() })
         .eq('id', id).eq('workspace_id', session.workspaceId).eq('status', 'Active')
+      if (revertErr) {
+        console.error('Project reopen: could not put the project back after losing the limit race:', revertErr)
+        return NextResponse.json({ error: 'Could not reopen the project cleanly. Refresh and check its status.' }, { status: 500 })
+      }
       return NextResponse.json({ error: projectLimitMessage(session.planTier, 'reopen') }, { status: 403 })
     }
 

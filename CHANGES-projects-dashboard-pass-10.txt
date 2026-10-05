@@ -1,0 +1,49 @@
+Projects & Dashboard (section 7) — fresh independent pass 10: a failed read is a 500 (or a logged degrade), never "not found" / "nothing there"
+=========================================================================================================================================
+
+Class of bug: supabase-js never throws; a failed read resolves to { data: null, error }. Reads across this section took `data` and ignored
+`error`, so a transient failure read as "the project / member / message does not exist" (404) or "there is nothing here" (empty list, count 0).
+Verified against HEAD ad9c398 (after the approvals pass 11 / settings pass 11 / SOW lifecycle pass 11 merges).
+
+B1  API routes (api/projects/*)
+    projects/[id] PATCH   project read -> was 404, now 500. client lookup -> was 404 "Client not found", now 500.
+                          The pre-write SOW re-check (the race guard for the signed-SOW / structural locks) FAILED OPEN: a failed read gave
+                          freshSows = [], which passes every lock. Now 500; a project that vanished in the gap is a 409. Post-conflict status
+                          read checked too.
+    projects/[id] GET / DELETE   project read -> was 404, now 500. DELETE's approval-cleanup read failure is now logged (still non-fatal).
+    complete / archive / unarchive / reopen   project read -> was 404, now 500. complete: the embedded change_orders/guardian_flags
+                          read failing meant the blocking-CO check ran against nothing. complete + reopen: the "put the project back" write's
+                          result was never read; a failed revert now says so instead of reporting a clean rollback.
+    members POST / DELETE  project + member reads used .single() with `error` ignored (404 "Member not found" on a transient failure).
+                          DELETE read the member AFTER nothing, then deleted anyway: a failed read removed the person with an "Unknown" audit
+                          row and no notification. Now fails before anything is deleted.
+    members/available     a failed "already on the project" read offered EVERY workspace member; now 500.
+    messages              loadProject / loadMessage: .single() + ignored error -> 404; now maybeSingle() + throw (500). GET: a failed read-marker
+                          read showed every message as unread. unread-count: failed marker read -> "everything unread", failed count ->
+                          { count: 0 }; both now 500. read: a failed read of the current marker let the upsert move the marker BACKWARDS.
+                          [messageId] PATCH: a failed read of existing mentions made every mention look new, so the batch insert hit
+                          UNIQUE(message_id, user_id) and genuinely new mentions were never saved or notified; reconciliation is now skipped
+                          on a failed read (next edit retries).
+    lib/utils/project-messages.ts listMentionable   both reads ignored `error` and returned []. resolveMentions then degraded every
+                          @[Name](id) token to plain "@Name" before storing — a permanently lost mention + notification with a 200. Now throws.
+    projects POST         the creator-membership lookup ignored `error`, so a failed read skipped the membership insert and returned success:
+                          a project its creator (VIEW_OWN_PROJECTS) cannot open. Now rolls back like a failed insert. clientId lookup -> 500
+                          not 404. Rollback deletes now log their failures.
+
+B1  Pages
+    projects/[id]/page.tsx  project read used .single() + notFound() on any failure -> a transient failure showed "not found" for an existing
+                          project. milestones / amendments / team / invoices reads now throw on error (they feed money figures and the Billing
+                          tab: invoices was null for SEND_INVOICES holders and crashed BillingTab at invoices.some()).
+    dashboard + projects list  workspace-settings read and the dashboard activity feed read now log their failures (they still degrade — the
+                          pages must render).
+    api/sow/[id] GET (traced from the SOW editor page)  .single() + ignored error -> 404 "SOW not found"; now 500.
+
+B2  components/projects/FlagCollaboration.tsx   submitComment / submitFile / deleteAttachment called res.json() bare with no catch: a dropped
+                          connection or a non-JSON 413/gateway page was an unhandled rejection with no message. Now surfaced. Enter no longer
+                          sends mid-IME-composition.
+B3  projects/[id]/sow/[sowId]/page.tsx   fetch had no .catch (offline -> "SOW not found"); a failed load is now a retryable error state, and a SOW
+                          that does not belong to the project in the URL is "not found" instead of rendering with the wrong project's links.
+
+Tests: tests/projects-dashboard-pass-10.test.ts (28; 26 fail on the previous code).
+Known and NOT changed: loadRetainerMonthsBilled stays lenient on display pages by its documented design (logged, degrades to one month).
+Not from this pass: tests/cron-section17-pass4 (2) and tests/trial-plan-workspace-pass-1-cron (2) already fail on a pristine ad9c398.

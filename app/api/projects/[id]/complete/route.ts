@@ -48,10 +48,16 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (!(await canReadProject(service, session, id)))
       return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
-    const { data: project } = await (service as any)
+    // FIX (Projects & Dashboard pass 10, B1): a failed read answered 404 — and, worse here, an embedded read that fails takes the
+    // change orders and flags with it, so the checks below would have run against nothing. A failed read is a 500.
+    const { data: project, error: projectErr } = await (service as any)
       .from('projects')
       .select('id,name,status,change_orders(id,title,status,parent_co_id,sent_at),guardian_flags(id,status)')
       .eq('id', id).eq('workspace_id', session.workspaceId).is('deleted_at', null).maybeSingle()
+    if (projectErr) {
+      console.error('Project complete: project read failed:', projectErr)
+      return NextResponse.json({ error: 'Could not mark the project complete' }, { status: 500 })
+    }
     if (!project) return NextResponse.json({ error: 'Not found' }, { status: 404 })
     if (project.status !== 'Active')
       return NextResponse.json({ error: 'Only Active projects can be marked complete' }, { status: 400 })
@@ -137,9 +143,16 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
             if (restoreErr) console.error('Project complete: could not restore the flags it had closed:', restoreErr)
           }
         }
-        await (service as any).from('projects')
+        // FIX (Projects & Dashboard pass 10, B1): the put-back's result was never read. If it failed too, the project stays Complete with its
+        // flags still open while the response says it "was not completed" — say so in the log and tell the person to check.
+        const { data: putBack, error: putBackErr } = await (service as any).from('projects')
           .update({ status: 'Active', updated_at: new Date().toISOString() })
-          .eq('id', id).eq('status', 'Complete')
+          .eq('id', id).eq('workspace_id', session.workspaceId).eq('status', 'Complete')
+          .select('id')
+        if (putBackErr || !putBack || putBack.length === 0) {
+          console.error('Project complete: could not put the project back to Active after a failed flag close:', putBackErr)
+          return NextResponse.json({ error: 'Could not close the open scope flags and the project could not be restored automatically. Refresh and check its status.' }, { status: 500 })
+        }
         return NextResponse.json({ error: 'Could not close the open scope flags, so the project was not completed. Please try again.' }, { status: 500 })
       }
     }
@@ -150,13 +163,15 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // already moved and flags are already closed by this point.
     let scopeApprovalsCancelled = 0
     try {
-      const { data: pending } = await (service as any).from('approval_requests')
+      const { data: pending, error: pendingErr } = await (service as any).from('approval_requests')
         .select('document_type, document_id')
         .eq('workspace_id', session.workspaceId).eq('project_id', id)
         // Includes approved-but-send-failed requests: once the project is complete
         // a SOW/CO retry can never succeed, and the request would sit un-cancellable.
         .or('status.eq.pending,and(status.eq.approved,send_failed_at.not.is.null)')
         .in('document_type', SCOPE_CHANGE_DOCUMENT_TYPES)
+      // FIX (Projects & Dashboard pass 10, B1): non-fatal by design (the project has moved), but a failed read looked like "nothing to cancel".
+      if (pendingErr) console.error('Project complete: could not read pending approvals to cancel — they stay pending:', pendingErr)
       for (const r of (pending || [])) {
         try {
           const cancelRes = await cancelApprovalRequest(service, {

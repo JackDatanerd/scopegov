@@ -24,12 +24,15 @@ export async function GET(
     if (!(await canReadProject(service, session, projectId)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
-    const { data: readRow } = await (service as any)
+    // FIX (Projects & Dashboard pass 10, B1): neither read looked at `error`. A failed marker read counted every message as unread, and a failed
+    // count returned { count: 0 } — a confident wrong badge either way. A failed read is a 500 (the badge simply stays hidden).
+    const { data: readRow, error: readErr } = await (service as any)
       .from('project_message_reads')
       .select('last_read_at')
       .eq('project_id', projectId)
       .eq('user_id', session.id)
       .maybeSingle()
+    if (readErr) throw new Error(readErr.message)
 
     let query = (service as any)
       .from('project_messages')
@@ -41,7 +44,8 @@ export async function GET(
 
     if (readRow?.last_read_at) query = query.gt('created_at', readRow.last_read_at)
 
-    const { count } = await query
+    const { count, error: countErr } = await query
+    if (countErr) throw new Error(countErr.message)
     return NextResponse.json({ count: count || 0 })
   } catch (err) {
     console.error('projects/[id]/messages/unread-count error:', err)

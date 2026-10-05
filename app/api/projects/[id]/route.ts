@@ -72,10 +72,16 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     if (!hasPermission(session, 'CREATE_PROJECTS'))
       return NextResponse.json({ error: 'Missing permission: CREATE_PROJECTS' }, { status: 403 })
 
-    const { data: project } = await (service as any)
+    // FIX (Projects & Dashboard pass 10, B1): supabase-js returns { error } rather than throwing, and this read never looked at it —
+    // a transient failure answered 404 "Not found" for a project that exists. A failed read is a 500, not an answer.
+    const { data: project, error: projectErr } = await (service as any)
       .from('projects')
       .select('id,name,disc,status,stall_reason,type,client_id,currency,contract_value,start_date,internal_ref,retainer_duration_months,sow_documents(id,status)')
       .eq('id', id).eq('workspace_id', session.workspaceId).is('deleted_at', null).maybeSingle()
+    if (projectErr) {
+      console.error('Project update: project read failed:', projectErr)
+      return NextResponse.json({ error: 'Could not load the project. Please try again.' }, { status: 500 })
+    }
     if (!project) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
     if (!(await canReadProject(service, session, id)))
@@ -176,8 +182,12 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     if (body.clientId !== undefined && body.clientId !== project.client_id) {
       if (typeof body.clientId !== 'string')
         return NextResponse.json({ error: 'Client not found' }, { status: 404 })
-      const { data: client } = await (service as any)
+      const { data: client, error: clientErr } = await (service as any)
         .from('clients').select('id, status').eq('id', body.clientId).eq('workspace_id', session.workspaceId).maybeSingle()
+      if (clientErr) {
+        console.error('Project update: client lookup failed:', clientErr)
+        return NextResponse.json({ error: 'Could not check the client. Please try again.' }, { status: 500 })
+      }
       if (!client) return NextResponse.json({ error: 'Client not found' }, { status: 404 })
       if (client.status === 'archived')
         return NextResponse.json({ error: 'That client is archived. Restore it first.' }, { status: 409 })
@@ -252,10 +262,19 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     // query, since any of these five fields now needs the same re-check.
     if (updates.contract_value !== undefined || updates.retainer_duration_months !== undefined
       || updates.client_id !== undefined || updates.type !== undefined || updates.currency !== undefined) {
-      const { data: freshProject } = await (service as any)
+      // FIX (Projects & Dashboard pass 10, B1): this re-check is the race guard for the signed-SOW / structural locks, and it failed OPEN —
+      // a failed read left `freshSows` as [], which passes every lock and lets the write through. It now fails closed: a failed read is a 500,
+      // and a project that vanished in the gap is a 409 (the write below would have matched nothing anyway).
+      const { data: freshProject, error: freshErr } = await (service as any)
         .from('projects').select('sow_documents(id,status)')
         .eq('id', id).eq('workspace_id', session.workspaceId).is('deleted_at', null).maybeSingle()
-      const freshSows: Array<{ id: string; status: string }> = freshProject?.sow_documents || []
+      if (freshErr) {
+        console.error('Project update: SOW re-check failed:', freshErr)
+        return NextResponse.json({ error: 'Could not save the changes. Please try again.' }, { status: 500 })
+      }
+      if (!freshProject)
+        return NextResponse.json({ error: 'This project changed while you were editing it. Refresh and try again.' }, { status: 409 })
+      const freshSows: Array<{ id: string; status: string }> = freshProject.sow_documents || []
       if ((updates.client_id !== undefined || updates.type !== undefined || updates.currency !== undefined) && freshSows.length > 0)
         return NextResponse.json({
           error: 'The client, project type and currency can no longer be changed because a SOW already exists for this project.',
@@ -300,8 +319,12 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     if (!written || written.length === 0) {
       // Distinguish "someone else beat us to it" from a genuine transient failure so the
       // person isn't told to just retry when retrying would fail again for the same reason.
-      const { data: nowRow } = await (service as any)
+      const { data: nowRow, error: nowErr } = await (service as any)
         .from('projects').select('status').eq('id', id).eq('workspace_id', session.workspaceId).maybeSingle()
+      if (nowErr) {
+        console.error('Project update: post-conflict status read failed:', nowErr)
+        return NextResponse.json({ error: 'Could not confirm the save. Refresh and check the project.' }, { status: 500 })
+      }
       if (nowRow && isTerminalStatus(nowRow.status)) {
         return NextResponse.json({
           error: `This project is ${nowRow.status.toLowerCase()} and read-only. Reopen it first to make changes.`,
@@ -354,9 +377,14 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
     const service = createServiceClient()
     // Already-deleted projects are simply "not found" (a second DELETE used to
     // succeed and write a second project.deleted audit row).
-    const { data: project } = await (service as any)
+    // FIX (Projects & Dashboard pass 10, B1): a failed read answered 404 and the project looked already gone.
+    const { data: project, error: projectErr } = await (service as any)
       .from('projects').select('id,name,status,sow_documents(status)')
       .eq('id', id).eq('workspace_id', session.workspaceId).is('deleted_at', null).maybeSingle()
+    if (projectErr) {
+      console.error('Project delete: project read failed:', projectErr)
+      return NextResponse.json({ error: 'Could not delete the project' }, { status: 500 })
+    }
     if (!project) return NextResponse.json({ error: 'Not found' }, { status: 404 })
     if (!(await canReadProject(service, session, id)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
@@ -393,7 +421,7 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
     // could even be approved — which would auto-send a document for a deleted
     // project. Cancel them (the engine notifies the current approver).
     try {
-      const { data: pending } = await (service as any).from('approval_requests')
+      const { data: pending, error: pendingErr } = await (service as any).from('approval_requests')
         .select('document_type, document_id')
         .eq('workspace_id', session.workspaceId).eq('project_id', id)
         // FIX (section-11 audit, pass 2): also the "approved but the send failed"
@@ -401,6 +429,9 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
         // dashboard for a deleted project, and offered a retry that would try to
         // send a document for it.
         .or('status.eq.pending,and(status.eq.approved,send_failed_at.not.is.null)')
+      // FIX (Projects & Dashboard pass 10, B1): the project is already deleted by here, so this stays non-fatal — but a failed read used to
+      // look like "no approvals to cancel" and left them pending on every approver's page with nothing in the logs.
+      if (pendingErr) console.error('Project delete: could not read pending approvals to cancel — they stay pending:', pendingErr)
       for (const r of (pending || [])) {
         try {
           await cancelApprovalRequest(service, {
@@ -433,10 +464,15 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     const service = createServiceClient()
-    const { data: project } = await (service as any)
+    const { data: project, error: projectErr } = await (service as any)
       .from('projects')
       .select('id,name,type,status,contract_value,currency,start_date,retainer_duration_months,clients(id,name,email)')
       .eq('id', id).eq('workspace_id', session.workspaceId).is('deleted_at', null).maybeSingle()
+    // FIX (Projects & Dashboard pass 10, B1): a failed read answered 404 (the CO editor then reported a missing project).
+    if (projectErr) {
+      console.error('Project fetch: read failed:', projectErr)
+      return NextResponse.json({ error: 'Error' }, { status: 500 })
+    }
     if (!project) return NextResponse.json({ error: 'Not found' }, { status: 404 })
     if (!(await canReadProject(service, session, id)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })

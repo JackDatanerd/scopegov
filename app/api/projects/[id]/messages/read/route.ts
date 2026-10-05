@@ -35,10 +35,13 @@ export async function POST(
       const t = new Date(body.upTo).getTime()
       if (!Number.isNaN(t)) target = Math.min(t, nowMs)
     }
-    const { data: existing } = await (service as any)
+    // FIX (Projects & Dashboard pass 10, B1): a failed read of the current marker looked like "never read" (existingMs 0), so the upsert below
+    // could move the marker BACKWARDS to an older `upTo`, re-marking already-read messages as unread. Never write blind.
+    const { data: existing, error: existingErr } = await (service as any)
       .from('project_message_reads')
       .select('last_read_at')
       .eq('project_id', projectId).eq('user_id', session.id).maybeSingle()
+    if (existingErr) throw new Error(existingErr.message)
     const existingMs = existing?.last_read_at ? new Date(existing.last_read_at).getTime() : 0
     // Keep the exact timestamp string the client echoed back (it carries the
     // database's microseconds); only fall back to a JS date for the "now" case.

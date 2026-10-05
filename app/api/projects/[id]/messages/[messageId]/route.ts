@@ -16,13 +16,15 @@ import { canReadProject } from '@/lib/utils/project-access'
 import { MESSAGE_MAX_LENGTH, resolveMentions, notifyMentionedUsers } from '@/lib/utils/project-messages'
 
 async function loadMessage(service: any, workspaceId: string, projectId: string, messageId: string) {
-  const { data } = await service
+  // FIX (Projects & Dashboard pass 10, B1): .single() + ignored `error` made a failed read answer 404 "Not found" for a message that exists.
+  const { data, error } = await service
     .from('project_messages')
     .select('id, author_id, deleted_at, project_id, workspace_id')
     .eq('id', messageId)
     .eq('project_id', projectId)
     .eq('workspace_id', workspaceId)
-    .single()
+    .maybeSingle()
+  if (error) throw new Error(`message lookup failed: ${error.message}`)
   return data
 }
 
@@ -81,17 +83,21 @@ export async function PATCH(
     // removed on edit is deleted so the mentions table reflects what's
     // actually in the message. No new notification for edits, only for
     // net-new mentions the first POST couldn't have known about.
-    const { data: existing } = await (service as any)
+    // FIX (Projects & Dashboard pass 10, B1): a failed read gave existingIds = {}, so EVERY mention in the edited body counted as new — the insert
+    // below then hit UNIQUE(message_id, user_id) on the ones already stored and the whole batch failed, so genuinely new mentions were never
+    // saved or notified, and stale ones never removed. The edit itself is already saved, so skip reconciliation (the next edit re-derives it).
+    const { data: existing, error: existingErr } = await (service as any)
       .from('project_message_mentions')
       .select('user_id')
       .eq('message_id', messageId)
+    if (existingErr) console.error('Project message PATCH: could not read existing mentions — skipping mention reconciliation (next edit retries):', existingErr)
     const existingIds = new Set<string>((existing || []).map((r: any) => r.user_id))
 
     const newMentions = resolved.mentions
     const newIds = new Set(newMentions.map(m => m.userId))
 
-    const toRemove = Array.from(existingIds).filter(id => !newIds.has(id))
-    const toAdd = newMentions.filter(m => !existingIds.has(m.userId))
+    const toRemove = existingErr ? [] : Array.from(existingIds).filter(id => !newIds.has(id))
+    const toAdd = existingErr ? [] : newMentions.filter(m => !existingIds.has(m.userId))
 
     if (toRemove.length) {
       const { error: rmErr } = await (service as any).from('project_message_mentions')

@@ -30,6 +30,14 @@ function fileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
+// FIX (Projects & Dashboard pass 10, B2): the write handlers called res.json() bare inside try/finally with no catch. A dropped connection
+// (fetch rejects) or a gateway/413 page (non-JSON body) became an unhandled rejection: the spinner stopped and the person saw nothing, so a
+// note or a piece of evidence looked posted when it was not. Parse defensively and surface a message in every case.
+async function readJson(res: Response): Promise<any> {
+  return res.json().catch(() => ({}))
+}
+const NETWORK_ERROR = 'Could not reach the server. Check your connection and try again.'
+
 export default function FlagCollaboration({
   entityType, entityId, canWrite,
 }: { entityType: 'flag' | 'exception'; entityId: string; canWrite: boolean }) {
@@ -79,10 +87,12 @@ export default function FlagCollaboration({
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ body }),
       })
-      const json = await res.json()
-      if (!res.ok) { setError(json.error || 'Could not post comment.'); return }
+      const json = await readJson(res)
+      if (!res.ok || !json.comment) { setError(json.error || 'Could not post comment.'); return }
       setComments(prev => [...prev, json.comment])
       setDraft('')
+    } catch {
+      setError(NETWORK_ERROR)
     } finally { setPosting(false) }
   }
 
@@ -92,9 +102,14 @@ export default function FlagCollaboration({
       const fd = new FormData()
       fd.append('file', file)
       const res = await fetch(`${base}/attachments`, { method: 'POST', body: fd })
-      const json = await res.json()
-      if (!res.ok) { setError(json.error || 'Could not upload file.'); return }
+      const json = await readJson(res)
+      if (!res.ok || !json.attachment) {
+        setError(json.error || (res.status === 413 ? 'That file is too large to upload.' : 'Could not upload file.'))
+        return
+      }
       setAttachments(prev => [json.attachment, ...prev])
+    } catch {
+      setError(NETWORK_ERROR)
     } finally {
       setUploading(false)
       if (fileRef.current) fileRef.current.value = ''
@@ -111,9 +126,11 @@ export default function FlagCollaboration({
     setDeletingId(id); setError('')
     try {
       const res = await fetch(`${base}/attachments/${id}`, { method: 'DELETE' })
-      const json = await res.json().catch(() => ({}))
+      const json = await readJson(res)
       if (!res.ok) { setError(json.error || 'Could not remove attachment.'); return }
       setAttachments(prev => prev.filter(a => a.id !== id))
+    } catch {
+      setError(NETWORK_ERROR)
     } finally { setDeletingId(null) }
   }
 
@@ -212,7 +229,7 @@ export default function FlagCollaboration({
                   <input
                     className="finp" value={draft} placeholder="Add a note explaining this decision…"
                     onChange={e => setDraft(e.target.value)}
-                    onKeyDown={e => { if (e.key === 'Enter' && !posting) submitComment() }}
+                    onKeyDown={e => { if (e.key === 'Enter' && !e.nativeEvent.isComposing && !posting) submitComment() }}
                     style={{ flex: 1, fontSize: 12.5 }}
                   />
                   <button className="btn btn-ghost btn-xs" disabled={posting || !draft.trim()} onClick={submitComment}>

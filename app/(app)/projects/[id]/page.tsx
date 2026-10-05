@@ -77,7 +77,9 @@ export default async function ProjectPage({ params, searchParams }: Props) {
   // "From signed SOW", even right after an accepted change order or a manual scope adjustment rewrote the snapshot.
   // NEVER put // comments inside the select template literal below: they are
   // sent to PostgREST verbatim, the query fails, and every project 404s.
-  const { data: project } = await (service as any)
+  // FIX (Projects & Dashboard pass 10, B1): `error` was ignored and the read used .single(), so a failed read -> `project` null -> notFound():
+  // a transient database failure showed the "not found" page for a project that exists. maybeSingle() + a thrown error (app/error.tsx).
+  const { data: project, error: projectErr } = await (service as any)
     .from('projects')
     .select(`
       id, name, disc, type, status, stall_reason, stalled_at, contract_value, currency,
@@ -103,8 +105,9 @@ export default async function ProjectPage({ params, searchParams }: Props) {
     .eq('id', id)
     .eq('workspace_id', session.workspaceId)
     .is('deleted_at', null)
-    .single()
+    .maybeSingle()
 
+  if (projectErr) throw new Error(`Project page: project read failed: ${projectErr.message}`)
   if (!project) notFound()
 
   // FIX (re-audit, cosmetic-gate finding): viewFinancials/viewClientData
@@ -148,16 +151,20 @@ export default async function ProjectPage({ params, searchParams }: Props) {
   // ── Fetch payment milestones ──────────────────────────────────────────
   // FIX (re-audit): gated behind viewFinancials — was fetched unconditionally
   // and shipped to the client regardless of permission.
-  const { data: milestones = [] } = viewFinancials
+  // FIX (Projects & Dashboard pass 10, B1): a failed read left `milestones` null -> []: an open-ended retainer's effective total (months billed x rate)
+  // collapsed to one month. A page that shows wrong money is worse than an error page, so a failed read throws.
+  const { data: milestones = [], error: milestonesErr } = viewFinancials
     ? await (service as any)
         .from('payment_milestones')
         .select('*')
         .eq('project_id', id)
         .order('created_at', { ascending: true })
-    : { data: [] }
+    : { data: [], error: null }
+  if (milestonesErr) throw new Error(`Project page: milestones read failed: ${milestonesErr.message}`)
 
   // ── Fetch amendments ──────────────────────────────────────────────────
-  const { data: amendmentsRaw = [] } = await (service as any)
+  // FIX (Projects & Dashboard pass 10, B1): a failed read showed an effective contract total with every accepted CO missing. Throws instead.
+  const { data: amendmentsRaw = [], error: amendmentsErr } = await (service as any)
     .from('amendments')
     // FIX (Projects & Dashboard independent pass — B1): was select('*'), which carried every column to the browser —
     // including previous_contract_value (the monthly rate a retainer-renewal CO replaced, migration 061) and
@@ -166,6 +173,7 @@ export default async function ProjectPage({ params, searchParams }: Props) {
     .select('id, title, effective_at, added_deliverables, financial_impact, change_orders(is_retainer_renewal)')
     .eq('project_id', id)
     .order('created_at', { ascending: true })
+  if (amendmentsErr) throw new Error(`Project page: amendments read failed: ${amendmentsErr.message}`)
 
   // financial_impact is a dollar figure — redact it the same way as the
   // rest of the financial surface when the viewer lacks VIEW_FINANCIALS.
@@ -188,11 +196,13 @@ export default async function ProjectPage({ params, searchParams }: Props) {
   // colleague could be picked as an escalation target; the API already rejects that server-side
   // ("not an active member of this workspace"), but the dropdown shouldn't offer them in the first
   // place. Filtering here fixes both surfaces from their one shared source.
-  const { data: team = [] } = await (service as any)
+  // FIX (Projects & Dashboard pass 10, B1): a failed read showed an empty team (and empty Escalate-to dropdowns). Throws instead.
+  const { data: team = [], error: teamErr } = await (service as any)
     .from('project_members')
     .select('id, added_at, workspace_members!inner(id, users!workspace_members_user_id_fkey(id, name, email, avatar_url))')
     .eq('project_id', id)
     .eq('workspace_members.status', 'active')
+  if (teamErr) throw new Error(`Project page: team read failed: ${teamErr.message}`)
 
   // ── Fetch activity ────────────────────────────────────────────────────
   // audit_log.project_id (migration 056) attaches SOW / CO / flag / Guardian-check / invoice events to
@@ -205,7 +215,10 @@ export default async function ProjectPage({ params, searchParams }: Props) {
 
   // ── Fetch invoices (Phase 4a) ────────────────────────────────────────
   // FIX (re-audit): gated behind viewFinancials, same as milestones above.
-  const { data: invoices = [] } = viewFinancials
+  // FIX (Projects & Dashboard pass 10, B1): a failed read left `invoices` null. With SEND_INVOICES that null went straight to BillingTab (which
+  // calls invoices.some(...) and crashes the Billing tab); without it the map() fell back to "No invoices yet" — a wrong answer about money
+  // either way. Throws instead.
+  const { data: invoices = [], error: invoicesErr } = viewFinancials
     ? await (service as any)
         .from('invoices')
         // FIX (section-12 fix round): subtotal/disputed_at/dispute_note added —
@@ -221,7 +234,8 @@ export default async function ProjectPage({ params, searchParams }: Props) {
         .select('id, milestone_id, sow_id, co_id, invoice_number, title, amount, amount_paid, subtotal, currency, status, due_date, sent_at, paid_at, voided_at, disputed_at, dispute_note, dispute_resolved_at, dispute_resolution_note, payment_claimed_at, payment_claim_reference, payment_claim_cleared_at, token, created_at')
         .eq('project_id', id)
         .order('created_at', { ascending: false })
-    : { data: [] }
+    : { data: [], error: null }
+  if (invoicesErr) throw new Error(`Project page: invoices read failed: ${invoicesErr.message}`)
 
   // FIX (independent pass 3): `token` above is the raw, unauthenticated client-portal
   // link for each invoice — same shape as the SOW `token` the section-9 re-audit already

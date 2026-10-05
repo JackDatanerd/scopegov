@@ -163,8 +163,11 @@ export async function POST(request: NextRequest) {
     // read that client's details through every later join).
     if (clientId) {
       if (typeof clientId !== 'string') return NextResponse.json({ error: 'Client not found' }, { status: 404 })
-      const { data: client } = await (service as any)
+      // FIX (Projects & Dashboard pass 10, B1): `error` was ignored, so a failed read answered 404 "Client not found" for a client that exists
+      // (and the person had just filled in the whole wizard).
+      const { data: client, error: clientLookupErr } = await (service as any)
         .from('clients').select('id, name, status').eq('id', clientId).eq('workspace_id', session.workspaceId).maybeSingle()
+      if (clientLookupErr) throw new Error(`client lookup failed: ${clientLookupErr.message}`)
       if (!client) return NextResponse.json({ error: 'Client not found' }, { status: 404 })
       if (client.status === 'archived') clientToReactivate = { id: client.id, name: client.name }
     }
@@ -199,7 +202,8 @@ export async function POST(request: NextRequest) {
     // Lost the count-then-insert race (a concurrent create took the last slot)? Undo — the project
     // has no children yet, same as the member-insert rollback below.
     if (await isProjectBeyondLimit(service, session.workspaceId, session.planTier, project.id)) {
-      await (service as any).from('projects').delete().eq('id', project.id)
+      const { error: undoErr } = await (service as any).from('projects').delete().eq('id', project.id)
+      if (undoErr) console.error('Project create: could not remove the project after losing the plan-limit race:', undoErr)
       return NextResponse.json({ error: projectLimitMessage(session.planTier, 'create') }, { status: 403 })
     }
 
@@ -209,12 +213,22 @@ export async function POST(request: NextRequest) {
     // failure here silently produced a project its creator couldn't see. The
     // project has no children yet, so on failure it is removed and the request
     // fails loudly instead.
-    const { data: member } = await (service as any)
+    // FIX (Projects & Dashboard pass 10, B1): this read's `error` was ignored, so a failed read left `member` null, the creator-membership insert
+    // was skipped, and the request returned success — exactly the "project its creator can't see" outcome the comment above says is prevented
+    // (a VIEW_OWN_PROJECTS-only creator lands on a 404 for the project they just made). A failed read now takes the same rollback path as a
+    // failed insert.
+    const { data: member, error: memberLookupErr } = await (service as any)
       .from('workspace_members')
       .select('id')
       .eq('workspace_id', session.workspaceId)
       .eq('user_id', session.id)
       .maybeSingle()
+    if (memberLookupErr) {
+      console.error('Project create: could not look up the creator\'s membership, rolling back:', memberLookupErr)
+      const { error: undoErr } = await (service as any).from('projects').delete().eq('id', project.id)
+      if (undoErr) console.error('Project create: rollback delete failed:', undoErr)
+      return NextResponse.json({ error: 'Could not create the project. Please try again.' }, { status: 500 })
+    }
 
     if (member) {
       const { error: memberErr } = await (service as any).from('project_members').insert({
@@ -224,7 +238,8 @@ export async function POST(request: NextRequest) {
       })
       if (memberErr) {
         console.error('Project create: could not add creator as member, rolling back:', memberErr)
-        await (service as any).from('projects').delete().eq('id', project.id)
+        const { error: undoErr } = await (service as any).from('projects').delete().eq('id', project.id)
+        if (undoErr) console.error('Project create: rollback delete failed:', undoErr)
         return NextResponse.json({ error: 'Could not create the project. Please try again.' }, { status: 500 })
       }
     }

@@ -106,11 +106,13 @@ export default async function ProjectsPage({ searchParams }: { searchParams: Pro
   }
 
   // The workspace's real Guardian settings, so "needs attention" matches the Dashboard.
-  const { data: ws } = await (service as any)
+  // FIX (Projects & Dashboard pass 10, B1): `error` was never read — see the matching note on the Dashboard. Still degrades, but is logged.
+  const { data: ws, error: wsErr } = await (service as any)
     .from('workspaces')
     .select('proactive_risk_alerts_enabled, proactive_risk_threshold, currency')
     .eq('id', session.workspaceId)
     .maybeSingle()
+  if (wsErr) console.error('Projects list: workspace settings read failed — attention rules are using defaults:', wsErr.message)
   const workspaceSettings = {
     proactiveRiskAlertsEnabled: ws?.proactive_risk_alerts_enabled,
     proactiveRiskThreshold: ws?.proactive_risk_threshold,

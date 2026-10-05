@@ -88,9 +88,13 @@ export default async function DashboardPage() {
   // was silently defeated here — the exact guard it's meant to enforce was
   // correctly applied on the Projects list (which does fetch currency) and
   // not on the Dashboard, for the same project.
-  const { data: ws } = await (service as any)
+  // FIX (Projects & Dashboard pass 10, B1): `error` was never read. A failed read leaves `ws` null, so the proactive-risk rule silently runs on its
+  // defaults even for a workspace that switched it off, and the currency-mismatch guard is dropped. The dashboard still renders (it must not
+  // break on a settings read), but the failure is logged like the other degraded reads here.
+  const { data: ws, error: wsErr } = await (service as any)
     .from('workspaces').select('proactive_risk_alerts_enabled,proactive_risk_threshold,currency,timezone')
-    .eq('id', session.workspaceId).single()
+    .eq('id', session.workspaceId).maybeSingle()
+  if (wsErr) console.error('Dashboard: workspace settings read failed — attention rules are using defaults:', wsErr.message)
 
   let accessibleProjectIds: string[] | null = null
   if (!canViewAll) {
@@ -179,11 +183,15 @@ export default async function DashboardPage() {
   if (!canViewAll) {
     // Chunked (B4): each chunk returns its newest 60; merge and keep the newest 60 overall.
     const res = await queryInChunks<any>(accessibleProjectIds || [], chunk => buildActivityQuery().in('project_id', chunk))
+    // FIX (Projects & Dashboard pass 10, B1): a failed read rendered "No recent activity" with nothing in the logs. Still degrades; now logged.
+    if (res.error) console.error('Dashboard: activity feed read failed — the feed is empty or partial:', res.error.message)
     activityRaw = res.data
       .sort((a: any, b: any) => String(b.created_at).localeCompare(String(a.created_at)) || String(b.id).localeCompare(String(a.id)))
       .slice(0, 60)
   } else {
-    activityRaw = (await buildActivityQuery()).data || []
+    const res = await buildActivityQuery()
+    if (res.error) console.error('Dashboard: activity feed read failed — the feed is empty:', res.error.message)
+    activityRaw = res.data || []
   }
   const activity = (activityRaw || []).filter((a: any) => projectNameById.has(a.project_id)).slice(0, 14).map((a: any) =>
     shapeActivityRow(a, { viewFinancials: canViewFinances, projectName: projectNameById.get(a.project_id) ?? null }))

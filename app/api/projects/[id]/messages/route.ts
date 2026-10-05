@@ -22,13 +22,16 @@ import { MESSAGE_MAX_LENGTH, resolveMentions, notifyMentionedUsers } from '@/lib
 const FEED_LIMIT = 200
 
 async function loadProject(service: any, workspaceId: string, projectId: string) {
-  const { data } = await service
+  // FIX (Projects & Dashboard pass 10, B1): .single() + ignored `error` made a failed read look like a missing project (404). maybeSingle() and a
+  // thrown error — both callers sit inside a try/catch that answers 500.
+  const { data, error } = await service
     .from('projects')
     .select('id, name')
     .eq('id', projectId)
     .eq('workspace_id', workspaceId)
     .is('deleted_at', null)
-    .single()
+    .maybeSingle()
+  if (error) throw new Error(`project lookup failed: ${error.message}`)
   return data
 }
 
@@ -95,12 +98,14 @@ export async function GET(
       rows = desc.slice(0, FEED_LIMIT).reverse()
     }
 
-    const { data: readRow } = await (service as any)
+    // FIX (Projects & Dashboard pass 10, B1): a failed read became lastReadAt: null, which the feed renders as "everything is unread".
+    const { data: readRow, error: readErr } = await (service as any)
       .from('project_message_reads')
       .select('last_read_at')
       .eq('project_id', projectId)
       .eq('user_id', session.id)
       .maybeSingle()
+    if (readErr) throw new Error(readErr.message)
 
     const shape = (m: any) => ({
       id: m.id,
@@ -192,7 +197,8 @@ export async function POST(
         // Without the mention rows the people named in this message would be notified (below) yet absent from the
         // table every later edit diffs against. Remove the message so it fails loudly — the composer keeps the draft.
         console.error('Project message POST: could not save mentions, rolling back:', mentionErr)
-        await (service as any).from('project_messages').delete().eq('id', message.id)
+        const { error: rollbackErr } = await (service as any).from('project_messages').delete().eq('id', message.id)
+        if (rollbackErr) console.error('Project message POST: rollback delete failed — a mention-less message remains:', rollbackErr)
         return NextResponse.json({ error: 'Could not post the message. Please try again.' }, { status: 500 })
       }
     }

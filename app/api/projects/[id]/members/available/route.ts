@@ -30,15 +30,19 @@ export async function GET(
     if (!(await canReadProject(service, session, projectId)))
       return NextResponse.json({ error: 'Project not found' }, { status: 404 })
     // Soft-deleted projects are not assignable.
-    const { data: live } = await (service as any).from('projects').select('id')
+    // FIX (Projects & Dashboard pass 10, B1): both reads ignored `error`. A failed `live` read answered 404; a failed `existing` read made the
+    // picker offer EVERY workspace member, including the ones already on the project.
+    const { data: live, error: liveErr } = await (service as any).from('projects').select('id')
       .eq('id', projectId).eq('workspace_id', session.workspaceId).is('deleted_at', null).maybeSingle()
+    if (liveErr) throw new Error(liveErr.message)
     if (!live) return NextResponse.json({ error: 'Project not found' }, { status: 404 })
 
     // Get member IDs already on the project
-    const { data: existing } = await (service as any)
+    const { data: existing, error: existingErr } = await (service as any)
       .from('project_members')
       .select('member_id')
       .eq('project_id', projectId)
+    if (existingErr) throw new Error(existingErr.message)
 
     const existingIds = (existing || []).map((e: any) => e.member_id)
 

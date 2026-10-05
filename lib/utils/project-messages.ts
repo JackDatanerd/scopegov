@@ -70,13 +70,19 @@ export interface Mentionable { id: string; name: string; email: string; avatarUr
 // team). The picker used to offer only the assigned team, so an admin who follows a project without being
 // assigned to it could never be pulled into its discussion; the server-side check was the same list.
 export async function listMentionable(service: any, workspaceId: string, projectId: string): Promise<Mentionable[]> {
-  const [{ data: team }, { data: members }] = await Promise.all([
+  // FIX (Projects & Dashboard pass 10, B1): neither read's `error` was looked at. A failed read returned an EMPTY list, and resolveMentions()
+  // then degraded every @[Name](id) token in the message to plain "@Name" text before storing it — the mention (and its notification) was lost
+  // permanently, with a 200 to the sender. A failed read now throws; every caller (the message routes, the picker) answers 500 and the composer
+  // keeps the draft.
+  const [{ data: team, error: teamErr }, { data: members, error: membersErr }] = await Promise.all([
     service.from('project_members_active').select('member_user_id')
       .eq('project_id', projectId).eq('project_workspace_id', workspaceId),
     service.from('workspace_members')
       .select('user_id, effective_permissions, users!workspace_members_user_id_fkey(id, name, email, avatar_url)')
       .eq('workspace_id', workspaceId).eq('status', 'active'),
   ])
+  if (teamErr) throw new Error(`mentionable team lookup failed: ${teamErr.message}`)
+  if (membersErr) throw new Error(`mentionable members lookup failed: ${membersErr.message}`)
   const onTeam = new Set((team || []).map((r: any) => r.member_user_id))
   return (members || [])
     .filter((m: any) => m.users && (onTeam.has(m.user_id) || m.effective_permissions?.VIEW_ALL_PROJECTS === true))

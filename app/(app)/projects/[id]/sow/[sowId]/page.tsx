@@ -12,6 +12,9 @@ export default function SowEditorPage() {
 
   const [sow,      setSow]      = useState<any>(null)
   const [loading,  setLoading]  = useState(true)
+  // (Projects & Dashboard pass 10, B3) a failed LOAD (offline, 5xx, a non-JSON gateway page) is not "SOW not found" — it is retryable.
+  const [loadFailed, setLoadFailed] = useState(false)
+  const [reloadKey,  setReloadKey]  = useState(0)
   const [sending,  setSending]  = useState(false)
   const [error,    setError]    = useState('')
   const [isLocked, setIsLocked] = useState(false)
@@ -23,19 +26,33 @@ export default function SowEditorPage() {
   const [perms,    setPerms]    = useState<{ canEdit: boolean; canSend: boolean; canViewFinancials: boolean }>({ canEdit: false, canSend: false, canViewFinancials: false })
 
   useEffect(() => {
+    let cancelled = false
+    setLoading(true); setLoadFailed(false)
     fetch(`/api/sow/${sowId}`)
-      .then(r => r.json())
+      .then(async r => {
+        const json = await r.json().catch(() => null)
+        // A 5xx or a non-JSON body is a failed read; a clean 4xx (404/403) really is "not found" for this person.
+        if (!json || r.status >= 500) throw new Error('load failed')
+        return json
+      })
       .then(json => {
-        if (json.sow) {
+        if (cancelled) return
+        // (B3) the SOW must belong to the project in the URL: /projects/A/sow/<a SOW of B> used to render with A's back-links and
+        // send/withdraw redirects pointing at the wrong project.
+        if (json.sow && (!json.sow.project_id || json.sow.project_id === projId)) {
           setSow(json.sow)
           // BUG-023: isLocked managed as local state — no reload required
           setIsLocked(!!json.sow.sent_at)
+        } else {
+          setSow(null)
         }
         if (json.permissions) setPerms(json.permissions)
         setApproval(json.pendingApproval ?? null)
       })
-      .finally(() => setLoading(false))
-  }, [sowId])
+      .catch(() => { if (!cancelled) setLoadFailed(true) })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [sowId, projId, reloadKey])
 
   async function handleSend() {
     setSending(true); setError('')
@@ -81,6 +98,17 @@ export default function SowEditorPage() {
     return (
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: 400 }}>
         <span className="spin spin-dark" style={{ width: 24, height: 24 }} />
+      </div>
+    )
+  }
+
+  if (loadFailed) {
+    return (
+      <div style={{ padding: 40 }}>
+        <div className="auth-error" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <span>Could not load this SOW. Check your connection and try again.</span>
+          <button className="btn btn-ghost btn-sm" onClick={() => setReloadKey(k => k + 1)}>Retry</button>
+        </div>
       </div>
     )
   }
