@@ -16,6 +16,7 @@
 // sendEmail() turns that into an explicit result the caller can act on. It
 // never throws.
 
+import { EMAIL_RE } from '@/lib/utils/client-input'
 import { Resend } from 'resend'
 import { createServiceClient } from '@/lib/supabase/server'
 
@@ -57,6 +58,14 @@ export function __setResendForTests(r: Resend | null) { _resend = r }
 const DEAD_ADDRESS = /@deleted\.scopegov\.app$/i
 const SIMPLE_EMAIL = /^[^\s@<>",;]+@[^\s@<>",;]+\.[^\s@<>",;]+$/
 
+// Settings independent pass 14: the Reply-To header (workspace reply_to_email) is validated with the strict address
+// pattern the client forms use. SIMPLE_EMAIL only excludes whitespace and a few specials, so a NUL byte, a lone
+// surrogate, a zero-width character, `a@x..com`, a trailing dot / `)` / curly quote all passed, were stored and then
+// went out on every client-facing email as a malformed Reply-To.
+export function isValidReplyTo(email: string | null | undefined): email is string {
+  return isDeliverableAddress(email) && EMAIL_RE.test(email.trim())
+}
+
 export function isDeliverableAddress(email: string | null | undefined): email is string {
   return !!email && SIMPLE_EMAIL.test(email.trim()) && !DEAD_ADDRESS.test(email.trim())
 }
@@ -97,7 +106,7 @@ export async function sendEmail(payload: EmailPayload, log?: EmailLogContext): P
     html: payload.html,
   }
   if (cc.length) body.cc = cc
-  if (payload.replyTo && isDeliverableAddress(payload.replyTo)) body.replyTo = payload.replyTo.trim()
+  if (payload.replyTo && isValidReplyTo(payload.replyTo)) body.replyTo = payload.replyTo.trim()
   if (payload.attachments?.length) body.attachments = payload.attachments
   // Marks a send that has an email_log row, so the delivery webhook knows an event that arrives before the row is
   // written is worth retrying (see app/api/webhooks/resend). Untracked mail carries no tag and is ignored right away.

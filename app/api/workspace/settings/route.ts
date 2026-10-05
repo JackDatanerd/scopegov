@@ -1,6 +1,6 @@
 export const runtime = 'nodejs'
 
-import { isDeliverableAddress } from '@/lib/email/send'
+import { isValidReplyTo } from '@/lib/email/send'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
@@ -193,7 +193,9 @@ function parseField(key: string, value: unknown): unknown {
       if (value !== null && typeof value !== 'string') throw new FieldError('Enter a valid reply-to email address')
       const v = value === null ? '' : value.trim()
       if (v === '') return null
-      if (v.length > 254 || !isDeliverableAddress(v)) throw new FieldError('Enter a valid reply-to email address')
+      // Settings independent pass 14: strict pattern (rejects NUL / lone surrogates / invisible characters / `..` / trailing
+      // punctuation) — the loose delivery check let those through to a 500 or to a malformed Reply-To on every email.
+      if (v.length > 254 || !isValidReplyTo(v)) throw new FieldError('Enter a valid reply-to email address')
       return v
     }
     case 'defaultTaxRate': {

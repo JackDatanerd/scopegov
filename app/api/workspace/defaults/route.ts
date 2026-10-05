@@ -496,11 +496,18 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: `Invalid project type. Must be one of: ${PROJECT_TYPES.join(', ')}` }, { status: 400 })
     }
 
-    const [globalDefaults, typeDefaults, { data: workspace }] = await Promise.all([
+    const [globalDefaults, typeDefaults, { data: workspace, error: workspaceErr }] = await Promise.all([
       findRow(service, session.workspaceId, null),
       requested ? findRow(service, session.workspaceId, requested) : Promise.resolve(null),
       service.from('workspaces').select('currency, governing_law, sow_language').eq('id', session.workspaceId).single(),
     ])
+
+    // Settings independent pass 14: a failed workspace read used to fall through to currency 'USD' / language 'en' with a
+    // 200, and the New Project form applied that USD to a non-USD workspace. Refuse instead.
+    if (workspaceErr || !workspace) {
+      console.error('Workspace defaults GET: workspace read failed:', workspaceErr)
+      return NextResponse.json({ error: 'Could not load workspace defaults' }, { status: 500 })
+    }
 
     // Standards mirror how SOW generation resolves them (see
     // lib/utils/agency-standards.ts's pickAgencyStandards, whose own comment

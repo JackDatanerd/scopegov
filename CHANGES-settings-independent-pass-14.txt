@@ -1,0 +1,17 @@
+Settings independent pass 14 (audit at 507677f, fixed on fresh clone 50dfd9c)
+
+B1  Workspace reply-to email was validated with isDeliverableAddress (loose SIMPLE_EMAIL regex).
+    NUL / lone surrogate -> Postgres rejected the write -> generic 500. Zero-width characters, `a@x..com`,
+    leading/trailing dot, trailing `)` or curly quote were stored and sent as a malformed Reply-To on every
+    client-facing email (the send path re-checked with the same loose regex).
+    - lib/email/send.ts: new isValidReplyTo() = loose check + the strict EMAIL_RE used by the client forms;
+      sendEmail applies the Reply-To header only when it passes.
+    - lib/email/reply-to.ts: a stored workspace reply_to_email must pass isValidReplyTo, otherwise the existing
+      fallback chain (actor, then owner) applies - covers values saved before this fix.
+    - app/api/workspace/settings/route.ts: replyToEmail validated with isValidReplyTo (400, not 500).
+
+B2  GET /api/workspace/defaults ignored the error of its workspaces read and answered 200 with currency 'USD' /
+    language 'en'; the New Project form applied that USD to a non-USD workspace. Now 500 on a failed read.
+
+Tests: tests/settings-independent-pass-14.test.ts (13; 11 fail on the pre-fix code). tsc clean, full suite green.
+No migration.

@@ -16,7 +16,7 @@
 //      vanished. A human at the agency now always receives it.
 // Returns null when none exists; sendEmail() then omits the header.
 
-import { isDeliverableAddress } from '@/lib/email/send'
+import { isDeliverableAddress, isValidReplyTo } from '@/lib/email/send'
 
 export async function resolveReplyTo(
   service: any,
@@ -27,7 +27,7 @@ export async function resolveReplyTo(
     const { data, error } = await service
       .from('workspaces').select('reply_to_email').eq('id', workspaceId).maybeSingle()
     // `error` is expected (and ignored) before the column's migration is applied.
-    if (!error && isDeliverableAddress(data?.reply_to_email)) return String(data.reply_to_email).trim()
+    if (!error && isValidReplyTo(data?.reply_to_email)) return String(data.reply_to_email).trim()
   } catch { /* fall through to the actor */ }
   if (isDeliverableAddress(actorEmail)) return actorEmail!.trim()
   return resolveOwnerEmail(service, workspaceId)
