@@ -9,7 +9,7 @@ import StarterKit from '@tiptap/starter-kit'
 import Placeholder from '@tiptap/extension-placeholder'
 import { countWords, formatCurrencyExact } from '@/lib/utils/format'
 import { isTableSection, SOW_TABLE_SCHEMAS, blankRow, columnLabel, parseTableAmount, type SowTableRow, type SowTableSectionId } from '@/lib/sow/table-schema'
-import { SOW_SECTION_DEFS } from '@/lib/ai/sow-content'
+import { SOW_SECTION_DEFS, AI_SECTION_IDS } from '@/lib/ai/sow-content'
 
 interface Section {
   id: string; title: string; content: string; table?: SowTableRow[]; visible: boolean; order: number
@@ -450,7 +450,9 @@ export default function SowEditor({ sowId, sections: initialSections, isLocked, 
             <i className={`ti ${current.visible ? 'ti-eye' : 'ti-eye-off'}`} style={{ fontSize: 11 }} />
           </button>
         )}
-        {!isTable && !isLocked && canEdit && (
+        {/* FIX (SOW lifecycle pass 14, B1): only sections api/sow/regenerate-section accepts (AI_SECTION_IDS). Parties,
+            Governing Law and Signatures are fixed boilerplate; the wand used to show there and always answered 400. */}
+        {!isTable && !isLocked && canEdit && current && AI_SECTION_IDS.includes(current.id) && (
           <button type="button" className="btn btn-ghost btn-xs"
             onClick={() => setShowRegen(showRegen === current?.id ? null : current?.id || null)}>
             <i className="ti ti-wand" style={{ fontSize: 11 }} /> Improve
@@ -583,7 +585,7 @@ export default function SowEditor({ sowId, sections: initialSections, isLocked, 
           <div style={{ padding: '10px 16px', borderBottom: '1px solid var(--border)', background: 'var(--surface-2)', display: 'flex', gap: 8 }}>
             <input className="finp"
               style={{ flex: 1, fontSize: 12, padding: '6px 10px' }}
-              placeholder="Optional: instruction (e.g. 'make it more concise', 'add 2 more deliverables')"
+              placeholder="Optional: instruction (e.g. 'make it more concise', 'use a friendlier tone')"
               value={regenInstruction}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) => setRegenInstruction(e.target.value)}
               onKeyDown={(e: React.KeyboardEvent) => { if (e.key === 'Enter' && current) handleRegen(current.id) }}

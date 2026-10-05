@@ -37,8 +37,12 @@ function textOf(html: unknown): string {
 // thousands groups (exactly three digits after a separator) with an optional 1-2 digit decimal, or a
 // plain integer with an optional decimal. A regular space only groups thousands when the whole number
 // is space-grouped ("12 500,00"), so "12,500 100% upfront" can never merge.
+// FIX (SOW lifecycle pass 14, B2): Indian (lakh/crore) grouping — "1,00,000", "12,34,567.50" — was tokenized as separate
+// numbers (1 and 0), although parseTableAmount reads the same string as 100000. A Payment Terms text that stated the
+// contract value that way raised a false "does not state the contract value" warning and made ensureContractValueStated
+// append a redundant value line. The lakh pattern (1-2 digits, then 2-digit groups, then a final 3-digit group) is tried first.
 const AMOUNT_TOKEN_RE =
-  /\d{1,3}(?:[,.'\u2019\u00a0\u202f]\d{3})+(?:[.,]\d{1,2})?(?!\d)|\d{1,3}(?: \d{3})+(?:[.,]\d{1,2})?(?!\d)|\d+(?:[.,]\d+)?|(?<![\w.,])\.\d{1,2}(?!\d)/g
+  /(?<![\d,.])\d{1,2}(?:,\d{2})+,\d{3}(?:\.\d{1,2})?(?!\d)|\d{1,3}(?:[,.'\u2019\u00a0\u202f]\d{3})+(?:[.,]\d{1,2})?(?!\d)|\d{1,3}(?: \d{3})+(?:[.,]\d{1,2})?(?!\d)|\d+(?:[.,]\d+)?|(?<![\w.,])\.\d{1,2}(?!\d)/g
 
 export function amountsMentioned(text: string): number[] {
   const tokens = text.match(AMOUNT_TOKEN_RE) || []

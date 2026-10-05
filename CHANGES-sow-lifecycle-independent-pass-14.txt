@@ -1,0 +1,13 @@
+SOW lifecycle — independent pass 14 (fixes)
+
+B1 (LOW-MED) The "Improve" (AI rewrite) button showed on Parties, Governing Law and Signatures, which
+   api/sow/regenerate-section refuses (400 "cannot be regenerated with AI"). The editor opens on Parties, so the
+   first click failed. components/sow/SowEditor.tsx now shows it only for AI_SECTION_IDS; the instruction
+   placeholder no longer suggests "add 2 more deliverables" (a table section, which has no Improve button).
+
+B2 (LOW) lib/sow/validate-send.ts AMOUNT_TOKEN_RE read Indian lakh grouping ("1,00,000") as the numbers 1 and 0
+   while parseTableAmount reads it as 100000: false "does not state the contract value" send warning, and a
+   redundant value line appended by ensureContractValueStated. A lakh pattern is now tried first.
+
+Not changed: no migration, no new env vars.
+Tests: tests/sow-lifecycle-independent-pass-14.test.ts (4 tests; the new-behaviour ones fail on the previous code).
