@@ -1,0 +1,19 @@
+CO section (c10) - independent pass 10 (bugs only)
+
+B1  A failed signed-SOW read was reported as "no signed SOW" (POST /api/co, CO send route, sendCoDocument incl. the
+    approval auto-send, and finalize-co where the CLIENT saw it after signing). New lib/documents/signed-sow.ts
+    separates "none" from "lookup failed"; failures answer a retryable 500 (finalize-co: before the status CAS).
+B2  CO escalate: a failed assignee read said "no longer available" and a failed project-members read said "doesn't have
+    access" - now a 500 (assignee lookup checked, filterToProjectAccess strict).
+B3  POST /api/co: a failed flag read said "Flag not found" - now a 500 (malformed ids still 400).
+B4  reminder-cooldown failed OPEN on a failed audit_log read (duplicate client email possible) - now throws (all three
+    callers run inside try/catch -> 500).
+B5  computeCoTotals coerced null/[]/true quantities (null -> 0 total, true -> 1) and blank-string quantity -> 0; now
+    rejected. Rate may still be blank/null (unpriced line) but not boolean/array/object.
+B6  Executed (frozen) CO PDF omitted the status badge and the note re-sanitize that the live download applies; both now
+    match.
+
+Tests: tests/co-independent-pass-10.test.ts (new); tests/finalize-co-race.test.ts mock gained maybeSingle().
+Files: app/api/co/route.ts, app/api/co/[id]/send/route.ts, app/api/co/[id]/escalate/route.ts,
+       lib/documents/{signed-sow(new),send-co,finalize-co,co-totals}.ts, lib/utils/reminder-cooldown.ts
+No migration. tsc clean; full suite 285 files / 2874 tests pass.

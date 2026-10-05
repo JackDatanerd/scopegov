@@ -12,6 +12,7 @@ import { liveCoSiblingMessage } from '@/lib/documents/co-live-sibling'
 import { canReadProject } from '@/lib/utils/project-access'
 import { isTerminalStatus } from '@/lib/utils/project-status'
 import { coGateAmount } from '@/lib/approvals/gate-amount'
+import { findSignedSow, SIGNED_SOW_LOOKUP_FAILED } from '@/lib/documents/signed-sow'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -85,11 +86,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // project's signed SOW was somehow withdrawn/reopened after this CO
     // was drafted. Cheaper to catch here than to let the client discover
     // it at finalize-co.ts's own hard block after signing.
-    const { data: signedSow } = await (service as any)
-      .from('sow_documents').select('id')
-      .eq('project_id', co.project_id).eq('status', 'signed')
-      .limit(1).maybeSingle()
-    if (!signedSow) {
+    const sowLookup = await findSignedSow(service, co.project_id)
+    if (!sowLookup.ok) return NextResponse.json({ error: SIGNED_SOW_LOOKUP_FAILED }, { status: 500 })
+    if (!sowLookup.sow) {
       return NextResponse.json({
         error: 'This project has no signed SOW yet — a change order can only be sent once the original scope of work is signed.',
       }, { status: 409 })

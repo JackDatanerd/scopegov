@@ -45,6 +45,7 @@ function mockService(perTable: Record<string, { data: any; error?: any }>) {
       order: () => builder,
       limit: () => builder,
       single: () => builder,
+      maybeSingle: () => builder,
       update: () => builder,
       insert: () => builder,
       then: (resolve: any, reject: any) => Promise.resolve(result).then(resolve, reject),

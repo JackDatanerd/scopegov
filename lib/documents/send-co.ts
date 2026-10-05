@@ -15,6 +15,7 @@ import { resolveReplyTo } from '@/lib/email/reply-to'
 import { isTerminalStatus } from '@/lib/utils/project-status'
 import { parseStoredLineItems } from '@/lib/documents/co-totals'
 import { coGateAmount } from '@/lib/approvals/gate-amount'
+import { findSignedSow, SIGNED_SOW_LOOKUP_FAILED } from '@/lib/documents/signed-sow'
 
 export type SendCoResult =
   | {
@@ -133,9 +134,9 @@ export async function sendCoDocument(service: any, params: {
       return { ok: false, status: 409, error: 'This change order was edited after it was submitted for approval, so the approved amount no longer matches. Cancel this request and send it again for approval.' }
   }
 
-  const { data: signedSow } = await (service as any)
-    .from('sow_documents').select('id').eq('project_id', co.project_id).eq('status', 'signed').limit(1).maybeSingle()
-  if (!signedSow)
+  const sowLookup = await findSignedSow(service, co.project_id)
+  if (!sowLookup.ok) return { ok: false, status: 500, error: SIGNED_SOW_LOOKUP_FAILED }
+  if (!sowLookup.sow)
     return { ok: false, status: 409, error: 'This project has no signed SOW yet — a change order can only be sent once the original scope of work is signed.' }
 
   // One live version per change-order lineage (shared with the send route, which runs it before the approval gate).

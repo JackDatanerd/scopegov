@@ -1,7 +1,7 @@
 import { isUuidString } from '@/lib/utils/uuid'
 import { notifyUsers } from '@/lib/utils/notify'
 import { createServiceClient } from '@/lib/supabase/server'
-import { lookupMissResponse } from '@/lib/documents/co-lookup'
+import { lookupMissResponse, isRealLookupFailure } from '@/lib/documents/co-lookup'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
@@ -86,13 +86,16 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     let resolvedEscalateTo: string | null = null
     let assignee: { name: string; email: string } | null = null
     if (escalateTo) {
-      const { data: member } = await (service as any)
+      const { data: member, error: memberErr } = await (service as any)
         .from('workspace_members')
         .select('user_id, effective_permissions, users!workspace_members_user_id_fkey!inner(id,name,email)')
         .eq('workspace_id', session.workspaceId)
         .eq('id', escalateTo)
         .eq('status', 'active')
         .single()
+      // A failed read is not "that person left": only a genuine no-row (or malformed id) may say so. Anything else is a
+      // retryable outage - this route's catch answers it with a 500 instead of a misleading 400.
+      if (memberErr && isRealLookupFailure(memberErr)) throw new Error(`assignee lookup failed: ${memberErr.message}`)
       if (member?.users) {
         // FIX (Notifications & email fix round): the assignee's access to the project was never
         // checked — the notification and email (project name + note) went to someone who then
@@ -100,7 +103,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         if (member.users.id !== session.id) {
           const canOpen = await filterToProjectAccess(
             service, co.project_id, [{ id: member.users.id }],
-            new Map([[member.users.id, member.effective_permissions || {}]])
+            new Map([[member.users.id, member.effective_permissions || {}]]),
+            // strict: an unreadable member list must be a 500, not "{name} doesn't have access to this project".
+            { strict: true },
           )
           if (canOpen.length === 0)
             return NextResponse.json({

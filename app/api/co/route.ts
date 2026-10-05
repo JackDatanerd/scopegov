@@ -9,6 +9,8 @@ import { computeCoTotals } from '@/lib/documents/co-totals'
 import { parseCoFields } from '@/lib/documents/co-input'
 import { isTerminalStatus } from '@/lib/utils/project-status'
 import { workspaceTaxDefaults } from '@/lib/documents/tax-defaults'
+import { findSignedSow, SIGNED_SOW_LOOKUP_FAILED } from '@/lib/documents/signed-sow'
+import { isRealLookupFailure } from '@/lib/documents/co-lookup'
 
 export async function POST(request: NextRequest) {
   try {
@@ -107,11 +109,9 @@ export async function POST(request: NextRequest) {
     if (isRetainerRenewal === true && project.type !== 'retainer')
       return NextResponse.json({ error: 'Only a retainer project can have a retainer renewal change order.' }, { status: 400 })
 
-    const { data: signedSow } = await (service as any)
-      .from('sow_documents').select('id')
-      .eq('project_id', projectId).eq('status', 'signed')
-      .limit(1).maybeSingle()
-    if (!signedSow) {
+    const sowLookup = await findSignedSow(service, projectId)
+    if (!sowLookup.ok) return NextResponse.json({ error: SIGNED_SOW_LOOKUP_FAILED }, { status: 500 })
+    if (!sowLookup.sow) {
       return NextResponse.json({
         error: 'This project has no signed SOW yet — a change order can only be created once the original scope of work is signed.',
       }, { status: 409 })
@@ -132,10 +132,12 @@ export async function POST(request: NextRequest) {
     // the insert.
     let validatedFlagId: string | null = null
     if (flagId) {
-      const { data: flag } = await (service as any)
+      const { data: flag, error: flagErr } = await (service as any)
         .from('guardian_flags').select('id, status, change_order_id')
         .eq('id', flagId).eq('project_id', projectId).eq('workspace_id', session.workspaceId)
         .maybeSingle()
+      // A failed read is not "no such flag" (a malformed id, 22P02, genuinely is): report it as the retryable error it is.
+      if (flagErr && isRealLookupFailure(flagErr)) throw new Error(`flag lookup failed: ${flagErr.message}`)
       if (!flag) return NextResponse.json({ error: 'Flag not found on this project' }, { status: 400 })
       // FIX (deep audit, CO logic independent re-pass): the check above only
       // proved the flag is OURS, never that it is still UNCLAIMED. The

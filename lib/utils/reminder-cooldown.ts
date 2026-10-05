@@ -17,7 +17,7 @@ export async function checkReminderCooldown(
 ): Promise<{ allowed: true } | { allowed: false; message: string }> {
   const cutoff = new Date(Date.now() - cooldownHours * 60 * 60 * 1000).toISOString()
 
-  const { data: recent } = await service
+  const { data: recent, error: recentErr } = await service
     .from('audit_log')
     .select('id, created_at')
     .eq('entity_type', entityType)
@@ -27,12 +27,15 @@ export async function checkReminderCooldown(
     .order('created_at', { ascending: false })
     .limit(1)
     .maybeSingle()
+  // A failed read is not "no recent reminder": that failed OPEN and let a second client email through. Every caller runs
+  // inside its route's try/catch, so throwing answers a retryable 500 instead.
+  if (recentErr) throw new Error(`reminder cooldown lookup failed: ${recentErr.message}`)
 
   // The reminder routes write their 'reminder.sent' claim BEFORE calling the mail provider (to
   // shrink the double-click race). If that send then fails they log 'reminder.failed'; a failure
   // newer than the claim means nothing reached the client, so it must not lock the agency out.
   if (recent) {
-    const { data: failedAfter } = await service
+    const { data: failedAfter, error: failedErr } = await service
       .from('audit_log')
       .select('id')
       .eq('entity_type', entityType)
@@ -41,6 +44,7 @@ export async function checkReminderCooldown(
       .gt('created_at', recent.created_at)
       .limit(1)
       .maybeSingle()
+    if (failedErr) throw new Error(`reminder cooldown lookup failed: ${failedErr.message}`)
     if (failedAfter) return { allowed: true }
     return {
       allowed: false,

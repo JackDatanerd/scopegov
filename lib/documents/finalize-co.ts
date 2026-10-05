@@ -29,6 +29,8 @@ import { coPdfFilename } from '@/lib/documents/co-pdf-name'
 import { getContractValueBefore } from '@/lib/documents/co-contract-value'
 import { createHash } from 'node:crypto'
 import { isTerminalStatus } from '@/lib/utils/project-status'
+import { findSignedSow, SIGNED_SOW_LOOKUP_FAILED } from '@/lib/documents/signed-sow'
+import { sanitizeRichTextOrNull } from '@/lib/utils/sanitize'
 
 export async function finalizeCoAcceptance(service: any, params: {
   co: any                 // change_orders row joined with projects/clients/workspaces, plus resolved `total`
@@ -85,13 +87,11 @@ export async function finalizeCoAcceptance(service: any, params: {
     }
   }
 
-  const { data: signedSow } = await (service as any)
-    .from('sow_documents')
-    .select('id, document_number')
-    .eq('project_id', co.project_id)
-    .eq('status', 'signed')
-    .order('version', { ascending: false })
-    .limit(1).single()
+  // A failed read must not tell the client (who has just completed the signing ritual) that no signed SOW exists. This
+  // runs before the status compare-and-swap, so a retry is clean.
+  const sowLookup = await findSignedSow(service, co.project_id, { newest: true })
+  if (!sowLookup.ok) return { ok: false as const, error: SIGNED_SOW_LOOKUP_FAILED, status: 500 }
+  const signedSow = sowLookup.sow
 
   if (!signedSow)
     return { ok: false as const, error: 'No signed SOW found for this project — cannot record this amendment', status: 422 }
@@ -406,7 +406,10 @@ export async function finalizeCoAcceptance(service: any, params: {
       clientVatNumber:      client.vat_number || null,
       projectName:   project.name,
       coTitle:       co.title,
-      note:          co.note || null,
+      // Same two inputs the live download route (api/pdf/co/[id]) passes, so the frozen executed copy and a later live
+      // render of the same accepted CO print identically: the status badge, and the note re-sanitized on the way out.
+      status:        'accepted',
+      note:          sanitizeRichTextOrNull(co.note),
       lineItems,
       subtotal:      co.subtotal,
       taxRate:       co.tax_rate,

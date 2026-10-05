@@ -97,6 +97,13 @@ export function stripAdjustmentLines(items: unknown, existingAdjustmentIds: Read
   return items.filter((l: any) => !(isAdjustmentLine(l) && typeof l?.id === 'string' && existingAdjustmentIds.has(l.id)))
 }
 
+function strictNumber(v: unknown, blankIsZero: boolean): number {
+  if (typeof v === 'number') return v
+  if (typeof v === 'string') return v.trim() !== '' ? Number(v) : blankIsZero ? 0 : NaN
+  if (v === null && blankIsZero) return 0
+  return NaN
+}
+
 export function computeCoTotals(
   rawItems: unknown, rawTaxRate: unknown, rawTaxInclusive: unknown,
   allowedAdjustmentIds?: ReadonlySet<string> | readonly string[],
@@ -146,8 +153,11 @@ export function computeCoTotals(
     // lines. Keep the first occurrence's id, mint a fresh one for the rest.
     const lineId = rawId == null ? null : isDuplicateId ? nanoid() : rawId
     if (rawId != null) seenIds.add(rawId)
-    const quantity = isAdjustment ? 1 : Number(raw?.quantity)
-    const rate     = Number(raw?.rate)
+    // Number(null) is 0, Number([]) is 0 and Number(true) is 1 - a described, priced line with `quantity: null` was stored
+    // with a total of 0, and `true` quietly became one unit. Only a real number or a numeric string is a quantity (a blank
+    // string is not one either); a rate may be blank/null (an unpriced line) but never another type.
+    const quantity = isAdjustment ? 1 : strictNumber(raw?.quantity, false)
+    const rate     = strictNumber(raw?.rate, true)
 
     if (!Number.isFinite(quantity) || !Number.isFinite(rate))
       return { ok: false, error: `Line item "${description || 'untitled'}" has a quantity or rate that isn't a number` }
