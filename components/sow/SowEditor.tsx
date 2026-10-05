@@ -196,25 +196,34 @@ export default function SowEditor({ sowId, sections: initialSections, isLocked, 
 
   // Extracted from scheduleMsaAutosave's setTimeout body so flush() below can call the same
   // persistence logic directly, on demand, instead of only being able to wait for the timer.
-  const persistMsaRef = useCallback(async (value: string): Promise<boolean> => {
-    try {
-      const res = await fetch(`/api/sow/${sowId}`, {
-        method:  'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ msaReference: value }),
-      })
-      setMsaSaveStatus(res.ok ? 'saved' : 'error')
-      if (res.ok) {
-        // Only clear the pending marker if nothing newer has been typed since — a flush that
-        // raced a fresh keystroke must not erase the record of that newer, still-unsaved edit.
-        if (msaPendingValue.current === value) msaPendingValue.current = null
-        setTimeout(() => setMsaSaveStatus('idle'), 2000)
+  // FIX (SOW lifecycle independent pass 13, B5): unlike section saves (one ordered chain), MSA writes were independent
+  // requests, so two in flight at once could land out of order and leave the OLDER value stored while the field showed the
+  // newer one. They now run strictly in the order they were issued.
+  const msaChain = useRef<Promise<unknown>>(Promise.resolve())
+  const persistMsaRef = useCallback((value: string): Promise<boolean> => {
+    const run = async (): Promise<boolean> => {
+      try {
+        const res = await fetch(`/api/sow/${sowId}`, {
+          method:  'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ msaReference: value }),
+        })
+        setMsaSaveStatus(res.ok ? 'saved' : 'error')
+        if (res.ok) {
+          // Only clear the pending marker if nothing newer has been typed since — a flush that
+          // raced a fresh keystroke must not erase the record of that newer, still-unsaved edit.
+          if (msaPendingValue.current === value) msaPendingValue.current = null
+          setTimeout(() => setMsaSaveStatus('idle'), 2000)
+        }
+        return res.ok
+      } catch {
+        setMsaSaveStatus('error')
+        return false
       }
-      return res.ok
-    } catch {
-      setMsaSaveStatus('error')
-      return false
     }
+    const next = msaChain.current.then(run, run)
+    msaChain.current = next
+    return next as Promise<boolean>
   }, [sowId])
 
   // Writes everything outstanding NOW (pending edits and previously-failed ones) and reports

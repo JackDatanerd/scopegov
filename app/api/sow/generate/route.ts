@@ -286,6 +286,10 @@ export async function POST(request: NextRequest) {
         await recordAiUsage(service, session.workspaceId, session.id, 'sow.generate')
         const raw = msg.content.filter(b => b.type === 'text').map((b: any) => b.text).join('')
         lastStopReason = msg.stop_reason
+        // FIX (SOW lifecycle independent pass 13, B1): a reply cut off at max_tokens can end mid-sentence in the last prose
+        // section or mid-row in a table and still parse. Treat it as a failed attempt (retry, then the deterministic
+        // fallback) instead of storing half a contract clause.
+        if (msg.stop_reason === 'max_tokens') throw new Error('the model reply was cut off (max_tokens)')
         aiSections = parseDelimitedSections(raw)
         aiTables = parseTableSections(raw)
       } catch (err) {

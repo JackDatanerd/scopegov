@@ -96,10 +96,18 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     if (!anotherSowIsLive) {
       // Revert project to Intake
+      // FIX (SOW lifecycle independent pass 13, B4): withdrawing a superseded 'changes_requested' version moved the project
+      // from 'Changes Requested' back to 'Intake' even though the newer draft that carries the client's change request is
+      // still open — the project then read as having no pending client feedback. 'Changes Requested' is only undone when
+      // no draft is open. (If the lookup fails, the previous behaviour — revert — is kept.)
+      const { data: openDraft, error: openDraftErr } = await (service as any).from('sow_documents')
+        .select('id').eq('project_id', sow.project_id).neq('id', id).eq('status', 'draft').limit(1)
+      if (openDraftErr) console.error('SOW withdraw: could not check for an open draft (reverting project anyway):', openDraftErr.message)
+      const draftIsOpen = !openDraftErr && Array.isArray(openDraft) && openDraft.length > 0
       await (service as any).from('projects')
         .update({ status: 'Intake', updated_at: now })
         .eq('id', sow.projects?.id)
-        .in('status', ['Awaiting Signature','Changes Requested'])
+        .in('status', draftIsOpen ? ['Awaiting Signature'] : ['Awaiting Signature', 'Changes Requested'])
       // FIX (cron/portal audit round 3): sow-stall flips a project whose SOW sat unsigned for 7 days to
       // 'Stalled' / stall_reason 'sow_unsigned'. This revert only listed Awaiting Signature / Changes
       // Requested, so withdrawing a SOW that had gone stale — the most natural time to withdraw one — left the

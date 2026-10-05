@@ -261,7 +261,10 @@ export function parseTableAmount(input: unknown): number | null {
     /^\s*-\s*(?:\p{Sc}|[A-Z]{3})?\s*$/u.test(before) ||
     /(?:^|[\s:]|\p{Sc}|\b[A-Z]{3})-(?:\p{Sc}|[A-Z]{3})?$/u.test(before)
   )
-  const wrappedInParens = /\([^\d]*$/.test(before) && /^[^\d]*\)/.test(after)
+  // FIX (SOW lifecycle independent pass 13, B3): any "(" earlier in the cell followed by any ")" later counted, so a label
+  // with its own CLOSED parentheses ("Deposit (due) 500 (net)") was read as the accounting negative -500. The "(" must be
+  // the one still open at the number and the ")" the first thing that follows it: "(500)", "($500)", "Credit (500)".
+  const wrappedInParens = /\([^\d()]*$/.test(before) && /^[^\d()]*\)/.test(after)
   // En dash as a minus: only when the cell is just the dash, an optional currency symbol and the number.
   const leadingEnDash = /^\s*\u2013\s*[^\d\s\p{L}]?\s*$/u.test(before)
   // Trailing-minus accounting style ("500-", "500 -"): only when the minus is all that follows the number, so a

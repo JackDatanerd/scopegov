@@ -488,13 +488,26 @@ export class SowContentParseError extends Error {
   }
 }
 
+// FIX (SOW lifecycle independent pass 13, B1): the model's output is prose sections first, then tables. Only a table
+// block that carried its closing <<<ENDTABLE>>> was cut out of the prose, and everything after the last section marker
+// belonged to the last prose section (Dispute Resolution). So a reply cut off at max_tokens inside a table, a model that
+// forgot the final ENDTABLE, a trailing code fence, or a closing "let me know if you'd like changes" line all became
+// literal contract text in the client-facing Dispute Resolution section ("&lt;&lt;&gt;&gt; Kickoff | 0 | ...").
+// A table now ends at its ENDTABLE or at the next marker; a section's text ends where its first table starts; stray
+// code-fence lines and ENDTABLE markers are dropped.
+const TABLE_BLOCK_RE = /<<<TABLE:[a-z_]+>>>[\s\S]*?(?:<<<ENDTABLE>>>|(?=<<<TABLE:|<<<SECTION:)|$)/g
+const CUT = '\u0000CUT\u0000'
+
 export function parseDelimitedSections(raw: string): Record<string, string> {
   // Split on marker lines, keeping the captured id. This succeeds even if
   // the model added a stray preamble sentence or wrapped the whole thing
   // in a code fence — we only care that the markers themselves are intact,
   // not that the surrounding text is "clean". Table blocks are cut out
   // first so their pipe-delimited rows can never be mistaken for prose.
-  const withoutTables = raw.replace(/<<<TABLE:[a-z_]+>>>[\s\S]*?<<<ENDTABLE>>>/g, '')
+  const withoutTables = raw
+    .replace(/^[ \t]*```[a-z]*[ \t]*$/gim, '')
+    .replace(TABLE_BLOCK_RE, CUT)
+    .replace(/<<<ENDTABLE>>>/g, '')
   const parts = withoutTables.split(/<<<SECTION:([a-z_]+)>>>/)
   const sections: Record<string, string> = {}
   // parts = [preamble, id1, content1, id2, content2, ...]
@@ -508,7 +521,7 @@ export function parseDelimitedSections(raw: string): Record<string, string> {
   const allowed = new Set(AI_SECTION_IDS)
   for (let i = 1; i < parts.length; i += 2) {
     const id      = parts[i]?.trim()
-    const content = (parts[i + 1] || '').trim()
+    const content = (parts[i + 1] || '').split(CUT)[0].trim()
     if (id && allowed.has(id)) sections[id] = content
   }
 
@@ -571,7 +584,10 @@ export function parseTableSections(raw: string): Record<SowTableSectionId, SowTa
   const result: Record<SowTableSectionId, SowTableRow[]> = { deliverables: [], timeline: [], roles: [], payment_schedule: [] }
 
   for (const id of TABLE_IDS) {
-    const re = new RegExp(`<<<TABLE:${id}>>>([\\s\\S]*?)<<<ENDTABLE>>>`)
+    // FIX (SOW lifecycle independent pass 13, B1): a table ends at its ENDTABLE or, when the model forgot it, at the next
+    // marker. One that runs to the very end of the output may be cut off mid-row, so it is not used (the caller falls back
+    // to the deterministic table for it) rather than trusting a half-written last row.
+    const re = new RegExp(`<<<TABLE:${id}>>>([\\s\\S]*?)(?:<<<ENDTABLE>>>|(?=<<<TABLE:|<<<SECTION:))`)
     const match = raw.match(re)
     if (!match) continue
 

@@ -128,7 +128,15 @@ export function sanitizeSectionList(incoming: unknown, stored: any[], metadata?:
   const previous = new Map((stored || []).map((s: any) => [s.id, s]))
 
   return SOW_SECTION_DEFS.map(def => {
-    const from = submitted.get(def.id) ?? previous.get(def.id) ?? {}
+    const sub  = submitted.get(def.id) as any
+    const prev = (previous.get(def.id) ?? {}) as any
+    // FIX (SOW lifecycle independent pass 13, B2): the submitted section REPLACED the stored one wholesale, so a section
+    // sent without a `content` / `visible` / `table` field (a partial object from an API caller) was blanked, re-shown or
+    // emptied: { id: 'overview' } wiped the text and un-hid a hidden section. A field that is not supplied (or is the wrong
+    // type) now keeps its stored value; only a field that is actually supplied replaces it.
+    const rawContent = typeof sub?.content === 'string' ? sub.content : typeof prev.content === 'string' ? prev.content : ''
+    const rawVisible = typeof sub?.visible === 'boolean' ? sub.visible : typeof prev.visible === 'boolean' ? prev.visible : undefined
+    const rawTable   = Array.isArray(sub?.table) ? sub.table : prev.table
     // FIX (SOW lifecycle independent pass 2, B7): a section that exists in neither the submitted list nor the
     // stored one (an older SOW that predates payment_schedule) defaulted to visible for EVERY section. For
     // payment_schedule that contradicts the rule hydrateSections/generate use (visible only for a milestone
@@ -137,15 +145,14 @@ export function sanitizeSectionList(incoming: unknown, stored: any[], metadata?:
     const defaultVisible = def.id === 'payment_schedule' ? metadata?.paymentStructure === 'milestones' : true
     const visible = REQUIRED_SECTION_IDS.includes(def.id)
       ? true
-      : typeof from.visible === 'boolean' ? from.visible : defaultVisible
+      : rawVisible !== undefined ? rawVisible : defaultVisible
     return {
       id:      def.id,
       title:   sectionTitle(def.id, metadata?.language),
       order:   def.order,
-      content: sanitizeRichText(truncateText(String(from.content ?? ''), MAX_SECTION_CONTENT_LENGTH)),
+      content: sanitizeRichText(truncateText(rawContent, MAX_SECTION_CONTENT_LENGTH)),
       visible,
-      ...(isTableSection(def.id) ? { table: sanitizeTableRows(def.id, from.table) } : {}),
+      ...(isTableSection(def.id) ? { table: sanitizeTableRows(def.id, rawTable) } : {}),
     }
   })
 }
-
