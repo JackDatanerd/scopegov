@@ -21,9 +21,12 @@
 export type CategoryPattern = string | { eventType: string; entityType: string }
 export interface AuditCategory { id: string; label: string; patterns: CategoryPattern[] }
 
+// FIX (CO independent pass 9, CO-1): 'co_attachment.added/removed' and 'sow_attachment.added/removed' are their own
+// event-type prefixes, so 'co.%' / 'sow.%' never matched them (the '.' is literal) and no category did - filtering to
+// "Change orders" or "Statements of work" hid who attached or removed evidence files.
 export const AUDIT_CATEGORIES: AuditCategory[] = [
-  { id: 'sow',        label: 'Statements of work',   patterns: ['sow.%', { eventType: 'reminder.%', entityType: 'sow' }] },
-  { id: 'co',         label: 'Change orders',        patterns: ['co.%', { eventType: 'reminder.%', entityType: 'change_order' }] },
+  { id: 'sow',        label: 'Statements of work',   patterns: ['sow.%', 'sow_attachment.%', { eventType: 'reminder.%', entityType: 'sow' }] },
+  { id: 'co',         label: 'Change orders',        patterns: ['co.%', 'co_attachment.%', { eventType: 'reminder.%', entityType: 'change_order' }] },
   { id: 'guardian',   label: 'Scope flags & checks', patterns: ['flag.%', 'flag_comment.%', 'flag_attachment.%', 'check.%', 'exception.%'] },
   { id: 'invoices',   label: 'Invoices & payments',  patterns: ['invoice.%', 'payment.%', { eventType: 'reminder.%', entityType: 'invoice' }] },
   { id: 'projects',   label: 'Projects',             patterns: ['project.%', 'project_member.%', 'project_message.%', 'retainer.%'] },

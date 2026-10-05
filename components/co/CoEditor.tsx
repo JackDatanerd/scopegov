@@ -213,6 +213,17 @@ export default function CoEditor({ projId, coId }: Props) {
   // instead of racing a second POST that would create a duplicate change order.
   const createInFlight = useRef<Promise<string> | null>(null)
   const snapshot = JSON.stringify([title, note, lineItems, taxRate, taxInclusive, isCredit, isRetainerRenewal, renewalTermMonths, timelineImpactDays, scopeImpactNote])
+  // FIX (CO independent pass 9, CO-2): the latest on-screen state, readable from inside an async save. lastSaved only
+  // advances when a PATCH RESOLVES, so an edit that is reverted while a save is in flight compared equal to the old
+  // lastSaved, scheduled nothing, and the in-flight PATCH then left the server holding the reverted-away text under a
+  // "Saved" label. After every save we now re-check the screen against what was just written and, if they differ,
+  // bump saveTick so the autosave effect runs again.
+  const snapshotRef = useRef(snapshot)
+  snapshotRef.current = snapshot
+  const [saveTick, setSaveTick] = useState(0)
+  function reconcileAfterSave(saved: string) {
+    if (snapshotRef.current !== saved) setSaveTick(t => t + 1)
+  }
   useEffect(() => {
     function handleBeforeUnload(e: BeforeUnloadEvent) {
       if (pendingSave.current) { e.preventDefault(); e.returnValue = '' }
@@ -287,7 +298,7 @@ export default function CoEditor({ projId, coId }: Props) {
       }
     }, 1500)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [snapshot, pendingApproval, status, loading, loadFailed, canEdit])
+  }, [snapshot, saveTick, pendingApproval, status, loading, loadFailed, canEdit])
 
   // FIX (CO send "not found" on a brand-new CO): doSave() used to always
   // call router.replace() to the new CO's own URL immediately after
@@ -339,6 +350,8 @@ export default function CoEditor({ projId, coId }: Props) {
         })
         if (!res.ok) { const j = await res.json().catch(() => ({} as any)); throw new Error(j.error || 'Save failed') }
         lastSaved.current = snapshot
+        // (handleSend passes navigate=false and is about to leave 'draft' - re-arming an autosave then would 409.)
+        if (navigate) reconcileAfterSave(snapshot)
         return savedCoId.current
       } else {
         const create = (async () => {
@@ -349,12 +362,18 @@ export default function CoEditor({ projId, coId }: Props) {
           if (!res.ok) throw new Error(json.error || 'Save failed')
           savedCoId.current = json.coId
           lastSaved.current = snapshot
+          if (navigate) reconcileAfterSave(snapshot)
           return json.coId as string
         })()
         createInFlight.current = create
         try { await create } finally { createInFlight.current = null }
         pendingSave.current = false
         if (navigate) router.replace(`/projects/${projId}/co/${savedCoId.current}`)
+        // FIX (CO independent pass 9, CO-3): handleSend creates the CO with navigate=false. When the /send that follows
+        // is refused (no signed SOW, live sibling version, approval block), the row exists but the address bar still
+        // said /co/new - a reload or re-entry started blank and the user ended up with duplicate drafts. Point the URL
+        // at the real CO WITHOUT remounting, so the error message on screen survives.
+        else window.history.replaceState(window.history.state, '', `/projects/${projId}/co/${savedCoId.current}`)
         return savedCoId.current
       }
     } catch (err: unknown) {
