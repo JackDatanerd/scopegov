@@ -6,7 +6,7 @@
 
 import { sanitizeRichText, sanitizePlainText, decodeHtmlEntities, truncateText } from '@/lib/utils/sanitize'
 import { isTableSection, SOW_TABLE_SCHEMAS, type SowTableSectionId } from '@/lib/sow/table-schema'
-import { SOW_SECTION_DEFS, sectionTitle } from '@/lib/ai/sow-content'
+import { SOW_SECTION_DEFS, sectionTitle, normalizeEnumCell } from '@/lib/ai/sow-content'
 
 // FIX (section-9 audit): PATCH /api/sow/[id] sanitized section content and
 // table cells against XSS (see lib/utils/sanitize.ts) but never capped
@@ -34,8 +34,16 @@ export function sanitizeTableRows(sectionId: string, rows: unknown): Array<Recor
   const schema = SOW_TABLE_SCHEMAS[sectionId as SowTableSectionId]
   return rows.slice(0, MAX_TABLE_ROWS).map((row: any) => {
     const clean: Record<string, string> = {}
-    for (const col of schema.columns)
-      clean[col.key] = sanitizePlainText(truncateText(String(row?.[col.key] ?? ''), MAX_TABLE_CELL_LENGTH))
+    for (const col of schema.columns) {
+      const value = sanitizePlainText(truncateText(String(row?.[col.key] ?? ''), MAX_TABLE_CELL_LENGTH))
+      // FIX (SOW lifecycle independent pass 12, B7): a select column (Owner, the roles tick/dash cells) accepted any
+      // text through the API, and the PDF printed it ("Owner: Bogus"). It is now one of the column's options: an
+      // empty cell becomes the option the editor displays for it (the last one), anything else is mapped the same way
+      // the AI parser maps a model's answer.
+      clean[col.key] = col.options
+        ? (value ? normalizeEnumCell(value, col.options) : col.options[col.options.length - 1])
+        : value
+    }
     return clean
   })
 }

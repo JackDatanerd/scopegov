@@ -38,7 +38,7 @@ function textOf(html: unknown): string {
 // plain integer with an optional decimal. A regular space only groups thousands when the whole number
 // is space-grouped ("12 500,00"), so "12,500 100% upfront" can never merge.
 const AMOUNT_TOKEN_RE =
-  /\d{1,3}(?:[,.'\u2019\u00a0\u202f]\d{3})+(?:[.,]\d{1,2})?(?!\d)|\d{1,3}(?: \d{3})+(?:[.,]\d{1,2})?(?!\d)|\d+(?:[.,]\d+)?/g
+  /\d{1,3}(?:[,.'\u2019\u00a0\u202f]\d{3})+(?:[.,]\d{1,2})?(?!\d)|\d{1,3}(?: \d{3})+(?:[.,]\d{1,2})?(?!\d)|\d+(?:[.,]\d+)?|(?<![\w.,])\.\d{1,2}(?!\d)/g
 
 export function amountsMentioned(text: string): number[] {
   const tokens = text.match(AMOUNT_TOKEN_RE) || []

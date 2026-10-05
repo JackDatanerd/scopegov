@@ -159,6 +159,21 @@ export async function POST(request: NextRequest) {
       }, { status: 409 })
     }
 
+    // FIX (SOW lifecycle independent pass 12, B6): the pending-approval refusal for an existing draft only ran AFTER
+    // the model call below, so a regenerate that was always going to be refused still spent the rate-limit slot
+    // and a full AI call (the UI hides the button, but the API is reachable). Pre-flight it here, before either; the
+    // authoritative check against the freshly-read draft further down stays, since the draft can change meanwhile.
+    const { data: draftProbe } = await (service as any)
+      .from('sow_documents').select('id')
+      .eq('project_id', projectId).eq('status', 'draft')
+      .order('version', { ascending: false }).limit(1).maybeSingle()
+    if (draftProbe && await getPendingApprovalForDocument(service, 'sow', draftProbe.id)) {
+      return NextResponse.json(
+        { error: 'This SOW has a pending approval request — cancel it before regenerating.' },
+        { status: 409 }
+      )
+    }
+
     // FIX (audit round 3): no rate limiting existed on this route.
     const limited = await checkAiRateLimit(service, session.id, 'sow.generate')
     if (!limited.allowed) return NextResponse.json({ error: limited.message }, { status: 429 })

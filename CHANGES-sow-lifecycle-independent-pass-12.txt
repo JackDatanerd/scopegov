@@ -1,0 +1,46 @@
+SOW lifecycle — independent pass 12 (fixes)
+
+B1 (MED-HIGH) PDF tables had no gutter between columns.
+   lib/pdf/sow-table.tsx: flex columns butted together, so the Payment Schedule printed "5000On signing" with a
+   header of "AMOUNTTRIGGER / DUE", and long Deliverables text ran into the Acceptance Criteria column. Every column
+   but the last now carries a 10pt right gutter. Affects the draft preview, the portal download and the PDF frozen at
+   signing. SOWs ALREADY SIGNED keep their frozen PDF; only newly rendered/frozen PDFs get the fix.
+
+B2 (MED) A table row could split across a page break (first lines on one page, the rest — or just the owner/date
+   cells — on the next). lib/pdf/sow-table.tsx rows and the signed milestone block rows are now wrap={false}.
+
+B3 (MED) A numbered section heading could be the last thing on a page with its table/paragraph on the next.
+   minPresenceAhead is not honoured against a following wrappable sibling in react-pdf (verified by a render sweep:
+   8 stranded headings in 46 test documents before, 0 after), and table sections were never kept together.
+   - lib/pdf/renderer.tsx: SectionShell. Short sections (<=12 table rows / short prose) are one unsplittable block.
+     Long sections pass the heading to their content as `lead`.
+   - lib/pdf/rich-text.tsx: RichText `lead` puts the heading inside the unsplittable first paragraph / list item /
+     quote / code block (falls back to a heading-only group when that block exceeds 3000 chars).
+   - lib/pdf/sow-table.tsx: SowTable `lead` groups heading + header row + first row; border drawn as two joined pieces.
+   - Same for the signed milestone block when it has more than 12 rows.
+   Known limit: a single unbroken paragraph over ~3000 chars still can't be grouped with its heading.
+
+B4 (LOW) parseTableAmount read "$.50" / ".5" from the first digit (50 instead of 0.50). A bare ".NN" is now a token.
+   lib/sow/table-schema.ts and the matching AMOUNT_TOKEN_RE in lib/sow/validate-send.ts.
+
+B5 (LOW) AI table parser: lib/ai/sow-content.ts parseTableSections
+   - dropped EVERY row starting with "(" ("(Optional) Brand book | ..." vanished silently). Now only the prompt's
+     "(columns: ...)" echo and a line wholly wrapped in one pair of parentheses are skipped.
+   - cells beyond the column count were silently discarded; they are folded into the last column.
+   - normalizeEnumCell exported (used by B7).
+
+B6 (LOW) api/sow/generate refused a regenerate over a draft with a pending approval only AFTER the model call, so a
+   doomed request still spent the AI call and the rate-limit slot. Pre-flight check now runs before both; the
+   authoritative check on the freshly read draft stays.
+
+B7 (LOW)
+   - lib/sow/sections.ts sanitizeTableRows: select columns (Owner, roles tick/dash) accepted any text through the
+     API. Now mapped to one of the column's options (blank -> the option the editor displays, i.e. the last).
+   - lib/utils/sanitize.ts (shared) protectPlaceholders: an UNTERMINATED "<word" at the end of a string
+     ("SLA<Premium", "x<y") was stripped as a tag along with everything after it. Kept as text, same narrow
+     charset as the existing placeholder rule (no '=', quotes or '/'), real HTML element names still stripped.
+     Unchanged by design: "a<b" (b is a real element) and anything attribute-like ("<img src=x onerror=1") are stripped.
+
+Not changed: nothing deferred. No migration. No new env vars.
+Tests: tests/sow-lifecycle-independent-pass-12.test.ts (17 tests; 10 fail on the previous code).
+Full suite: 278 files / 2790 tests pass; tsc clean.

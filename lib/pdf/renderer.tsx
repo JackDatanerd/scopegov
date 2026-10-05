@@ -285,15 +285,36 @@ function fitsOnOnePage(html: string | null | undefined): boolean {
   return chars <= KEEP_TOGETHER_MAX_CHARS && blocks <= KEEP_TOGETHER_MAX_BLOCKS
 }
 
+// FIX (SOW lifecycle independent pass 12, B3): a numbered heading could be the last thing on a page with its table or
+// paragraph starting on the next one. minPresenceAhead does not prevent that (it is not honoured against a following
+// wrappable sibling — verified by sweeping section lengths), and a table section was never kept together at all.
+// Short sections are one unsplittable block (heading + content). Long ones, which must be free to flow across pages,
+// hand the heading to the content as `lead`, which puts it inside the unsplittable first paragraph / list item / row.
+const TABLE_KEEP_TOGETHER_MAX_ROWS = 12
+function SectionShell({ s, keepTogether, title, content }: { s: any; keepTogether: boolean; title: React.ReactNode; content: (lead?: React.ReactNode) => React.ReactNode }) {
+  const heading = <Text style={s.secTitle}>{title}</Text>
+  if (keepTogether) {
+    return (
+      <View style={s.section} wrap={false}>
+        {heading}
+        {content()}
+      </View>
+    )
+  }
+  return <View style={s.section}>{content(heading)}</View>
+}
+
 function SowSection({ sec, num, s, language }: { sec: SowPdfData['sections'][number]; num: number; s: any; language?: string }) {
-  const keepTogether = !isTableSection(sec.id) && fitsOnOnePage(sec.content)
+  const keepTogether = isTableSection(sec.id) ? (sec.table || []).length <= TABLE_KEEP_TOGETHER_MAX_ROWS : fitsOnOnePage(sec.content)
   return (
-    <View style={s.section} wrap={keepTogether ? false : undefined}>
-      <Text style={s.secTitle} minPresenceAhead={48}><Text style={s.secNum}>{num}. </Text>{sec.title}</Text>
-      {isTableSection(sec.id)
-        ? <SowTable sectionId={sec.id} rows={sec.table || []} language={language} />
-        : <RichText html={sec.content} style={s.body} />}
-    </View>
+    <SectionShell
+      s={s}
+      keepTogether={keepTogether}
+      title={<><Text style={s.secNum}>{num}. </Text>{sec.title}</>}
+      content={lead => isTableSection(sec.id)
+        ? <SowTable sectionId={sec.id} rows={sec.table || []} language={language} lead={lead} />
+        : <RichText html={sec.content} style={s.body} lead={lead} />}
+    />
   )
 }
 
@@ -485,28 +506,39 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
             in the loop above instead, so the client always sees exactly
             one schedule at every stage. */}
         {hasMilestoneBlock && (
-          <View style={s.section} wrap={data.paymentSchedule!.length <= 12 ? false : undefined}>
-            <Text style={s.secTitle} minPresenceAhead={48}>
-              <Text style={s.secNum}>{scheduleIndex + 1}. </Text>{paymentScheduleTitle}
-            </Text>
-            <View style={s.schedHdr}>
-              <Text style={[s.th, { flex: 1 }]}>{milestoneBlockLabels(data.language).milestone}</Text>
-              <Text style={[s.th, { width: 90, textAlign: 'right' }]}>{milestoneBlockLabels(data.language).amount}</Text>
-              <Text style={[s.th, { width: 90, textAlign: 'right' }]}>{milestoneBlockLabels(data.language).due}</Text>
-            </View>
-            {data.paymentSchedule!.map((m, i) => (
-              <View key={i} style={s.schedRow}>
-                <View style={{ flex: 1 }}>
-                  <Text style={s.td}>{m.title}</Text>
-                  <Text style={s.tdSub}>{m.trigger}{m.percentage ? ` · ${m.percentage}%` : ''}</Text>
+          <SectionShell
+            s={s}
+            keepTogether={data.paymentSchedule!.length <= TABLE_KEEP_TOGETHER_MAX_ROWS}
+            title={<><Text style={s.secNum}>{scheduleIndex + 1}. </Text>{paymentScheduleTitle}</>}
+            content={lead => {
+              const hdr = (
+                <View style={s.schedHdr}>
+                  <Text style={[s.th, { flex: 1 }]}>{milestoneBlockLabels(data.language).milestone}</Text>
+                  <Text style={[s.th, { width: 90, textAlign: 'right' }]}>{milestoneBlockLabels(data.language).amount}</Text>
+                  <Text style={[s.th, { width: 90, textAlign: 'right' }]}>{milestoneBlockLabels(data.language).due}</Text>
                 </View>
-                <Text style={[s.td, s.mono, { width: 90, textAlign: 'right' }]}>{data.currency} {fmtMoney(m.amount)}</Text>
-                <Text style={[s.td, { width: 90, textAlign: 'right', color: '#909090', fontSize: 9 }]}>
-                  {m.dueDate ? fmtDate(m.dueDate, data.timeZone) : '—'}
-                </Text>
-              </View>
-            ))}
-          </View>
+              )
+              const rowView = (m: NonNullable<SowPdfData['paymentSchedule']>[number], i: number) => (
+                <View key={i} wrap={false} style={s.schedRow}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={s.td}>{m.title}</Text>
+                    <Text style={s.tdSub}>{m.trigger}{m.percentage ? ` · ${m.percentage}%` : ''}</Text>
+                  </View>
+                  <Text style={[s.td, s.mono, { width: 90, textAlign: 'right' }]}>{data.currency} {fmtMoney(m.amount)}</Text>
+                  <Text style={[s.td, { width: 90, textAlign: 'right', color: '#909090', fontSize: 9 }]}>
+                    {m.dueDate ? fmtDate(m.dueDate, data.timeZone) : '—'}
+                  </Text>
+                </View>
+              )
+              const all = data.paymentSchedule!
+              return lead
+                ? <>
+                    <View wrap={false}>{lead}{hdr}{rowView(all[0], 0)}</View>
+                    {all.slice(1).map((m, i) => rowView(m, i + 1))}
+                  </>
+                : <>{hdr}{all.map(rowView)}</>
+            }}
+          />
         )}
 
         {hasMilestoneBlock && sections.slice(scheduleIndex).map((sec, i) => (

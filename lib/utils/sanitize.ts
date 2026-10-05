@@ -108,11 +108,21 @@ const HTML_TAG_NAMES = new Set((
  * be a real HTML element name. Anything that could carry an attribute or close a tag is still stripped.
  */
 function protectPlaceholders(text: string): string {
-  return text.replace(/<([A-Za-z][A-Za-z0-9 _.@-]{0,59})>/g, (whole, inner: string) => {
-    const first = inner.split(/[ _.@-]/)[0].toLowerCase()
-    if (HTML_TAG_NAMES.has(first)) return whole
-    return `&lt;${inner}&gt;`
-  })
+  return text
+    .replace(/<([A-Za-z][A-Za-z0-9 _.@-]{0,59})>/g, (whole, inner: string) => {
+      const first = inner.split(/[ _.@-]/)[0].toLowerCase()
+      if (HTML_TAG_NAMES.has(first)) return whole
+      return `&lt;${inner}&gt;`
+    })
+    // FIX (SOW lifecycle independent pass 12, B7): an UNTERMINATED `<word` at the very end ("SLA<Premium", "x<y") was read
+    // by sanitize-html as the start of a tag and deleted along with everything after it, so a table cell silently lost
+    // text. Same narrow charset as above (no `=`, quotes or `/`, so no attribute can ride along) and the same
+    // real-element-name exclusion; it only applies when the run reaches the end of the string.
+    .replace(/<([A-Za-z][A-Za-z0-9 _.@-]{0,59})$/, (whole, inner: string) => {
+      const first = inner.split(/[ _.@-]/)[0].toLowerCase()
+      if (HTML_TAG_NAMES.has(first)) return whole
+      return `&lt;${inner}`
+    })
 }
 
 /**

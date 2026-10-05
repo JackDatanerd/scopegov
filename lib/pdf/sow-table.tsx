@@ -19,7 +19,13 @@ import { PDF_FONT } from '@/lib/pdf/fonts'
 // Swahili SOW rendered "Deliverable / Acceptance Criteria / Owner /
 // Target Date" above translated rows. See columnLabel in
 // lib/sow/table-schema.ts.
-export function SowTable({ sectionId, rows, language }: { sectionId: SowTableSectionId; rows: SowTableRow[]; language?: string }) {
+// FIX (SOW lifecycle independent pass 12, B1/B2): flex columns had no gutter, so a right-aligned amount butted
+// against the next column's text ("5000On signing", header "AMOUNTTRIGGER / DUE") and long cell text ran straight
+// into the next column. Every column but the last now carries a right gutter. Each row is also unsplittable: a row
+// that straddled a page break printed its first lines on one page and the rest (or just the owner/date cells) on the next.
+export const COL_GUTTER = 10
+
+export function SowTable({ sectionId, rows, language, lead }: { sectionId: SowTableSectionId; rows: SowTableRow[]; language?: string; lead?: React.ReactNode }) {
   const schema = SOW_TABLE_SCHEMAS[sectionId]
 
   // FIX (bug — numbered section heading printed over completely blank
@@ -36,9 +42,12 @@ export function SowTable({ sectionId, rows, language }: { sectionId: SowTableSec
   // defined" fallback text.
   if (!rows || rows.length === 0) {
     return (
-      <View style={{ border: '1 dashed #D8D4C8', borderRadius: 4, padding: '10 12' }}>
-        <Text style={{ fontSize: 9, color: '#B0B0B0', fontFamily: PDF_FONT.italic }}>To be defined</Text>
-      </View>
+      <>
+        {lead}
+        <View style={{ border: '1 dashed #D8D4C8', borderRadius: 4, padding: '10 12' }}>
+          <Text style={{ fontSize: 9, color: '#B0B0B0', fontFamily: PDF_FONT.italic }}>To be defined</Text>
+        </View>
+      </>
     )
   }
 
@@ -54,31 +63,52 @@ export function SowTable({ sectionId, rows, language }: { sectionId: SowTableSec
     td:     { fontSize: 9, color: '#1A1A1A', lineHeight: 1.4 },
   }
 
-  return (
-    // FIX (re-audit): wrap={false} forced this whole table to stay on one
-    // page — the outer section wrapper in renderer.tsx already allows
-    // table sections to split across pages, but this inner box overrode
-    // that by refusing to split itself. A table taller than one full page
-    // (a large enterprise SOW with many deliverables/timeline phases)
-    // would overflow off the bottom rather than paginate. Let it wrap like
-    // everything else; react-pdf splits at row boundaries.
-    <View style={s.box}>
-      <View style={s.hdrRow}>
-        {schema.columns.map(col => (
-          <Text key={col.key} style={[s.th, { flex: flexOf(col.width), textAlign: col.align || 'left' }]}>
-            {columnLabel(col, language)}
-          </Text>
-        ))}
-      </View>
-      {rows.map((row, i) => (
-        <View key={i} style={[s.row, i === rows.length - 1 ? s.lastRow : {}]}>
-          {schema.columns.map(col => (
-            <Text key={col.key} style={[s.td, { flex: flexOf(col.width), textAlign: col.align || 'left' }]}>
-              {row[col.key] || '—'}
-            </Text>
-          ))}
-        </View>
+  const lastCol = schema.columns.length - 1
+  const header = (
+    <View style={s.hdrRow}>
+      {schema.columns.map((col, ci) => (
+        <Text key={col.key} style={[s.th, { flex: flexOf(col.width), textAlign: col.align || 'left', paddingRight: ci < lastCol ? COL_GUTTER : 0 }]}>
+          {columnLabel(col, language)}
+        </Text>
       ))}
+    </View>
+  )
+  const renderRow = (row: SowTableRow, i: number) => (
+    <View key={i} wrap={false} style={[s.row, i === rows.length - 1 ? s.lastRow : {}]}>
+      {schema.columns.map((col, ci) => (
+        <Text key={col.key} style={[s.td, { flex: flexOf(col.width), textAlign: col.align || 'left', paddingRight: ci < lastCol ? COL_GUTTER : 0 }]}>
+          {row[col.key] || '—'}
+        </Text>
+      ))}
+    </View>
+  )
+
+  // FIX (SOW lifecycle independent pass 12, B3): a long table is allowed to flow across pages, so its section heading
+  // goes into the unsplittable group with the header row and the first data row (the box border is drawn as two
+  // joined pieces for that). Short tables are kept whole by the caller and never take this branch.
+  if (lead) {
+    const line = '1 solid #E5E1D8'
+    return (
+      <View>
+        <View wrap={false}>
+          {lead}
+          <View style={{ borderTop: line, borderLeft: line, borderRight: line, borderTopLeftRadius: 4, borderTopRightRadius: 4, overflow: 'hidden' }}>
+            {header}
+            {renderRow(rows[0], 0)}
+          </View>
+        </View>
+        <View style={{ borderLeft: line, borderRight: line, borderBottom: line, borderBottomLeftRadius: 4, borderBottomRightRadius: 4, overflow: 'hidden' }}>
+          {rows.slice(1).map((row, i) => renderRow(row, i + 1))}
+        </View>
+      </View>
+    )
+  }
+
+  return (
+    // FIX (re-audit): wrap={false} forced this whole table to stay on one page; the box may split between rows.
+    <View style={s.box}>
+      {header}
+      {rows.map(renderRow)}
     </View>
   )
 }

@@ -539,7 +539,7 @@ export function parseDelimitedSections(raw: string): Record<string, string> {
 const AFFIRMATIVE = ['✓', '✔', 'x', 'yes', 'y', 'true', '1', 'si', 'sí', 'oui', 'ja', 'ndiyo', 'sim']
 const NEGATIVE    = ['—', '-', '–', 'no', 'n', 'false', '0', 'non', 'nein', 'hapana', 'nao', 'não', 'n/a', 'na', '']
 
-function normalizeEnumCell(value: string, options: string[]): string {
+export function normalizeEnumCell(value: string, options: string[]): string {
   const v = value.trim().toLowerCase()
 
   // Tick/dash columns (roles table): decide by meaning, not first letter.
@@ -577,8 +577,12 @@ export function parseTableSections(raw: string): Record<SowTableSectionId, SowTa
 
     const schema = SOW_TABLE_SCHEMAS[id]
     const lines = match[1].split('\n').map(l => l.trim()).filter(Boolean)
-      // Skip a stray column-header line if the model echoed it back despite instructions
-      .filter(l => !l.startsWith('('))
+      // Skip a stray column-header / format echo if the model repeated it despite instructions.
+      // FIX (SOW lifecycle independent pass 12, B5): this dropped EVERY line starting with "(" — so a real
+      // deliverable such as "(Optional) Brand book | Signed off | Provider | Week 4" vanished from the contract
+      // silently (the table was not empty, so no fallback fired). Only a line that is clearly the prompt's own
+      // "(columns: ...)" echo, or one wholly wrapped in a single pair of parentheses, is skipped.
+      .filter(l => !(/^\(\s*columns?\b/i.test(l) || /^\([^()]*\)$/.test(l)))
 
     const rows: SowTableRow[] = []
     for (const line of lines) {
@@ -594,6 +598,12 @@ export function parseTableSections(raw: string): Record<SowTableSectionId, SowTa
         const missing = schema.columns.slice(cells.length)
         const onlyTrailingFreeText = cells.length >= 2 && missing.every(col => !col.options)
         if (!onlyTrailingFreeText) continue
+      }
+      // FIX (SOW lifecycle independent pass 12, B5): cells beyond the column count (a literal "|" inside the last
+      // free-text cell) were silently discarded. They are folded back into the last column instead of lost.
+      if (cells.length > schema.columns.length) {
+        const keep = schema.columns.length - 1
+        cells.splice(keep, cells.length - keep, cells.slice(keep).filter(Boolean).join(' | '))
       }
       const row: SowTableRow = {}
       schema.columns.forEach((col, i) => {

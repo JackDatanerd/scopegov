@@ -194,7 +194,10 @@ export function parseTableAmount(input: unknown): number | null {
   // value and be signed. A space (or NBSP / narrow NBSP / apostrophe) now groups digits only the way thousands are
   // written: a 1-3 digit lead followed by exact 3-digit groups ("1 500", "12 345 678,90"). Anything else is a
   // second number, which the check below reports as unreadable. Same shape validate-send's AMOUNT_TOKEN_RE uses.
-  const tokens = raw.match(/\d{1,3}(?:[ \u00a0\u202f'\u2019]\d{3})+(?:[.,]\d{1,2})?(?!\d)|\d[\d.,]*/g)
+  // FIX (SOW lifecycle independent pass 12, B4): a figure written without a leading zero ("$.50", ".5") was read from its
+  // first digit, so "$.50" parsed as 50 — a hundredfold overstatement. A bare ".NN" (one or two digits, not glued to a
+  // preceding digit/letter/separator) is now its own token.
+  const tokens = raw.match(/\d{1,3}(?:[ \u00a0\u202f'\u2019]\d{3})+(?:[.,]\d{1,2})?(?!\d)|\d[\d.,]*|(?<![\w.,])\.\d{1,2}(?!\d)/g)
   if (!tokens) return null
   const cleanedTokens = tokens.map(t => t.replace(/[\s'\u2019\u00a0\u202f]+$/g, ''))
   if (cleanedTokens.length !== 1) return null

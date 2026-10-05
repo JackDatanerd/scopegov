@@ -280,14 +280,16 @@ function listItemInline(html: string): string {
     .replace(/^(?:\s*<br\s*\/?>)+|(?:<br\s*\/?>\s*)+$/gi, '')
 }
 
-function ListBlock({ tag, inner, style, depth }: { tag: string; inner: string; style: any; depth: number }) {
+function ListBlock({ tag, inner, style, depth, lead }: { tag: string; inner: string; style: any; depth: number; lead?: React.ReactNode }) {
   const items = splitListItems(inner)
   return (
     <View style={{ marginBottom: depth === 0 ? 6 : 0, marginLeft: depth === 0 ? 0 : 14 }}>
       {items.map((item, j) => {
         const { text, nested } = splitListItemContent(item)
+        // `lead` (a section heading) rides in the first item's unsplittable block so it can never be stranded alone.
         return (
-          <View key={j} style={{ marginBottom: 2 }}>
+          <View key={j} style={{ marginBottom: 2 }} wrap={lead && j === 0 ? false : undefined}>
+            {lead && j === 0 ? lead : null}
             <View style={{ flexDirection: 'row' }}>
               <Text style={[style, { width: 16 }]}>
                 {tag === 'ol' ? `${j + 1}.` : NESTED_BULLETS[Math.min(depth, NESTED_BULLETS.length - 1)]}
@@ -364,8 +366,15 @@ export function escapeStrayAngleBrackets(html: string): string {
 }
 
 /** Renders sanitized section HTML as react-pdf blocks, preserving bold/italic/underline/strike and rendering <ol> with real numbers instead of collapsing to bullets. */
-export function RichText({ html: rawHtml, style }: { html: string | null | undefined; style: any }) {
-  if (!rawHtml || !rawHtml.trim()) return null
+// FIX (SOW lifecycle independent pass 12, B3): `lead` is the section heading. It is placed INSIDE the unsplittable
+// block of the first paragraph / list item / code block / quote, so the heading is never left alone at the foot of a
+// page. (react-pdf's minPresenceAhead does not hold a heading back from a following wrappable sibling — verified
+// by rendering a sweep of section lengths.) A first block too long to be safely unsplittable falls back to a
+// heading-only group, which is the old behaviour.
+const LEAD_GROUP_MAX_CHARS = 3000
+
+export function RichText({ html: rawHtml, style, lead }: { html: string | null | undefined; style: any; lead?: React.ReactNode }) {
+  if (!rawHtml || !rawHtml.trim()) return lead ? <>{lead}</> : null
   const html = escapeStrayAngleBrackets(rawHtml)
   const blocks = splitBlocks(html)
 
@@ -374,8 +383,22 @@ export function RichText({ html: rawHtml, style }: { html: string | null | undef
   // predate that guarantee) — render as a single paragraph rather than
   // silently dropping it.
   if (blocks.length === 0) {
-    return <Text style={[style, { marginBottom: 6 }]}>{renderRuns(collectInlineRuns(html))}</Text>
+    const para = <Text style={[style, { marginBottom: 6 }]}>{renderRuns(collectInlineRuns(html))}</Text>
+    return lead && html.length <= LEAD_GROUP_MAX_CHARS ? <View wrap={false}>{lead}{para}</View> : <>{lead}{para}</>
   }
 
-  return <>{renderBlocks(html, style)}</>
+  const nodes = renderBlocks(html, style)
+  if (!lead) return <>{nodes}</>
+  const k = nodes.findIndex(n => n !== null && n !== undefined)
+  if (k === -1) return <>{lead}</>
+  const first = blocks[k]
+  if (first.tag === 'ul' || first.tag === 'ol') {
+    nodes[k] = <ListBlock key={k} tag={first.tag} inner={first.inner} style={style} depth={0} lead={lead} />
+    return <>{nodes}</>
+  }
+  if (first.inner.length <= LEAD_GROUP_MAX_CHARS) {
+    nodes[k] = <View key={k} wrap={false}>{lead}{nodes[k]}</View>
+    return <>{nodes}</>
+  }
+  return <>{lead}{nodes}</>
 }
