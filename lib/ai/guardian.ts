@@ -11,14 +11,18 @@ import OpenAI from 'openai'
 // build failure at "Collecting page data" for any route importing this
 // file, rather than a runtime error scoped to guardian classification.
 // Lazy singletons, matching the fix already applied in lib/email/templates.ts.
+// FIX (Guardian section 13, pass 14 - B4): both clients used SDK defaults (10-minute timeout, 2 retries), so one hung provider call
+// could hold a guardian route for far longer than the platform allows. Each call is bounded; with one retry the embedding plus the
+// classification stay inside the routes' maxDuration (120s).
+export const AI_CALL_TIMEOUT_MS = 25_000
 let _anthropic: Anthropic | null = null
 function anthropicClient(): Anthropic {
-  if (!_anthropic) _anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+  if (!_anthropic) _anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, timeout: AI_CALL_TIMEOUT_MS, maxRetries: 1 })
   return _anthropic
 }
 let _openai: OpenAI | null = null
 function openaiClient(): OpenAI {
-  if (!_openai) _openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
+  if (!_openai) _openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, timeout: AI_CALL_TIMEOUT_MS, maxRetries: 1 })
   return _openai
 }
 
@@ -481,8 +485,22 @@ export function interpretClassifierOutput(
     matchedAgainst,
     matchedReference: typeof parsed.matchedReference === 'string' && parsed.matchedReference.trim()
       ? truncateText(stripUnstorableText(parsed.matchedReference.trim()), 300) || null : null,
-    reasoning:        typeof parsed.reasoning === 'string' ? truncateText(stripUnstorableText(parsed.reasoning), 1000) : '', // a cut/NUL must not fail the verdict write
+    // FIX (Guardian section 13, pass 14 - B2): a reply with no (or blank) reasoning produced '' - the flag, its team email and a
+    // CO drafted from it then carried an empty description. Fall back to a factual line built from the verdict itself.
+    reasoning:        cleanReasoning(parsed.reasoning) || fallbackReasoning(outcome, against(matchedAgainst), parsed.matchedReference),
   }
+}
+
+function cleanReasoning(v: unknown): string {
+  return typeof v === 'string' ? truncateText(stripUnstorableText(v), 1000).trim() : '' // a cut/NUL must not fail the verdict write
+}
+function against(m: 'sow' | 'amendment' | null): string { return m === 'amendment' ? 'an accepted change order' : 'the signed scope' }
+function fallbackReasoning(outcome: ClassificationResult['outcome'], against: string, ref: unknown): string {
+  const r = typeof ref === 'string' && ref.trim() ? ` ("${truncateText(stripUnstorableText(ref.trim()), 120)}")` : ''
+  if (outcome === 'out_of_scope') return `The request does not match anything in ${against}${r} and looks like new work (no explanation was returned by the classifier).`
+  if (outcome === 'borderline') return `The request may fall outside ${against}${r}; a person should review it (no explanation was returned by the classifier).`
+  if (outcome === 'covered_by_co') return `The request is covered by ${against}${r}.`
+  return `The request matches ${against}${r}.`
 }
 
 // The model occasionally wraps the JSON in prose or fences; stripAndParse only

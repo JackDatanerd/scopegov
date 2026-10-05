@@ -382,3 +382,12 @@ alerts but keeps the heartbeat. Every run is also appended to `cron_run_history`
    surfaced in the Guardian tab via `FlagCollaboration.tsx`. Writing
    requires `APPROVE_FLAGS` or `GRANT_EXCEPTIONS`; reading follows the
    same project-visibility rule as the flag itself.
+
+
+## Guardian inbound size limit
+
+Vercel rejects any request body over 4.5 MB (413 `FUNCTION_PAYLOAD_TOO_LARGE`) before the route runs. Postmark delivers inbound
+attachments base64-encoded inside the JSON body, so a client email whose attachments total more than about 3 MB never reaches
+`/api/guardian/inbound` (Postmark retries, then gives up) and no check is recorded. Manual evidence uploads are capped at 4 MB for
+the same reason (`lib/utils/upload-limits.ts`). To receive larger emails, put a small pre-processor (e.g. the existing Cloudflare
+Worker) in front of the webhook that removes `Attachments[].Content` above the limit and forwards the rest unchanged.

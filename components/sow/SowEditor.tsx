@@ -10,6 +10,7 @@ import Placeholder from '@tiptap/extension-placeholder'
 import { countWords, formatCurrencyExact } from '@/lib/utils/format'
 import { isTableSection, SOW_TABLE_SCHEMAS, blankRow, columnLabel, parseTableAmount, type SowTableRow, type SowTableSectionId } from '@/lib/sow/table-schema'
 import { SOW_SECTION_DEFS, AI_SECTION_IDS } from '@/lib/ai/sow-content'
+import { MAX_UPLOAD_BYTES, MAX_UPLOAD_LABEL } from '@/lib/utils/upload-limits'
 
 interface Section {
   id: string; title: string; content: string; table?: SowTableRow[]; visible: boolean; order: number
@@ -708,7 +709,7 @@ function SowAttachmentsPanel({ sowId, canEdit, isLocked }: { sowId: string; canE
     const file = e.target.files?.[0]
     e.target.value = '' // allow re-selecting the same file after an error
     if (!file) return
-    if (file.size > 10 * 1024 * 1024) { setError('File exceeds 10 MB limit'); return }
+    if (file.size > MAX_UPLOAD_BYTES) { setError(`File exceeds ${MAX_UPLOAD_LABEL} limit`); return }
     setError('')
     setUploading(true)
     try {

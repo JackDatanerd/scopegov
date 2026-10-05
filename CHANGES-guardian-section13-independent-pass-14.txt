@@ -1,0 +1,10 @@
+Guardian / scope governance (section 13) - independent pass 14
+B1  Upload cap 10 MB -> 4 MB (lib/utils/upload-limits.ts) on flag/exception, SOW and CO attachment routes + editors: Vercel's 4.5 MB body limit made 4.5-10 MB uploads always fail. Inbound email size limit documented in README (needs a pre-processor to lift).
+B2  Classifier verdict with no reasoning no longer yields an empty flag description (factual fallback).
+B3  guardian/checks/[id]/retry claims its AI rate slot atomically (claimAiRateSlot).
+B4  maxDuration=120 on guardian check/inbound/retry; Anthropic + OpenAI clients: 25s timeout, 1 retry.
+B5  Email parsing: bare "--" no longer swallows following request text; localized (de/fr/es/it/pt) attributions and Outlook headers cut; plus-tagged project addresses accepted.
+B7  Per-flag/exception caps: 25 attachments, 500 comments.
+B8  A person can retry a failed check on a Complete/Archived project (record only, no flag/email).
+B9  guardian-health repairs flags stranded in converted_to_co with no change_order_id for 15+ min (link to its CO, else reopen).
+Tests: tests/guardian-section13-pass14-fixes.test.ts. Full suite 2890 passed, tsc clean.

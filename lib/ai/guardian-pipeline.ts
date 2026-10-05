@@ -425,6 +425,14 @@ export async function reclassifyCheck(service: any, checkId: string, opts: {
   // than before knowing whether one will happen. Optional so a caller that doesn't meter usage
   // (there is none today, but this stays a library function) isn't forced to supply one.
   recordUsage?: () => Promise<void>
+  /**
+   * FIX (Guardian section 13, pass 14 - B8): a check that failed classification (live path, or before the project was
+   * completed) on a Complete/Archived project was a dead end - the sweep excludes finished projects and Retry answered
+   * 409 "inactive" forever, leaving a failed row with a Retry button that could never work. A PERSON retrying it may now
+   * re-run it on a finished project; like a retroactive check there, it is recorded in the history only (no flag, no email).
+   * Deleted projects and suspended/deleted workspaces stay inactive; the automatic sweep never passes this.
+   */
+  allowFinishedProject?: boolean
 }): Promise<ReclassifyResult> {
   let q = service.from('guardian_checks')
     .select('id, project_id, workspace_id, content, is_duplicate, outcome, classification_failed, classification_attempts, source, source_metadata, embedding')
@@ -451,7 +459,8 @@ export async function reclassifyCheck(service: any, checkId: string, opts: {
   // Same gates as live submission: nothing is classified, flagged or emailed for a deleted project,
   // a Complete/Archived one, or a suspended/deleted workspace. Checked BEFORE the claim so no
   // attempt is burned and no AI usage recorded.
-  if (project.deleted_at || !project.workspaces || project.workspaces.deleted_at || ['Complete', 'Archived'].includes(project.status))
+  const finished = ['Complete', 'Archived'].includes(project.status)
+  if (project.deleted_at || !project.workspaces || project.workspaces.deleted_at || (finished && !opts.allowFinishedProject))
     return { status: 'skipped', reason: 'inactive' }
   if (opts.skipManualPause && project.status === 'Stalled' && project.stall_reason === 'manual')
     return { status: 'skipped', reason: 'paused' }
@@ -532,6 +541,7 @@ export async function reclassifyCheck(service: any, checkId: string, opts: {
     emailPath: from ? `Email from ${from}` : opts.emailPath,
     flagMeta: from ? { source: 'email', from } : { source: check.source },
     excludeUserId: opts.excludeUserId,
+    recordOnly: finished,
   })
   if (res.status === 'failed') return res
   return { ...res, project: { id: project.id, name: project.name, workspace_id: project.workspace_id } }

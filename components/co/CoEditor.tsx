@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import { formatCoAmount } from '@/lib/documents/co-money'
 import { nanoid } from 'nanoid'
 import { roundCurrency } from '@/lib/utils/format'
+import { MAX_UPLOAD_BYTES, MAX_UPLOAD_LABEL } from '@/lib/utils/upload-limits'
 
 // `kind: 'adjustment'` marks a system-written negotiation line ("Negotiated discount…") from an accepted
 // counter-offer: it may be negative, and its quantity is fixed at 1.
@@ -840,7 +841,7 @@ function CoAttachmentsPanel({ coId, canEdit }: { coId: string | null; canEdit: b
     const file = e.target.files?.[0]
     e.target.value = ''
     if (!file || !coId) return
-    if (file.size > 10 * 1024 * 1024) { setError('File exceeds 10 MB limit'); return }
+    if (file.size > MAX_UPLOAD_BYTES) { setError(`File exceeds ${MAX_UPLOAD_LABEL} limit`); return }
     setError(''); setUploading(true)
     try {
       const formData = new FormData()

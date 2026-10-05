@@ -8,6 +8,8 @@ import { notifyUsers } from '@/lib/utils/notify'
 import { stripUnstorableText, truncateText } from '@/lib/utils/sanitize'
 import { getMembersWithPermission } from '@/lib/utils/permissions-query'
 
+const MAX_COMMENTS_PER_ENTITY = 500
+
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ entityType: string; entityId: string }> }
@@ -80,6 +82,13 @@ export async function POST(
     if (!entity) return NextResponse.json({ error: 'Not found' }, { status: 404 })
     if (!(await canReadProject(service, session, entity.projectId)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+
+    // FIX (Guardian section 13, pass 14 - B7): no bound on the thread length - each comment also fans out notifications.
+    const { count: commentCount, error: countErr } = await (service as any)
+      .from('flag_comments').select('id', { count: 'exact', head: true })
+      .eq('entity_type', entityType).eq('entity_id', entityId)
+    if (!countErr && (commentCount || 0) >= MAX_COMMENTS_PER_ENTITY)
+      return NextResponse.json({ error: `This ${entityType} already has ${MAX_COMMENTS_PER_ENTITY} comments - start a new discussion elsewhere or resolve it.` }, { status: 400 })
 
     const { data: comment, error } = await (service as any)
       .from('flag_comments')

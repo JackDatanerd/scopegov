@@ -1,4 +1,7 @@
 export const runtime = 'nodejs'
+// FIX (Guardian section 13, pass 14 - B4): embedding + classification (each bounded to 25s with one retry, see lib/ai/guardian.ts)
+// need more room than a short platform default; the sibling AI routes (sow/generate, co/draft) already set one.
+export const maxDuration = 120
 
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
@@ -6,7 +9,7 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { getClientIp } from '@/lib/utils/request-ip'
 import { reclassifyCheck } from '@/lib/ai/guardian-pipeline'
 import { canReadProject } from '@/lib/utils/project-access'
-import { checkAiRateLimit, recordAiUsage } from '@/lib/utils/rate-limit'
+import { claimAiRateSlot } from '@/lib/utils/rate-limit'
 
 // FEATURE (deep audit, section 13 — feature gap): cron/guardian-health pages ops
 // the moment classification_failed checks pile up unresolved past 24h, but until
@@ -47,9 +50,13 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (!check.classification_failed)
       return NextResponse.json({ error: 'Only a classification_failed check can be retried' }, { status: 400 })
 
-    const limited = await checkAiRateLimit(service, session.id, 'guardian.check')
+    // FIX (Guardian section 13, pass 14 - B3): check -> (paid call) -> record let a burst of parallel retries on DIFFERENT failed
+    // checks all read an under-the-limit count. The slot is claimed atomically up front, like guardian/check (see claimAiRateSlot).
+    const limited = await claimAiRateSlot(service, session.workspaceId, session.id, 'guardian.check')
     if (!limited.allowed) return NextResponse.json({ error: limited.message }, { status: 429 })
 
+    // (Pass 14 note: the slot is now consumed by the claim above even when reclassifyCheck then skips - the accepted trade-off
+    // documented on claimAiRateSlot - in exchange for a limit that actually bounds a parallel burst.)
     // FIX (independent pass round 4, section 13): recordAiUsage used to be called here,
     // unconditionally, before reclassifyCheck had even looked at the check — so a retry that
     // reclassifyCheck went on to skip (already resolved by another tab, no snapshot, or lost the
@@ -61,7 +68,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       actor: { id: session.id, email: session.email, name: session.name, ip: getClientIp(request) },
       auditEvent: 'check.retried', emailPath: 'retry',
       requireFailed: true, excludeUserId: session.id,
-      recordUsage: () => recordAiUsage(service, session.workspaceId, session.id, 'guardian.check'),
+      allowFinishedProject: true, // a person retrying a check on a Complete/Archived project: record the verdict only
     })
 
     if (res.status === 'skipped') {

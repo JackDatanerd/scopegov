@@ -33,11 +33,17 @@ const FORWARD_TOKENS  = new Set(['fwd', 'fw', 'wg', 'tr', 'rv'])
 const FORWARD_BANNER  = /^[-–—_\s]*(begin forwarded message|forwarded message)[-–—_:\s]*$/i
 const ORIGINAL_MSG    = /^[-–—_\s]*original message[-–—_\s]*$/i
 const OUTLOOK_RULE    = /^_{20,}\s*$/
-const HEADER_LINE     = /^(from|sent|date|to|cc|bcc|subject|reply-to)\s*:/i
 const ON_WROTE_ONE    = /^on\s.{5,300}\swrote:\s*$/i
 const ON_WROTE_START  = /^on\s.{5,300}$/i
 const WROTE_ONLY      = /^wrote:\s*$/i
 const SIGNATURE_DELIM = /^--\s?$/
+// FIX (Guardian section 13, pass 14 - B5): reply headers / attributions only existed in English, so an Outlook or Apple Mail reply
+// in German / French / Spanish / Italian / Portuguese was never cut and the whole quoted thread was classified as a new request.
+const I18N_FROM = /^(from|von|de|da|van|fr[åa]n|fra)\s*:/i
+const I18N_SENT = /^(sent|date|gesendet|datum|envoy[ée]|date d['’]envoi|enviado(?: el)?|enviada|fecha|inviato|data)\s*:/i
+const I18N_HEADER = /^(from|sent|date|to|cc|bcc|subject|reply-to|von|gesendet|an|betreff|datum|de|[àa]|objet|envoy[ée]|para|asunto|enviado(?: el)?|fecha|da|inviato|oggetto|a|assunto|enviada|data)\s*:/i
+const HEADER_LINE = I18N_HEADER
+const ON_WROTE_I18N = /^(am|le|el|il|em|op|den)\s.{5,300}\b(schrieb|a [ée]crit|escribi[óo]|ha scritto|escreveu|schreef|skrev)(?=[\s:]).{0,200}:\s*$/i
 
 export function isForwardSubject(subject: string): boolean {
   let s = String(subject || '')
@@ -107,7 +113,17 @@ export function extractUnquotedContent(text: string, opts: { isForward?: boolean
     if (quoted && t.startsWith('>')) continue // a deeper quote level inside a forward: earlier thread
     const body = quoted ? t : raw
 
-    if (SIGNATURE_DELIM.test(body.trimEnd()) || t === '-- ') {
+    if (SIGNATURE_DELIM.test(body.trimEnd())) {
+      // FIX (Guardian section 13, pass 14 - B5): a bare "--" (no trailing space - many clients and Postmark's text conversion strip it)
+      // ended the scan too, so "Add dark mode.\n--\nAlso add Spanish." lost the second request. The real delimiter is "-- " and always
+      // ends the scan; a bare "--" only does when what follows is signature-sized, otherwise it is just a separator line.
+      const strict = /^--\s$/.test(body)
+      if (!strict) {
+        let rest = 0, first = ''
+        for (let k = i + 1; k < lines.length && rest <= 12; k++) if (lines[k].trim()) { if (!rest) first = lines[k].trim(); rest++ }
+        // A signature's first line is a name / sign-off, not a sentence: a line ending in . ! ? is more request text.
+        if (rest > 12 || /[.!?]$/.test(first)) continue
+      }
       if (!inForwardedBody) {
         const start = forwardedBodyStart(i + 1)
         if (start !== -1) { i = start - 1; continue } // the loop's i++ lands on the forwarded block
@@ -118,6 +134,7 @@ export function extractUnquotedContent(text: string, opts: { isForward?: boolean
     // Gmail / Apple Mail attribution, possibly wrapped onto the next line.
     const next = view(lines[i + 1] || '')
     if (ON_WROTE_ONE.test(t)) break
+    if (ON_WROTE_I18N.test(t) && ATTRIBUTION_HINT.test(t)) break
     if (ON_WROTE_START.test(t) && ATTRIBUTION_HINT.test(t) && !t.endsWith('wrote:') && WROTE_ONLY.test(next)) break
     if (ON_WROTE_START.test(t) && ATTRIBUTION_HINT.test(t) && /wrote:\s*$/i.test(next) && next.length < 120) break
 
@@ -144,9 +161,9 @@ export function extractUnquotedContent(text: string, opts: { isForward?: boolean
 // A "From: x" line immediately followed (within 3 lines) by "Sent:"/"Date:" is an
 // Outlook-style quoted header block; a lone "From:" line in prose is not.
 function isHeaderPair(lines: string[], i: number, view: (l: string) => string): boolean {
-  if (!/^from\s*:/i.test(view(lines[i]))) return false
+  if (!I18N_FROM.test(view(lines[i]))) return false
   for (let k = 1; k <= 3; k++) {
-    if (/^(sent|date)\s*:/i.test(view(lines[i + k] || ''))) return true
+    if (I18N_SENT.test(view(lines[i + k] || ''))) return true
   }
   return false
 }
@@ -175,6 +192,8 @@ export function senderEmail(payload: any): string {
 /** Match `proj-<prefix>@<domain>` as the WHOLE address (not a suffix of another address). */
 export function matchGuardianAddress(header: string, domain: string): string | null {
   const esc = domain.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  const m = String(header || '').match(new RegExp(`(?<![a-z0-9._%+-])proj-([a-z0-9]+)@${esc}(?![a-z0-9.-])`, 'i'))
+  // FIX (Guardian section 13, pass 14 - B5): a plus-tagged recipient (proj-ab12cd34+anything@...) is the same mailbox and is
+  // delivered to it by most providers/forwarding rules; it used to not match and the email was dropped as "not a Guardian address".
+  const m = String(header || '').match(new RegExp(`(?<![a-z0-9._%+-])proj-([a-z0-9]+)(?:\\+[a-z0-9._-]*)?@${esc}(?![a-z0-9.-])`, 'i'))
   return m ? m[1].toLowerCase() : null
 }

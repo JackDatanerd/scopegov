@@ -1,4 +1,7 @@
 export const runtime = 'nodejs'
+// FIX (Guardian section 13, pass 14 - B4): embedding + classification (each bounded to 25s with one retry, see lib/ai/guardian.ts)
+// need more room than a short platform default; the sibling AI routes (sow/generate, co/draft) already set one.
+export const maxDuration = 120
 
 import crypto from 'crypto'
 import { createServiceClient } from '@/lib/supabase/server'
@@ -202,7 +205,11 @@ export async function POST(request: NextRequest) {
     // (lib/utils/file-signature.ts) — this is the same kind of file, just arriving by a different
     // door. Saved regardless of which branch below stores the row (queued-pending / rate-limited /
     // classified) — the client's evidence matters even for a check that isn't classified yet.
-    const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024 // 10 MB — matches the manual-upload cap
+    // NOTE (pass 14 - B1): the platform, not this constant, is the real ceiling. Vercel refuses a request body over 4.5 MB with a 413
+    // before this route runs, and Postmark sends attachments base64-encoded inside the JSON - so a mail whose attachments total more
+    // than ~3 MB never arrives here (Postmark retries, then gives up). That cannot be fixed inside this handler; see README
+    // "Guardian inbound size limit" for the options (a pre-processing Worker that drops attachment bodies over the limit).
+    const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024 // never reached above ~3 MB on Vercel - kept as a sanity bound
     const saveCheckAttachments = async (checkId: string) => {
       for (const a of rawAttachments) {
         try {

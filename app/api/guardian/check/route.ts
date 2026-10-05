@@ -1,4 +1,7 @@
 export const runtime = 'nodejs'
+// FIX (Guardian section 13, pass 14 - B4): embedding + classification (each bounded to 25s with one retry, see lib/ai/guardian.ts)
+// need more room than a short platform default; the sibling AI routes (sow/generate, co/draft) already set one.
+export const maxDuration = 120
 
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'

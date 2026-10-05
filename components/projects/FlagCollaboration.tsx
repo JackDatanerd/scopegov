@@ -104,7 +104,7 @@ export default function FlagCollaboration({
       const res = await fetch(`${base}/attachments`, { method: 'POST', body: fd })
       const json = await readJson(res)
       if (!res.ok || !json.attachment) {
-        setError(json.error || (res.status === 413 ? 'That file is too large to upload.' : 'Could not upload file.'))
+        setError(json.error || (res.status === 413 ? 'That file is too large to upload (4 MB max).' : 'Could not upload file.'))
         return
       }
       setAttachments(prev => [json.attachment, ...prev])
@@ -238,7 +238,7 @@ export default function FlagCollaboration({
                   <input ref={fileRef} type="file" style={{ display: 'none' }}
                     onChange={e => e.target.files?.[0] && submitFile(e.target.files[0])} />
                   <button className="btn btn-ghost btn-xs" disabled={uploading} onClick={() => fileRef.current?.click()}
-                    title="Attach evidence (PDF, image, email, doc — max 10 MB)">
+                    title="Attach evidence (PDF, image, email, doc — max 4 MB)">
                     {uploading ? <span className="spin spin-dark" style={{ width: 11, height: 11 }} /> : <i className="ti ti-paperclip" style={{ fontSize: 12 }} />}
                   </button>
                 </div>

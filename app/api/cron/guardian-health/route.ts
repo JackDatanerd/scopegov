@@ -13,6 +13,7 @@ import {
   sweepAttemptCutoffs, sweepDueFilter, isSweepDue,
 } from '@/lib/ai/guardian-pipeline'
 import { recordAiUsageByProject } from '@/lib/utils/rate-limit'
+import { logAudit } from '@/lib/utils/audit'
 
 // FIX (audit round 3): local copy replaced with the shared,
 // null-safe helper — see lib/utils/verify-cron.ts.
@@ -173,6 +174,45 @@ async function sweepUnclassified(service: any) {
   return stats
 }
 
+// FIX (Guardian section 13, pass 14 - B9): draft_co (and POST /api/co with a flagId) CLAIM the flag (status converted_to_co) BEFORE the
+// change order is inserted and linked. If the function died between those writes (a platform kill, a deploy, a dropped connection) the
+// flag stayed converted_to_co with no change_order_id - a state no PATCH action accepts - and nothing ever repaired it, so a live scope
+// flag silently vanished from the open queue. Anything stuck that way for 15+ minutes is repaired here: linked to the change order that
+// does exist for it, otherwise put back to open. Compare-and-swap on the stuck state, so a request that is still finishing is never undone.
+const STRANDED_FLAG_AFTER_MS = 15 * 60000
+async function healStrandedFlags(service: any) {
+  const cutoff = new Date(Date.now() - STRANDED_FLAG_AFTER_MS).toISOString()
+  const { data: stuck, error } = await service.from('guardian_flags')
+    .select('id, workspace_id, project_id')
+    .eq('status', 'converted_to_co').is('change_order_id', null).lt('updated_at', cutoff)
+    .order('updated_at', { ascending: true }).limit(50)
+  if (error) throw new Error(`guardian stranded-flag read: ${error.message}`)
+  const out = { linked: 0, reopened: 0, failed: 0 }
+  for (const f of stuck || []) {
+    try {
+      const { data: cos, error: coErr } = await service.from('change_orders')
+        .select('id').eq('flag_id', f.id).order('created_at', { ascending: true }).limit(1)
+      if (coErr) throw new Error(coErr.message)
+      const now = new Date().toISOString()
+      const patch = cos?.length ? { change_order_id: cos[0].id, updated_at: now } : { status: 'open', updated_at: now }
+      const { data: rows, error: upErr } = await service.from('guardian_flags').update(patch)
+        .eq('id', f.id).eq('status', 'converted_to_co').is('change_order_id', null).select('id')
+      if (upErr) throw new Error(upErr.message)
+      if (!rows?.length) continue // someone finished it in the meantime
+      if (cos?.length) out.linked++; else out.reopened++
+      await logAudit(service, {
+        workspaceId: f.workspace_id, actorId: null, actorEmail: GUARDIAN_SYSTEM_ACTOR.email, actorName: GUARDIAN_SYSTEM_ACTOR.name,
+        eventType: cos?.length ? 'flag.co_link_repaired' : 'flag.reopened', entityType: 'guardian_flag', entityId: f.id,
+        metadata: { reason: 'stranded_conversion', ...(cos?.length ? { co_id: cos[0].id } : {}) },
+      })
+    } catch (e) {
+      out.failed++
+      console.error('Guardian stranded-flag repair failed:', f.id, e)
+    }
+  }
+  return out
+}
+
 export async function POST(request: NextRequest) {
   if (!verifyCronSecret(request))
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -212,6 +252,10 @@ export async function POST(request: NextRequest) {
           await markAlerted(service, 'guardian_health:elevated_failure_rate')
       }
     }
+
+    let healed: Awaited<ReturnType<typeof healStrandedFlags>> | { error: string } = { linked: 0, reopened: 0, failed: 0 }
+    try { healed = await healStrandedFlags(service) }
+    catch (e) { console.error('Guardian stranded-flag repair error:', e); healed = { error: e instanceof Error ? e.message : 'repair failed' } }
 
     // ── Sweep: retry failed + classify the backlog ────────────
     let sweep: Awaited<ReturnType<typeof sweepUnclassified>> | { error: string } = { candidates: 0, classified: 0, flagged: 0, failed: 0, duplicates: 0, skipped: 0 }
@@ -258,9 +302,10 @@ export async function POST(request: NextRequest) {
     // the unresolved-failures count above: fail the run (alertCronFailure + no heartbeat). Placed AFTER the alerts so
     // they still run on a broken sweep.
     if ('error' in sweep) throw new Error(`guardian sweep failed: ${sweep.error}`)
+    if ('error' in healed) throw new Error(`guardian stranded-flag repair failed: ${healed.error}`)
 
-    await recordCronHeartbeat(service, 'guardian-health', { total, failed, sweep })
-    return NextResponse.json({ ok: true, total, failed, rate: rate.toFixed(3), sweep })
+    await recordCronHeartbeat(service, 'guardian-health', { total, failed, sweep, healed })
+    return NextResponse.json({ ok: true, total, failed, rate: rate.toFixed(3), sweep, healed })
   } catch (err) {
     console.error('Guardian health check error:', err)
     await alertCronFailure(createServiceClient(), 'guardian-health', err).catch(() => {})

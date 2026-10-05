@@ -142,6 +142,7 @@ const LABELS: Record<string, (c: Ctx) => string> = {
   // `flag.reverted_to_open` (the change-order routes), so the Guardian tab's own action fell back to the raw event
   // name ("Jane flag reopened"). Same for the exception correction and the two pipeline events below.
   'flag.reopened':          () => 'reopened a scope flag',
+  'flag.co_link_repaired':  () => 'Guardian re-linked a scope flag to its change order',
   'exception.edited':       () => 'corrected a scope exception',
   'flag_comment.added':     () => 'commented on a scope flag',
   'flag_attachment.added':  () => 'attached a file to a scope flag',
@@ -196,7 +197,7 @@ const CLIENT_EVENTS = new Set([
 const SENTENCE_EVENTS = new Set([
   'sow.expired', 'sow.marked_stalled', 'co.expired', 'co.marked_stalled', 'co.amendment_failed',
   'invoice.overdue', 'payment.milestone_generated', 'payment.milestone_overdue', 'retainer.ended',
-  'flag.raised', 'flag.borderline_created', 'approval.no_reachable_approver',
+  'flag.raised', 'flag.borderline_created', 'flag.co_link_repaired', 'approval.no_reachable_approver',
   'check.classified', 'check.duplicate_skipped', 'check.classification_failed', 'check.retried',
   'check.swept', 'check.flag_creation_failed',
   'reminder.sent', 'reminder.failed',

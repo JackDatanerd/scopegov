@@ -28,6 +28,7 @@ import { isUuidString } from '@/lib/utils/uuid'
 import { randomUUID } from 'crypto'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
+import { MAX_UPLOAD_BYTES, MAX_UPLOAD_LABEL, MAX_UPLOAD_REQUEST_BYTES } from '@/lib/utils/upload-limits'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { canReadProject } from '@/lib/utils/project-access'
 import { logAudit } from '@/lib/utils/audit'
@@ -37,7 +38,7 @@ import { EVIDENCE_BUCKET } from '@/lib/utils/storage-cleanup'
 import { truncateText } from '@/lib/utils/sanitize'
 import { getPendingApprovalForDocument } from '@/lib/approvals/engine'
 
-const MAX_FILE_BYTES = 10 * 1024 * 1024 // 10 MB — same cap as flag evidence
+const MAX_FILE_BYTES = MAX_UPLOAD_BYTES // see lib/utils/upload-limits.ts (Vercel's 4.5 MB request-body limit)
 const MAX_ATTACHMENTS_PER_SOW = 20
 
 export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -115,8 +116,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // request.formData() buffers the whole body before the size check below can run — refuse an
     // obviously oversized upload up front (allowing for multipart overhead).
     const declaredLength = Number(request.headers.get('content-length') || 0)
-    if (declaredLength > MAX_FILE_BYTES + 512 * 1024)
-      return NextResponse.json({ error: 'File exceeds 10 MB limit' }, { status: 413 })
+    if (declaredLength > MAX_UPLOAD_REQUEST_BYTES)
+      return NextResponse.json({ error: `File exceeds ${MAX_UPLOAD_LABEL} limit` }, { status: 413 })
 
     const formData = await request.formData()
     const file = formData.get('file')
@@ -124,7 +125,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // Browsers send an empty File.type for some extensions (.eml on Chrome/Windows) — see resolveAttachmentType.
     const fileType = resolveAttachmentType(file.name, file.type)
     if (file.size > MAX_FILE_BYTES)
-      return NextResponse.json({ error: 'File exceeds 10 MB limit' }, { status: 400 })
+      return NextResponse.json({ error: `File exceeds ${MAX_UPLOAD_LABEL} limit` }, { status: 400 })
     if (!ALLOWED_TYPES.has(fileType))
       return NextResponse.json({ error: `Unsupported file type: ${fileType || 'unknown'}` }, { status: 400 })
 

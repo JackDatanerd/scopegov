@@ -3,6 +3,7 @@ export const runtime = 'nodejs'
 import { randomUUID } from 'crypto'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
+import { MAX_UPLOAD_BYTES, MAX_UPLOAD_LABEL, MAX_UPLOAD_REQUEST_BYTES } from '@/lib/utils/upload-limits'
 import { getSession } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { getClientIp } from '@/lib/utils/request-ip'
@@ -17,7 +18,8 @@ import { ALLOWED_ATTACHMENT_TYPES as ALLOWED_TYPES, matchesDeclaredType, resolve
 // existing `pdfs` bucket) — see README §1.2 for setup. Never public: this
 // is client-submitted evidence and signed addenda, not brand assets.
 const BUCKET = 'flag-evidence'
-const MAX_FILE_BYTES = 10 * 1024 * 1024 // 10 MB
+export const MAX_ATTACHMENTS_PER_ENTITY = 25
+const MAX_FILE_BYTES = MAX_UPLOAD_BYTES // see lib/utils/upload-limits.ts (Vercel's 4.5 MB request-body limit)
 
 export async function GET(
   request: NextRequest,
@@ -85,11 +87,19 @@ export async function POST(
     if (!(await canReadProject(service, session, entity.projectId)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
+    // FIX (Guardian section 13, pass 14 - B7): nothing bounded how many files one flag/exception could hold (the SOW and CO
+    // attachment routes already cap theirs), so evidence storage could grow without limit. Fail open on a count error.
+    const { count: existingCount, error: countErr } = await (service as any)
+      .from('flag_attachments').select('id', { count: 'exact', head: true })
+      .eq('entity_type', entityType).eq('entity_id', entityId)
+    if (!countErr && (existingCount || 0) >= MAX_ATTACHMENTS_PER_ENTITY)
+      return NextResponse.json({ error: `A ${entityType} can have at most ${MAX_ATTACHMENTS_PER_ENTITY} attachments.` }, { status: 400 })
+
     // request.formData() buffers the whole body before the size check below can run — refuse an
     // obviously oversized upload up front (allowing for multipart overhead).
     const declaredLength = Number(request.headers.get('content-length') || 0)
-    if (declaredLength > MAX_FILE_BYTES + 512 * 1024)
-      return NextResponse.json({ error: 'File exceeds 10 MB limit' }, { status: 413 })
+    if (declaredLength > MAX_UPLOAD_REQUEST_BYTES)
+      return NextResponse.json({ error: `File exceeds ${MAX_UPLOAD_LABEL} limit` }, { status: 413 })
 
     const formData = await request.formData()
     const file = formData.get('file')
@@ -97,7 +107,7 @@ export async function POST(
     // Browsers send an empty File.type for some extensions (.eml on Chrome/Windows) — see resolveAttachmentType.
     const fileType = resolveAttachmentType(file.name, file.type)
     if (file.size > MAX_FILE_BYTES)
-      return NextResponse.json({ error: 'File exceeds 10 MB limit' }, { status: 400 })
+      return NextResponse.json({ error: `File exceeds ${MAX_UPLOAD_LABEL} limit` }, { status: 400 })
     if (!ALLOWED_TYPES.has(fileType))
       return NextResponse.json({ error: `Unsupported file type: ${fileType || 'unknown'}` }, { status: 400 })
 
