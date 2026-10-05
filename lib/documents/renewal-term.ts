@@ -12,7 +12,10 @@ export const MAX_RENEWAL_TERM_MONTHS = 120
 /** null/'' -> null (not set); a whole number 1..120 -> that number; anything else -> invalid. */
 export function parseRenewalTerm(value: unknown): { ok: true; value: number | null } | { ok: false; error: string } {
   if (value === undefined || value === null || value === '') return { ok: true, value: null }
-  const n = typeof value === 'number' ? value : Number(String(value).trim())
+  if (typeof value !== 'number' && typeof value !== 'string')
+    return { ok: false, error: `Renewal term must be a whole number of months between 1 and ${MAX_RENEWAL_TERM_MONTHS}` }
+  if (typeof value === 'string' && value.trim() === '') return { ok: true, value: null }
+  const n = typeof value === 'number' ? value : Number(value.trim())
   if (!Number.isInteger(n) || n < 1 || n > MAX_RENEWAL_TERM_MONTHS)
     return { ok: false, error: `Renewal term must be a whole number of months between 1 and ${MAX_RENEWAL_TERM_MONTHS}` }
   return { ok: true, value: n }

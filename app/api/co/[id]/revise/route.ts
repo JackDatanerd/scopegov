@@ -12,6 +12,7 @@ import { insertNextCoVersion } from '@/lib/documents/co-version'
 import { parseStoredLineItems } from '@/lib/documents/co-totals'
 import { sendDocumentCancelledEmail } from '@/lib/email/templates'
 import { checkedSend } from '@/lib/email/delivery'
+import { releaseFlagFromCo } from '@/lib/documents/co-flag'
 import { withPrimaryContactCc } from '@/lib/utils/client-contacts'
 import { resolveReplyTo } from '@/lib/email/reply-to'
 
@@ -283,15 +284,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         // shape as close()'s own reversion, so the generic re-claim below
         // picks it up like it does for every other status.
         if (co.flag_id) {
-          const { data: flag } = await (service as any)
-            .from('guardian_flags').select('id,status').eq('id', co.flag_id).single()
-          if (flag && flag.status === 'converted_to_co') {
-            await (service as any).from('guardian_flags').update({
-              status: 'open', change_order_id: null, updated_at: new Date().toISOString(),
-            }).eq('id', co.flag_id).eq('status', 'converted_to_co')
-              // Only revert a flag still linked to THIS CO (or to nothing) — status alone never
-              // proved ownership (deep audit, CO logic independent re-pass).
-              .or(`change_order_id.eq.${co.id},change_order_id.is.null`)
+          // Only reverts a flag still linked to THIS CO (or to nothing), retried and logged on failure.
+          const { released } = await releaseFlagFromCo(service, { flagId: co.flag_id, coId: co.id })
+          if (released) {
             await logAudit(service, {
               workspaceId: session.workspaceId, actorId: session.id,
               actorEmail: session.email, actorName: session.name,

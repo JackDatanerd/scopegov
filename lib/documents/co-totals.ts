@@ -25,6 +25,7 @@
 import { roundCurrency } from '@/lib/utils/format'
 import { isAdjustmentLine } from '@/lib/utils/rescale-line-items'
 import { nanoid } from 'nanoid'
+import { stripUnstorableText } from '@/lib/utils/sanitize'
 
 export interface CoLineItem {
   id?: string
@@ -132,7 +133,7 @@ export function computeCoTotals(
 
   const lineItems: CoLineItem[] = []
   for (const raw of rawItems as any[]) {
-    const description = typeof raw?.description === 'string' ? raw.description.trim() : ''
+    const description = typeof raw?.description === 'string' ? stripUnstorableText(raw.description).trim() : ''
     if (description.length > MAX_DESCRIPTION_LEN)
       return { ok: false, error: `Line item descriptions must be under ${MAX_DESCRIPTION_LEN} characters` }
 

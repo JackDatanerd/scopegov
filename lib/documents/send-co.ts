@@ -174,7 +174,7 @@ export async function sendCoDocument(service: any, params: {
   // racing the approval engine's auto-send) still burned one — leaving gaps in the sequence that
   // lib/utils/document-number.ts promises stays continuous for anything a client actually saw.
   // FIX (re-audit, race-condition finding): same missing CAS as send-sow.ts — see that file's comment.
-  const { data: sent } = await (service as any).from('change_orders').update({
+  const { data: sent, error: claimErr } = await (service as any).from('change_orders').update({
     status:          'awaiting_response',
     sent_at:         now,
     token,
@@ -182,6 +182,11 @@ export async function sendCoDocument(service: any, params: {
     updated_at:      now,
   }).eq('id', coId).eq('status', 'draft').select('id').maybeSingle()
 
+  // A failed write is not a lost race: report it as the retryable failure it is.
+  if (claimErr) {
+    console.error('CO send: could not claim the send', claimErr.message)
+    return { ok: false, error: 'Could not send this change order. Please try again.', status: 500 }
+  }
   if (!sent) {
     return { ok: false, error: 'This change order was already sent by another action', status: 409 }
   }

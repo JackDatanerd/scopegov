@@ -66,10 +66,14 @@ export async function POST(request: NextRequest) {
     // the same per-project visibility rule as everywhere else: a
     // VIEW_OWN_PROJECTS-only holder of CREATE_CHANGE_ORDERS shouldn't be
     // able to create a CO against a project they're not assigned to.
-    const { data: project } = await (service as any)
+    const { data: project, error: projectErr } = await (service as any)
       .from('projects').select('id, status, type').eq('id', projectId).eq('workspace_id', session.workspaceId)
       .is('deleted_at', null).single()
-    if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 })
+    // A failed read is a retryable 500, not "Project not found".
+    if (!project) {
+      if (isRealLookupFailure(projectErr)) throw new Error(`project lookup failed: ${projectErr.message}`)
+      return NextResponse.json({ error: 'Project not found' }, { status: 404 })
+    }
     if (!(await canReadProject(service, session, projectId)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
@@ -174,7 +178,7 @@ export async function POST(request: NextRequest) {
     let effTaxRate: unknown = taxRate
     let effTaxInclusive: unknown = taxInclusive
     if (taxRate === undefined && taxInclusive === undefined) {
-      const d = await workspaceTaxDefaults(service, session.workspaceId)
+      const d = await workspaceTaxDefaults(service, session.workspaceId, { strict: true })
       effTaxRate = d.taxRate; effTaxInclusive = d.taxInclusive
     }
     const totals = computeCoTotals(lineItems || [], effTaxRate ?? 0, effTaxInclusive, undefined, { credit: isCredit === true })

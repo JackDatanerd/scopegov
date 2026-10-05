@@ -59,9 +59,8 @@ describe('CO-B3: exception only on the newest version, and logs only a real flag
     expect(src.indexOf('newer version')).toBeLessThan(src.indexOf("from('exceptions_log').insert"))
   })
   it('only audits flag.exception_granted when the update matched a row', () => {
-    expect(src).toMatch(/resolvedFlag = r\.data; flagErr = r\.error/)
-    expect(src).toMatch(/\n\s+if \(flagErr\)/)
-    expect(src).toMatch(/else if \(resolvedFlag && resolvedFlag\.length > 0\)/)
+    expect(src).toMatch(/const \{ resolved \} = await resolveFlagAsException\(/)
+    expect(src).toMatch(/if \(resolved\) \{\s+await logAudit\([\s\S]{0,300}flag\.exception_granted/)
   })
 })
 

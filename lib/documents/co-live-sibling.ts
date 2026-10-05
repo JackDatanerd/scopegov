@@ -28,7 +28,11 @@ export async function liveCoSiblingMessage(
     console.error('CO live-sibling check failed (blocking the send):', error.message)
     return 'Could not check whether another version of this change order is still open — please try again.'
   }
-  if (liveSiblings && liveSiblings.length > 0)
+  if (liveSiblings && liveSiblings.length > 0) {
+    // An accepted version is part of the signed agreement - it can't be withdrawn or closed, so don't say it can.
+    if (liveSiblings[0].status === 'accepted')
+      return `Version ${liveSiblings[0].version} of this change order has already been accepted, so another version can't be sent.`
     return `Version ${liveSiblings[0].version} of this change order is still open (${String(liveSiblings[0].status).replace(/_/g, ' ')}). Withdraw or close it before sending another version.`
+  }
   return null
 }

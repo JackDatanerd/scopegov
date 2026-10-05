@@ -2,6 +2,7 @@
 export const runtime = 'nodejs'
 
 import { MAX_DESCRIPTION_LEN } from '@/lib/documents/co-totals'
+import { isRealLookupFailure } from '@/lib/documents/co-lookup'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
@@ -82,13 +83,16 @@ export async function POST(request: NextRequest) {
 
     const service = createServiceClient()
 
-    const { data: project } = await (service as any)
+    const { data: project, error: projectErr } = await (service as any)
       .from('projects')
       .select(`id, name, type, status, contract_value, currency, workspace_id,
         project_scope_snapshot(deliverables, out_of_scope)`)
       .eq('id', projectId).eq('workspace_id', session.workspaceId).is('deleted_at', null).single()
 
-    if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 })
+    if (!project) {
+      if (isRealLookupFailure(projectErr)) throw new Error(`project lookup failed: ${projectErr.message}`)
+      return NextResponse.json({ error: 'Project not found' }, { status: 404 })
+    }
     if (!(await canReadProject(service, session, projectId)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     // FIX (Projects & Dashboard deep audit): same terminal-status guard as

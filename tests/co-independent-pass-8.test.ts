@@ -154,8 +154,11 @@ describe('B4 flag writes are checked and retried', () => {
     expect(src).toMatch(/could not re-claim the linked flag/)
   })
   it('exception retries the flag resolution once', () => {
+    // The retry now lives in the shared helper (lib/documents/co-flag.ts); the route must go through it.
     const src = read('app/api/co/[id]/exception/route.ts')
-    expect(src).toMatch(/for \(let attempt = 0; attempt < 2; attempt\+\+\)[\s\S]{0,500}resolution: 'exception'/)
+    expect(src).toMatch(/resolveFlagAsException\(service/)
+    const helper = read('lib/documents/co-flag.ts')
+    expect(helper).toMatch(/for \(let attempt = 0; attempt < 2; attempt\+\+\)[\s\S]{0,500}resolution: 'exception'/)
   })
 })
 

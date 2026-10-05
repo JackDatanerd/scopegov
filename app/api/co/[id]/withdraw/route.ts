@@ -12,6 +12,7 @@ import { sendDocumentCancelledEmail } from '@/lib/email/templates'
 import { cleanTextField } from '@/lib/utils/sanitize'
 import { withPrimaryContactCc } from '@/lib/utils/client-contacts'
 import { checkedSend } from '@/lib/email/delivery'
+import { releaseFlagFromCo } from '@/lib/documents/co-flag'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -86,7 +87,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // already-finalized CO back to 'withdrawn' with the token nulled, and
     // even a plain double-click of Withdraw itself duplicated the
     // client-facing cancellation email and audit-log entry below.
-    const { data: withdrawnCo } = await (service as any).from('change_orders')
+    const { data: withdrawnCo, error: withdrawErr } = await (service as any).from('change_orders')
       .update({ status: 'withdrawn', token: null, updated_at: now })
       .eq('id', id)
       // CO-3: guard on the exact status that was READ, not on "any withdrawable status". The rest of this handler
@@ -96,6 +97,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       .eq('status', co.status)
       .select('id')
 
+    // A failed write is not a lost race (it used to answer "already acted on by another action").
+    if (withdrawErr) throw new Error(`could not withdraw the change order: ${withdrawErr.message}`)
     if (!withdrawnCo || withdrawnCo.length === 0)
       return NextResponse.json({ error: 'This change order was already acted on by another action' }, { status: 409 })
 
@@ -109,19 +112,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     // BUG-048: revert linked flag on withdraw
     if (co.flag_id) {
-      const { data: flag } = await (service as any)
-        .from('guardian_flags').select('id,status').eq('id', co.flag_id).single()
-      if (flag?.status === 'converted_to_co') {
-        // FIX (deep audit, CO logic independent re-pass): the write itself now re-checks that
-        // the flag is STILL converted_to_co AND still linked to THIS CO (or to nothing —
-        // an orphaned link from a failed back-reference write). The read above is a
-        // separate round trip, and status alone never proved which CO owns the flag.
-        const { data: reverted } = await (service as any).from('guardian_flags').update({
-          status: 'open', change_order_id: null, updated_at: now,
-        }).eq('id', co.flag_id).eq('status', 'converted_to_co')
-          .or(`change_order_id.eq.${id},change_order_id.is.null`)
-          .select('id')
-        if (reverted && reverted.length > 0) await logAudit(service, {
+      {
+        // One guarded conditional update, retried and logged on failure - see lib/documents/co-flag.ts.
+        const { released } = await releaseFlagFromCo(service, { flagId: co.flag_id, coId: id, now })
+        if (released) await logAudit(service, {
           workspaceId: session.workspaceId, actorId: session.id,
           actorEmail: session.email, actorName: session.name,
           eventType: 'flag.reverted_to_open', entityType: 'guardian_flag',

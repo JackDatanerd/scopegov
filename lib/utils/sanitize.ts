@@ -38,7 +38,8 @@ const RICH_TEXT_OPTIONS: sanitizeHtml.IOptions = {
 /** Sanitize rich-text HTML (SOW section content) before it's stored. */
 export function sanitizeRichText(html: string | null | undefined): string {
   if (!html) return ''
-  return sanitizeHtml(html, RICH_TEXT_OPTIONS)
+  // NUL and lone surrogates cannot be stored in Postgres text/jsonb (the whole write fails) - strip them first.
+  return sanitizeHtml(stripUnstorableText(html), RICH_TEXT_OPTIONS)
 }
 
 /**
@@ -84,7 +85,7 @@ export function decodeHtmlEntities(text: string | null | undefined): string {
  */
 export function sanitizePlainText(text: string | null | undefined): string {
   if (!text) return ''
-  const stripped = sanitizeHtml(protectPlaceholders(text), { allowedTags: [], allowedAttributes: {} })
+  const stripped = sanitizeHtml(protectPlaceholders(stripUnstorableText(text)), { allowedTags: [], allowedAttributes: {} })
   return decodeHtmlEntities(stripped).trim()
 }
 

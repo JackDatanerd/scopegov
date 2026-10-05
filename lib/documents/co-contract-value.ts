@@ -58,6 +58,9 @@ export async function getContractValueBefore(
       .eq('change_order_id', coId).maybeSingle()
     if (withPrev.error) {
       const plain = await service.from('amendments').select('created_at').eq('change_order_id', coId).maybeSingle()
+      // Both reads failed: this is an outage, not "no amendment yet". Treating it as pending would add EVERY other
+      // amendment (including later ones) to an already-accepted CO's "before" figure.
+      if (plain.error) throw new Error(`contract value lookup failed: ${plain.error.message}`)
       ownAmendment = plain.data
     } else ownAmendment = withPrev.data
   }
@@ -70,8 +73,9 @@ export async function getContractValueBefore(
   const projectShape = { contract_value: baseContractValue, type: opts.project?.type ?? null, retainer_duration_months: opts.project?.retainer_duration_months ?? null }
   let billedMonths: number | undefined
   if (projectShape.type === 'retainer' && !((projectShape.retainer_duration_months || 0) > 0)) {
-    // Open-ended retainer: the "contract" is the months committed so far. Degrades to one month on a failed read.
-    try { billedMonths = (await loadRetainerMonthsBilled(service, [{ id: projectId, ...projectShape }])).get(projectId) } catch { billedMonths = undefined }
+    // Open-ended retainer: the "contract" is the months committed so far. strict: a failed read must not degrade to
+    // "one month" and print a wrong figure (finalize-co freezes this number into the executed PDF).
+    billedMonths = (await loadRetainerMonthsBilled(service, [{ id: projectId, ...projectShape }], { strict: true })).get(projectId)
   }
   const start = projectBaseValue(projectShape, billedMonths)
 
@@ -84,7 +88,11 @@ export async function getContractValueBefore(
     .eq('project_id', projectId)
     .neq('change_order_id', coId)
   if (ownAmendment) q = q.lt('created_at', ownAmendment.created_at)
-  const { data: amendments } = await q
+  const { data: amendments, error: amendmentsErr } = await q
+  // A failed read must not look like "no other amendments": that understated/overstated both the Original and the
+  // Revised contract value on the PDF. Throw - the PDF routes answer 500 (retryable), the acceptance finalizer's PDF
+  // step is already guarded and falls back to a later live render rather than freezing a wrong figure.
+  if (amendmentsErr) throw new Error(`contract value lookup failed: ${amendmentsErr.message}`)
 
   return Math.max(0, start + amendmentImpact(amendments, projectShape.type))
 }

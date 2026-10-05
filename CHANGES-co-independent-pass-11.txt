@@ -1,0 +1,24 @@
+CO section independent pass 11 (api/co/*, components/co, api/pdf/co)
+
+Bugs fixed (all "a failed read/write was treated as not-found / lost race / nothing to do"):
+ CO-1  close / withdraw / send-co claim ignored the write's error and answered 409 "already acted on by another
+       action"; close/withdraw had also already cancelled the approval request. Now a failed write throws (500, retryable)
+       and send-co returns a 500 result; 409 is kept for the zero-row (real race) case only.
+ CO-2  NUL and lone surrogates passed validation in CO title/note/scope-impact/line descriptions/reasons and made
+       Postgres reject the write. sanitizePlainText / sanitizeRichText / computeCoTotals now strip them
+       (stripUnstorableText); the attachment filename is stripped and surrogate-safe truncated.
+ CO-3  Linked-flag release/resolve after close/withdraw/revise(countered)/exception read the flag with the error ignored
+       and wrote with the error ignored, stranding the flag at converted_to_co. New lib/documents/co-flag.ts: one guarded
+       conditional UPDATE, retried once, logged loudly on failure.
+ CO-4  getContractValueBefore ignored read errors (amendments, own amendment, retainer months) so a wrong Original/Revised
+       contract value could be printed - and frozen into the executed PDF. Now throws; the PDF routes 500, the
+       acceptance finalizer's guarded PDF step skips the freeze instead of freezing a guess.
+ CO-5  workspaceTaxDefaults ignored the error (dead try/catch) and returned 0% silently. New { strict } option: POST
+       /api/co throws (before it claims a flag); the Guardian convert path stays lenient (a throw there would strand its
+       claimed flag) but now logs.
+ CO-6  POST /api/co and POST /api/co/draft turned a failed project read into "Project not found" (404); now a 500.
+Nits: liveCoSiblingMessage no longer says "Withdraw or close" for an accepted sibling; parseRenewalTerm rejects
+ arrays/booleans and treats blank text as unset.
+
+Tests: tests/co-independent-pass-fail-closed.test.ts (new). Two older source-pinning tests (co-independent-pass-8,
+co-section-10-pass-5) updated to assert the same intent against lib/documents/co-flag.ts.

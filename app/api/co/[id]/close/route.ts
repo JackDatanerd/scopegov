@@ -12,6 +12,7 @@ import { sendDocumentCancelledEmail } from '@/lib/email/templates'
 import { cleanTextField } from '@/lib/utils/sanitize'
 import { withPrimaryContactCc } from '@/lib/utils/client-contacts'
 import { checkedSend } from '@/lib/email/delivery'
+import { releaseFlagFromCo } from '@/lib/documents/co-flag'
 
 // FIX (section-10 audit): this was documented and typed as a "shared
 // handler for terminal non-accepted CO states: close, withdraw, decline"
@@ -129,11 +130,13 @@ async function handleTerminalCoState(
   // either side — real negotiation data loss, not just a theoretical
   // race. Guard the write the same way every real signing-path transition
   // already does.
-  const { data: closedCo } = await (service as any).from('change_orders')
+  const { data: closedCo, error: closeErr } = await (service as any).from('change_orders')
     .update(updates)
     .eq('id', id)
     .eq('status', co.status)
     .select('id')
+  // A failed write is not a lost race: say so (a retryable 500), instead of "already acted on by another action".
+  if (closeErr) throw new Error(`could not close the change order: ${closeErr.message}`)
 
   if (!closedCo || closedCo.length === 0)
     return NextResponse.json({ error: 'This change order was already acted on by another action' }, { status: 409 })
@@ -143,23 +146,12 @@ async function handleTerminalCoState(
   // app/api/co/[id]/withdraw/route.ts and app/api/portal/co/[token]/_actions.ts)
   // Does NOT fire on stalled or countered (not terminal)
   if (co.flag_id) {
-    const { data: flag } = await (service as any)
-      .from('guardian_flags').select('id,status').eq('id', co.flag_id).single()
+    {
+      // One guarded conditional update (still converted_to_co AND linked to THIS CO or to nothing), retried and
+      // logged on failure - see lib/documents/co-flag.ts.
+      const { released } = await releaseFlagFromCo(service, { flagId: co.flag_id, coId: id, now })
 
-    if (flag && flag.status === 'converted_to_co') {
-      // FIX (deep audit, CO logic independent re-pass): the write itself now re-checks that
-      // the flag is STILL converted_to_co AND still linked to THIS CO (or to nothing —
-      // an orphaned link from a failed back-reference write). The read above is a
-      // separate round trip, and status alone never proved which CO owns the flag.
-      const { data: reverted } = await (service as any).from('guardian_flags').update({
-        status:          'open',
-        change_order_id: null,
-        updated_at:      now,
-      }).eq('id', co.flag_id).eq('status', 'converted_to_co')
-        .or(`change_order_id.eq.${id},change_order_id.is.null`)
-        .select('id')
-
-      if (reverted && reverted.length > 0) await logAudit(service, {
+      if (released) await logAudit(service, {
         workspaceId: session.workspaceId, actorId: session.id,
         actorEmail: session.email, actorName: session.name,
         eventType: 'flag.reverted_to_open', entityType: 'guardian_flag',

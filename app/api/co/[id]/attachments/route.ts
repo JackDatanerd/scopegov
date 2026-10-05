@@ -24,6 +24,7 @@ import { getClientIp } from '@/lib/utils/request-ip'
 import { ALLOWED_ATTACHMENT_TYPES as ALLOWED_TYPES, matchesDeclaredType, resolveAttachmentType } from '@/lib/utils/file-signature'
 import { EVIDENCE_BUCKET } from '@/lib/utils/storage-cleanup'
 import { getPendingApprovalForDocument } from '@/lib/approvals/engine'
+import { stripUnstorableText, truncateText } from '@/lib/utils/sanitize'
 
 const MAX_FILE_BYTES = MAX_UPLOAD_BYTES // see lib/utils/upload-limits.ts (Vercel's 4.5 MB request-body limit)
 const MAX_ATTACHMENTS_PER_CO = 20
@@ -107,7 +108,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     const rawExt = file.name.includes('.') ? (file.name.split('.').pop() || '') : ''
     const ext = rawExt.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 10) || 'bin'
-    const displayName = file.name.replace(/[\\/]+/g, '_').slice(0, 200) || 'attachment'
+    const displayName = truncateText(stripUnstorableText(file.name).replace(/[\\/]+/g, '_'), 200) || 'attachment'
     const storagePath = `${session.workspaceId}/co/${id}/${randomUUID()}.${ext}`
 
     const buffer = Buffer.from(await file.arrayBuffer())

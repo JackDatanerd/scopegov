@@ -33,6 +33,7 @@ import { sendCoExceptionGrantedEmail } from '@/lib/email/templates'
 import { cleanTextField } from '@/lib/utils/sanitize'
 import { withPrimaryContactCc } from '@/lib/utils/client-contacts'
 import { checkedSend } from '@/lib/email/delivery'
+import { resolveFlagAsException } from '@/lib/documents/co-flag'
 
 const MAX_VALUE = 1e12
 
@@ -198,37 +199,19 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // again"; here the request was granted, so the flag's own history should say so, exactly the way
     // the flag-side 'exception' action already records it for a flag that was never converted to a CO.
     if (co.flag_id) {
-      const { data: flag } = await (service as any)
-        .from('guardian_flags').select('id,status').eq('id', co.flag_id).single()
-      // A CO that was declined (or expired) had its flag released back to 'open' by that path, so requiring
-      // 'converted_to_co' here left the flag open after the work had been granted — Reports then counted the same
-      // value twice (once as at-risk, once as an exception). 'open' is resolvable too; the change_order_id
-      // filter below still refuses a flag a newer revision has re-claimed.
-      if (flag && ['converted_to_co', 'open'].includes(flag.status)) {
-        // The CO is already terminal here, so nothing can retry this later - a one-off failure left the flag open (and
-        // Reports counting the same value as at-risk AND as an exception). Retry once before giving up.
-        let resolvedFlag: any = null, flagErr: any = null
-        for (let attempt = 0; attempt < 2; attempt++) {
-          const r = await (service as any).from('guardian_flags').update({
-            status: 'resolved', resolution: 'exception',
-            resolved_by: session.id, resolved_at: now, updated_at: now,
-          }).eq('id', co.flag_id).in('status', ['converted_to_co', 'open'])
-            // Only resolve a flag still linked to THIS CO (or to nothing) — see app/api/co/route.ts.
-            .or(`change_order_id.eq.${co.id},change_order_id.is.null`)
-            .select('id')
-          resolvedFlag = r.data; flagErr = r.error
-          if (!flagErr) break
-        }
-        if (flagErr) console.error('CO exception grant: linked flag resolution failed (non-fatal):', flagErr.message)
-        else if (resolvedFlag && resolvedFlag.length > 0) {
-          await logAudit(service, {
-            workspaceId: session.workspaceId, actorId: session.id,
-            actorEmail: session.email, actorName: session.name,
-            eventType: 'flag.exception_granted', entityType: 'guardian_flag',
-            entityId: co.flag_id, entityName: co.projects?.name,
-            metadata: { co_id: id, estimated_value: estimatedValue, via: 'co' },
-          })
-        }
+      // A CO that was declined (or expired) had its flag released back to 'open', so both 'converted_to_co' and 'open'
+      // are resolvable; the change_order_id filter refuses a flag a newer revision has re-claimed. The CO is already
+      // terminal, so nothing can retry this later - one guarded update, retried once and logged on failure
+      // (lib/documents/co-flag.ts); a failed read can no longer skip it silently.
+      const { resolved } = await resolveFlagAsException(service, { flagId: co.flag_id, coId: co.id, resolvedBy: session.id, now })
+      if (resolved) {
+        await logAudit(service, {
+          workspaceId: session.workspaceId, actorId: session.id,
+          actorEmail: session.email, actorName: session.name,
+          eventType: 'flag.exception_granted', entityType: 'guardian_flag',
+          entityId: co.flag_id, entityName: co.projects?.name,
+          metadata: { co_id: id, estimated_value: estimatedValue, via: 'co' },
+        })
       }
     }
 
