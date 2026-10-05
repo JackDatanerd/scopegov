@@ -30,11 +30,13 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // Fetch just enough to run the approval gate before touching send
     // mechanics — full fetch + document numbering + JWT issuance happens
     // inside sendSowDocument (lib/documents/send-sow.ts).
-    const { data: sow } = await (service as any)
+    const { data: sow, error: sowReadErr } = await (service as any)
       .from('sow_documents')
       .select(`id, version, status, project_id, sections, metadata,
         projects(id, name, disc, status, contract_value, currency, type, retainer_duration_months)`)
-      .eq('id', id).eq('workspace_id', session.workspaceId).single()
+      .eq('id', id).eq('workspace_id', session.workspaceId).maybeSingle()
+    // FIX (SOW lifecycle independent pass 15, B4): a failed read is not "not found" — fail into the route's 500 handler.
+    if (sowReadErr) throw new Error(`SOW read failed: ${sowReadErr.message}`)
 
     if (!sow) return NextResponse.json({ error: 'SOW not found' }, { status: 404 })
     if (!(await canReadProject(service, session, sow.project_id)))

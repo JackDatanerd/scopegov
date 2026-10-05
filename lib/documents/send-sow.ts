@@ -65,13 +65,15 @@ export async function sendSowDocument(service: any, params: {
     ? Math.min(Math.trunc(requestedDays), MAX_SOW_EXPIRY_DAYS)
     : DEFAULT_SOW_EXPIRY_DAYS
 
-  const { data: sow } = await (service as any)
+  const { data: sow, error: sowReadErr } = await (service as any)
     .from('sow_documents')
     .select(`id, version, status, project_id, document_number, sections, metadata, updated_at,
       projects(id, name, disc, status, contract_value, currency, type, retainer_duration_months, client_id, deleted_at,
         clients(name, email, cc_emails),
         workspaces(id, agency_name, brand_colour, logo_storage_path))`)
-    .eq('id', sowId).eq('workspace_id', workspaceId).single()
+    .eq('id', sowId).eq('workspace_id', workspaceId).maybeSingle()
+  // FIX (SOW lifecycle independent pass 15, B4): a failed read is not "not found".
+  if (sowReadErr) return { ok: false, error: 'Could not load the SOW. Please try again.', status: 500 }
 
   if (!sow) return { ok: false, error: 'SOW not found', status: 404 }
   if (sow.status !== 'draft') return { ok: false, error: 'Only draft SOWs can be sent', status: 400 }

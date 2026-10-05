@@ -27,13 +27,15 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       return NextResponse.json({ error: 'Please verify your email before sending reminders' }, { status: 403 })
 
     const service = createServiceClient()
-    const { data: sow } = await (service as any)
+    const { data: sow, error: sowReadErr } = await (service as any)
       .from('sow_documents')
       .select(`id, version, token, status, expires_at, project_id,
         projects(id, name, disc, client_id,
           clients(name, email, cc_emails),
           workspaces(agency_name, brand_colour))`)
-      .eq('id', id).eq('workspace_id', session.workspaceId).single()
+      .eq('id', id).eq('workspace_id', session.workspaceId).maybeSingle()
+    // FIX (SOW lifecycle independent pass 15, B4): a failed read is not "not found" — fail into the route's 500 handler.
+    if (sowReadErr) throw new Error(`SOW read failed: ${sowReadErr.message}`)
 
     if (!sow) return NextResponse.json({ error: 'Not found' }, { status: 404 })
     if (!(await canReadProject(service, session, sow.project_id)))

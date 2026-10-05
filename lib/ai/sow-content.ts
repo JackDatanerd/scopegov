@@ -599,10 +599,18 @@ export function parseTableSections(raw: string): Record<SowTableSectionId, SowTa
       // silently (the table was not empty, so no fallback fired). Only a line that is clearly the prompt's own
       // "(columns: ...)" echo, or one wholly wrapped in a single pair of parentheses, is skipped.
       .filter(l => !(/^\(\s*columns?\b/i.test(l) || /^\([^()]*\)$/.test(l)))
+      // FIX (SOW lifecycle independent pass 15, B1): markdown-style output. Strip one leading/trailing pipe so a row
+      // written "| a | b | c |" does not gain empty edge cells that shift every column, and drop separator lines
+      // ("|---|---|"), which were kept as rows of dashes.
+      .map(l => l.replace(/^\|/, '').replace(/\|$/, '').trim())
+      .filter(l => l && !/^[\s|:\-]+$/.test(l))
 
+    // A repeated column-header row (the prompt says not to include it) is not data: its cells are the column labels.
+    const headerLabels = schema.columns.map(c => c.label.toLowerCase())
     const rows: SowTableRow[] = []
     for (const line of lines) {
       const cells = line.split('|').map(c => c.trim())
+      if (cells.length >= 2 && cells.every((c, i) => c.toLowerCase() === headerLabels[i] || (i >= headerLabels.length && !c))) continue
       // FIX (SOW lifecycle independent pass 2, B6): a row with fewer cells than columns was discarded outright.
       // The prompt itself calls the Roles "note" cell optional ("Responsibility | ✓ or — | ✓ or — | Optional
       // short note"), so a model that leaves the note off — without the trailing "|" — had every such row

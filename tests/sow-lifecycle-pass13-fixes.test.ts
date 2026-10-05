@@ -145,6 +145,11 @@ vi.mock('@/lib/supabase/server', () => ({
             projects: { id: 'p1', name: 'Proj', status: 'Changes Requested', client_id: 'c1', clients: { name: 'C', email: null, cc_emails: [] }, workspaces: { agency_name: 'A', brand_colour: null } } },
           error: null,
         }),
+        maybeSingle: async () => ({
+          data: { id: 'a1111111-1111-4111-8111-111111111111', status: h.sowStatus, token: null, version: 1, project_id: 'p1',
+            projects: { id: 'p1', name: 'Proj', status: 'Changes Requested', client_id: 'c1', clients: { name: 'C', email: null, cc_emails: [] }, workspaces: { agency_name: 'A', brand_colour: null } } },
+          error: null,
+        }),
         then: (res: any) => {
           if (table === 'projects' && q.mode === 'update') h.projectStatusUpdates.push(q)
           if (table === 'sow_documents' && q.mode === 'update') return res({ data: [{ id: 'x' }], error: null })

@@ -50,6 +50,10 @@ vi.mock('@/lib/supabase/server', () => ({
           if (table === 'sow_documents') return { data: h.sow, error: null }
           return { data: h.attachment, error: null }
         },
+        maybeSingle: async () => {
+          if (table === 'sow_documents') return { data: h.sow, error: null }
+          return { data: h.attachment, error: null }
+        },
         then: (res: any) => {
           if (mode === 'delete') return res({ data: null, error: null })
           if (head && 'storage_path' in filters) return res({ count: h.remaining, error: h.refError })

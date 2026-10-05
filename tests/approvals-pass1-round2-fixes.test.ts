@@ -30,7 +30,7 @@ vi.mock('@/lib/supabase/server', () => ({
         const projects: any = { id: 'p1', name: 'P', disc: 'D', contract_value: 100, currency: 'USD', type: 'fixed', retainer_duration_months: null }
         if (/projects\([^)]*\bstatus\b/.test(arg)) projects.status = h.projectStatus
         const row = { id: 'aaaaaaaa-0000-4000-8000-000000000001', version: 1, status: 'draft', project_id: 'p1', sections: [], metadata: {}, projects }
-        const b: any = { eq: () => b, single: async () => ({ data: row }) }
+        const b: any = { eq: () => b, single: async () => ({ data: row }), maybeSingle: async () => ({ data: row }) }
         return b
       },
     }),

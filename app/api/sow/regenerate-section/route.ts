@@ -55,9 +55,11 @@ export async function POST(request: NextRequest) {
     }
 
     const service = createServiceClient()
-    const { data: sow } = await (service as any)
+    const { data: sow, error: sowReadErr } = await (service as any)
       .from('sow_documents').select('id, sent_at, project_id, metadata').eq('id', sowId)
-      .eq('workspace_id', session.workspaceId).single()
+      .eq('workspace_id', session.workspaceId).maybeSingle()
+    // FIX (SOW lifecycle independent pass 15, B4): a failed read is not "not found" — fail into the route's 500 handler.
+    if (sowReadErr) throw new Error(`SOW read failed: ${sowReadErr.message}`)
 
     if (!sow) return NextResponse.json({ error: 'SOW not found' }, { status: 404 })
     if (!(await canReadProject(service, session, sow.project_id)))

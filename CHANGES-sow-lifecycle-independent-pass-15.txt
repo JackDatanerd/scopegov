@@ -1,0 +1,13 @@
+SOW lifecycle — independent pass 15 (fixes)
+
+B1 (MED) lib/ai/sow-content.ts parseTableSections: a repeated column-header row, markdown outer pipes and "|---|" separator
+   lines became real rows (shifted columns, junk Roles row "✓ ✓"). Outer pipes stripped, separators and header echoes dropped.
+B2 (LOW-MED) app/api/sow/[id]/route.ts PATCH: any RPC error fell back to the non-atomic whole-array / whole-metadata write
+   (lost updates). Fallback now only when the function is not installed; otherwise 500.
+B3 (LOW-MED) api/sow/parse-brief: max_tokens 1000 truncated JSON for longer briefs -> generic failure. Cap 3000 and a clear
+   422 message when the reply is still cut off.
+B4 (LOW) SOW routes (PATCH, send, reopen, withdraw, remind, link, attachments x3, regenerate-section, api/pdf/sow,
+   sendSowDocument) read with .single() and ignored `error`: a failed read answered "not found". maybeSingle() + error -> 500.
+
+Tests: tests/sow-lifecycle-independent-pass-15.test.ts (new); three existing mocks gained maybeSingle(). Full suite + tsc pass.
+No migration, no env vars.

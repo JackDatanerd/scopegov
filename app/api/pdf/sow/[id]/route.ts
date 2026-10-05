@@ -27,7 +27,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 
     const service = createServiceClient()
 
-    const { data: sow } = await (service as any)
+    const { data: sow, error: sowReadErr } = await (service as any)
       .from('sow_documents')
       .select(`id, version, document_number, sections, metadata, status, signed_at, signed_by, client_signature_data, project_id, pdf_path,
         projects(id, name, disc, contract_value, currency, type, retainer_duration_months,
@@ -36,7 +36,9 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
             legal_address, tax_id, phone, website))`)
       .eq('id', id)
       .eq('workspace_id', session.workspaceId)
-      .single()
+      .maybeSingle()
+    // FIX (SOW lifecycle independent pass 15, B4): a failed read is not "not found" — fail into the route's 500 handler.
+    if (sowReadErr) throw new Error(`SOW read failed: ${sowReadErr.message}`)
 
     if (!sow) return NextResponse.json({ error: 'Not found' }, { status: 404 })
     // FIX (audit round 3): see lib/utils/project-access.ts.

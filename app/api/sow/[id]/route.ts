@@ -12,6 +12,10 @@ import { REQUIRED_SECTION_IDS, hydrateSections, sanitizeSectionList, sanitizeTab
 import { isTableSection } from '@/lib/sow/table-schema'
 import { getPendingApprovalForDocument } from '@/lib/approvals/engine'
 
+function isMissingFunction(err: any): boolean {
+  return /could not find the function|PGRST202|does not exist/i.test(String(err?.message || '') + String(err?.code || ''))
+}
+
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id }  = await params
@@ -22,10 +26,12 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       return NextResponse.json({ error: 'Missing permission: EDIT_SOW' }, { status: 403 })
 
     const service = createServiceClient()
-    const { data: sow } = await (service as any)
+    const { data: sow, error: sowReadErr } = await (service as any)
       .from('sow_documents')
       .select('id, status, sent_at, sections, metadata, project_id')
-      .eq('id', id).eq('workspace_id', session.workspaceId).single()
+      .eq('id', id).eq('workspace_id', session.workspaceId).maybeSingle()
+    // FIX (SOW lifecycle independent pass 15, B4): a failed read is not "not found" — fail into the route's 500 handler.
+    if (sowReadErr) throw new Error(`SOW read failed: ${sowReadErr.message}`)
 
     if (!sow) return NextResponse.json({ error: 'SOW not found' }, { status: 404 })
     // FIX (audit round 3): see lib/utils/project-access.ts — GET/PATCH
@@ -98,6 +104,9 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         if (!merged) return NextResponse.json({ error: LOCKED_MSG }, { status: 409 })
         return NextResponse.json({ ok: true })
       }
+      // FIX (SOW lifecycle independent pass 15, B2): only fall back when the function is not installed. Any other error
+      // (timeout, transient DB failure) used to take the non-atomic whole-object write, which can erase a concurrent edit.
+      if (!isMissingFunction(mergeErr)) throw new Error(`sow_set_metadata_key failed: ${mergeErr.message}`)
       console.error('sow_set_metadata_key unavailable, falling back to guarded metadata write:', mergeErr.message)
       const ok = await guardedUpdate({ metadata: { ...(sow.metadata || {}), msaReference: cleaned || null } })
       if (!ok) return NextResponse.json({ error: LOCKED_MSG }, { status: 409 })
@@ -172,6 +181,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         if (!applied) return NextResponse.json({ error: LOCKED_MSG }, { status: 409 })
         return NextResponse.json({ ok: true })
       }
+      if (!isMissingFunction(rpcErr)) throw new Error(`sow_apply_section_patch failed: ${rpcErr.message}`)
       console.error('sow_apply_section_patch unavailable, falling back to guarded array write:', rpcErr.message)
     }
     const merged = hydrated.map((s: any) => (s.id === body.sectionId ? { ...s, ...patch } : s))

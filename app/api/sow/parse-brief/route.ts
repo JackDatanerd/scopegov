@@ -68,7 +68,7 @@ Rules:
 
     const msg = await anthropicClient().messages.create({
       model:      'claude-haiku-4-5-20251001',
-      max_tokens: 1000,
+      max_tokens: 3000,
       messages:   [{ role: 'user', content: prompt }],
     })
 
@@ -82,6 +82,10 @@ Rules:
     const raw = msg.content.filter(b => b.type === 'text').map((b: any) => b.text).join('')
     await recordAiUsage(service, session.workspaceId, session.id, 'sow.parseBrief')
 
+    // FIX (SOW lifecycle independent pass 15, B3): a reply cut off at max_tokens is incomplete JSON; say so instead of a
+    // generic parse failure.
+    if (msg.stop_reason === 'max_tokens')
+      return NextResponse.json({ error: 'That brief is too long to read in one go. Shorten it or split it, then try again.' }, { status: 422 })
     const brief = stripAndParse<Record<string, unknown>>(raw)
     return NextResponse.json({ brief })
   } catch (err) {
