@@ -52,6 +52,8 @@ vi.mock('@/lib/utils/project-limit', () => ({
 }))
 
 const PID = '11111111-1111-1111-1111-111111111111'
+const MSG = '33333333-3333-3333-3333-333333333333'
+const CID = '44444444-4444-4444-4444-444444444444'
 const params = { params: Promise.resolve({ id: PID }) }
 const req = (body?: any) => ({ json: async () => body ?? {}, url: `http://x/api/projects/${PID}` }) as any
 
@@ -177,20 +179,20 @@ describe('discussion routes', () => {
   it('message edit: a failed message lookup is 500, not 404', async () => {
     const { PATCH } = await import('@/app/api/projects/[id]/messages/[messageId]/route')
     state.script.project_messages = [fail()]
-    const res = await PATCH(req({ body: 'hello' }), { params: Promise.resolve({ id: PID, messageId: 'm1' }) })
+    const res = await PATCH(req({ body: 'hello' }), { params: Promise.resolve({ id: PID, messageId: MSG }) })
     expect(res.status).toBe(500)
   })
   it('message edit: a failed read of existing mentions skips reconciliation instead of inserting duplicates', async () => {
     const { PATCH } = await import('@/app/api/projects/[id]/messages/[messageId]/route')
     const U = '33333333-3333-3333-3333-333333333333'
     state.script.project_messages = [
-      ok({ id: 'm1', author_id: 'u1', deleted_at: null, project_id: PID, workspace_id: 'w1' }),
-      ok([{ id: 'm1' }]),
+      ok({ id: MSG, author_id: 'u1', deleted_at: null, project_id: PID, workspace_id: 'w1' }),
+      ok([{ id: MSG }]),
     ]
     state.script.project_members_active = [ok([{ member_user_id: U }])]
     state.script.workspace_members = [ok([{ user_id: U, effective_permissions: {}, users: { id: U, name: 'Una', email: 'u@x.com', avatar_url: null } }])]
     state.script.project_message_mentions = [fail()]
-    const res = await PATCH(req({ body: `hi @[Una](${U})` }), { params: Promise.resolve({ id: PID, messageId: 'm1' }) })
+    const res = await PATCH(req({ body: `hi @[Una](${U})` }), { params: Promise.resolve({ id: PID, messageId: MSG }) })
     expect(res.status).toBe(200)
     expect(state.calls.filter(c => c.table === 'project_message_mentions')).toHaveLength(0)
   })
@@ -213,10 +215,10 @@ describe('listMentionable', () => {
 describe('POST /api/projects', () => {
   it('a failed creator-membership lookup rolls the project back and fails — it never returns a project its creator cannot open', async () => {
     const { POST } = await import('@/app/api/projects/route')
-    state.script.clients = [ok({ id: 'c1', name: 'C', status: 'active' })]
+    state.script.clients = [ok({ id: CID, name: 'C', status: 'active' })]
     state.script.projects = [ok({ id: PID }), ok(null)]
     state.script.workspace_members = [fail()]
-    const res = await POST(req({ name: 'Site', type: 'web', clientId: 'c1', contractValue: 100 }))
+    const res = await POST(req({ name: 'Site', type: 'web', clientId: CID, contractValue: 100 }))
     expect(res.status).toBe(500)
     expect(state.calls.filter(c => c.table === 'projects' && c.op === 'delete')).toHaveLength(1)
     expect(state.calls.filter(c => c.table === 'project_members')).toHaveLength(0)
@@ -224,7 +226,7 @@ describe('POST /api/projects', () => {
   it('a failed client lookup is 500, not "Client not found"', async () => {
     const { POST } = await import('@/app/api/projects/route')
     state.script.clients = [fail()]
-    const res = await POST(req({ name: 'Site', type: 'web', clientId: 'c1', contractValue: 100 }))
+    const res = await POST(req({ name: 'Site', type: 'web', clientId: CID, contractValue: 100 }))
     expect(res.status).toBe(500)
     expect(state.calls.filter(c => c.table === 'projects')).toHaveLength(0)
   })

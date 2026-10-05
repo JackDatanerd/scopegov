@@ -1,3 +1,4 @@
+import { isUuidString } from '@/lib/utils/uuid'
 import { resolveReplyTo } from '@/lib/email/reply-to'
 import { createServiceClient } from '@/lib/supabase/server'
 import { lookupMissResponse } from '@/lib/documents/co-lookup'
@@ -17,6 +18,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const { id }  = await params
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    if (!isUuidString(id)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
     // FIX (audit round 3): same gap as close/route.ts — no permission check
     // at all. Any authenticated workspace member could withdraw any CO
     // (killing the client's portal link and cancelling an in-flight

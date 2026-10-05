@@ -1,0 +1,15 @@
+Projects & Dashboard pass 11 (independent audit, bugs only)
+
+B1  A malformed id (mistyped/truncated URL, probe) reached Postgres as `uuid = 'abc'` (22P02). Since pass 10 made
+    every failed read a 500, that became a 500 from the API and the error boundary on /projects/[id] instead of a 404.
+    Clients and Guardian already guard this (lib/utils/uuid.ts); section 7 never did.
+    - app/api/projects/[id]/** (all 13 route files, every handler) + messages/[messageId]: isUuidString on the URL
+      id(s) -> 404 before any query.
+    - POST /api/projects and PATCH /api/projects/[id]: a non-UUID clientId is 404 "Client not found" (was a lookup 500).
+    - app/(app)/projects/[id]/page.tsx: notFound() for a non-UUID id; generateMetadata skips the lookup.
+    Traced out of the section (same shape, same fix): every handler in app/api/co/[id]/**, app/api/sow/[id]/**,
+    app/api/invoices/[id]/**, app/api/approvals/[id]/** (42 handlers).
+    Tests: tests/projects-dashboard-pass-11.test.ts (new). Six existing tests used non-UUID request ids
+    (co1, v2, s1, s2, a1, inv1, c1, p1, m1) and now use UUID-format ids: co-independent-pass-6/7/8,
+    sow-attachments-integrity, invoice-void-closes-dispute, approvals-pass1-round2-fixes,
+    projects-dashboard-pass-10, projects-dashboard-fresh-pass.

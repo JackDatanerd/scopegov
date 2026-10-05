@@ -21,10 +21,10 @@ import { displayToTokens } from '@/lib/utils/project-messages'
 
 const run = (cos: any[]) => {
   h.db = createFakeSupabase({
-    projects: [{ id: 'p1', workspace_id: 'w1', name: 'Site', status: 'Active', deleted_at: null, change_orders: cos, guardian_flags: [] }],
+    projects: [{ id: '11111111-1111-1111-1111-111111111111', workspace_id: 'w1', name: 'Site', status: 'Active', deleted_at: null, change_orders: cos, guardian_flags: [] }],
     approval_requests: [],
   })
-  return complete({} as any, { params: Promise.resolve({ id: 'p1' }) })
+  return complete({} as any, { params: Promise.resolve({ id: '11111111-1111-1111-1111-111111111111' }) })
 }
 
 describe('complete route: superseded change orders are history, not blockers', () => {

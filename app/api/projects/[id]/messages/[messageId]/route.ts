@@ -7,6 +7,7 @@
 // stray/inappropriate message doesn't require reaching for a database
 // console.
 
+import { isUuidString } from '@/lib/utils/uuid'
 import { hasUnstorableText, UNSTORABLE_TEXT_ERROR } from '@/lib/utils/client-input'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
@@ -42,6 +43,7 @@ export async function PATCH(
     const { id: projectId, messageId } = await params
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    if (!isUuidString(projectId) || !isUuidString(messageId)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
     const body = await request.json().catch(() => null)
     const typed = typeof body?.body === 'string' ? body.body.trim() : ''
@@ -139,6 +141,7 @@ export async function DELETE(
     const { id: projectId, messageId } = await params
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    if (!isUuidString(projectId) || !isUuidString(messageId)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
     const service = createServiceClient()
     const message = await loadMessage(service, session.workspaceId, projectId, messageId)

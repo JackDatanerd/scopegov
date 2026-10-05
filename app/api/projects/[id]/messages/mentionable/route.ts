@@ -1,3 +1,4 @@
+import { isUuidString } from '@/lib/utils/uuid'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession } from '@/lib/auth/session'
@@ -12,6 +13,7 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
     const { id: projectId } = await params
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    if (!isUuidString(projectId)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
     const service = createServiceClient()
     if (!(await canReadProject(service, session, projectId)))

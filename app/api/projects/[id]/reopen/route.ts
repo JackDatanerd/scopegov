@@ -1,6 +1,7 @@
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
+import { isUuidString } from '@/lib/utils/uuid'
 import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
 import { wouldExceedLimit, isOverLimit, projectLimitMessage } from '@/lib/utils/project-limit'
@@ -17,6 +18,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     if (!hasPermission(session, 'MARK_PROJECT_COMPLETE'))
       return NextResponse.json({ error: 'Missing permission' }, { status: 403 })
+
+    if (!isUuidString(id)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
     const service = createServiceClient()
     if (!(await canReadProject(service, session, id)))

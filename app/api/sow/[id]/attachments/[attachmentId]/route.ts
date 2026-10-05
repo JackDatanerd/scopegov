@@ -10,6 +10,7 @@ export const runtime = 'nodejs'
 // replace before sending; the same draft-only lock below prevents it from
 // becoming a way to alter what a client actually saw after the fact.
 
+import { isUuidString } from '@/lib/utils/uuid'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
@@ -27,6 +28,7 @@ export async function DELETE(
     const { id, attachmentId } = await params
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    if (!isUuidString(id) || !isUuidString(attachmentId)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
     if (!hasPermission(session, 'EDIT_SOW'))
       return NextResponse.json({ error: 'Missing permission: EDIT_SOW' }, { status: 403 })
 

@@ -1,3 +1,4 @@
+import { isUuidString } from '@/lib/utils/uuid'
 import { loadProjectActivity } from '@/lib/utils/project-activity'
 import { canReadProject } from '@/lib/utils/project-access'
 import { amendmentImpact, baseContractValue } from '@/lib/utils/contract-value'
@@ -23,6 +24,7 @@ export async function generateMetadata({ params }: Props) {
   // body then redirected or 404'd. Scope it exactly like the page does.
   const session = await getSessionStrict()
   if (!session) return { title: 'Project' }
+  if (!isUuidString(id)) return { title: 'Project' }
   const service = createServiceClient()
   // FIX (Projects & Dashboard pass 2, B5): workspace scoping alone still let a limited-access member (VIEW_OWN_PROJECTS,
   // not on this project) read its name from the tab title while the page body 404s. Same visibility rule as the page.
@@ -40,6 +42,9 @@ export default async function ProjectPage({ params, searchParams }: Props) {
   const { tab = 'overview', new: isNew } = await searchParams
   const session = await getSessionStrict()
   if (!session) redirect('/login')
+
+  // A mistyped / truncated id is a plain 404, not a 22P02 thrown into the error boundary (lib/utils/uuid.ts).
+  if (!isUuidString(id)) notFound()
 
   const service = createServiceClient()
 

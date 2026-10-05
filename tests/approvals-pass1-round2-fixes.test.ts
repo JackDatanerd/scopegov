@@ -29,7 +29,7 @@ vi.mock('@/lib/supabase/server', () => ({
         // Mimic PostgREST: a column not named in the embed is simply absent from the row.
         const projects: any = { id: 'p1', name: 'P', disc: 'D', contract_value: 100, currency: 'USD', type: 'fixed', retainer_duration_months: null }
         if (/projects\([^)]*\bstatus\b/.test(arg)) projects.status = h.projectStatus
-        const row = { id: 's1', version: 1, status: 'draft', project_id: 'p1', sections: [], metadata: {}, projects }
+        const row = { id: 'aaaaaaaa-0000-4000-8000-000000000001', version: 1, status: 'draft', project_id: 'p1', sections: [], metadata: {}, projects }
         const b: any = { eq: () => b, single: async () => ({ data: row }) }
         return b
       },
@@ -69,7 +69,7 @@ describe('B2 - SOW send route terminal-project check', () => {
 
   const call = async () => {
     const { POST } = await import('@/app/api/sow/[id]/send/route')
-    return POST(new Request('http://x', { method: 'POST', body: '{}' }) as any, { params: Promise.resolve({ id: 's1' }) })
+    return POST(new Request('http://x', { method: 'POST', body: '{}' }) as any, { params: Promise.resolve({ id: 'aaaaaaaa-0000-4000-8000-000000000001' }) })
   }
 
   it('selects projects.status', async () => {

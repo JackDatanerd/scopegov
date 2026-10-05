@@ -1,3 +1,4 @@
+import { isUuidString } from '@/lib/utils/uuid'
 import { createServiceClient } from '@/lib/supabase/server'
 import { lookupMissResponse } from '@/lib/documents/co-lookup'
 import { NextResponse, type NextRequest } from 'next/server'
@@ -32,6 +33,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const { id }  = await params
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    if (!isUuidString(id)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
     if (!hasPermission(session, 'SEND_CHANGE_ORDERS'))
       return NextResponse.json({ error: 'Missing permission' }, { status: 403 })
     // Accepting a counter emails the client a countersignature request — same verified-email gate as send.

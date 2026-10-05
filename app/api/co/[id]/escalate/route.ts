@@ -1,3 +1,4 @@
+import { isUuidString } from '@/lib/utils/uuid'
 import { notifyUsers } from '@/lib/utils/notify'
 import { createServiceClient } from '@/lib/supabase/server'
 import { lookupMissResponse } from '@/lib/documents/co-lookup'
@@ -15,6 +16,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const { id }  = await params
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    if (!isUuidString(id)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
     // FIX (audit round 2, item #5): this action had no permission check at
     // all, unlike SEND_CHANGE_ORDERS gating every other client/stakeholder
     // -facing action on a CO (send, remind, accept-counter).

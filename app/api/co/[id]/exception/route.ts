@@ -19,6 +19,7 @@ export const runtime = 'nodejs'
 // as its existing 'closed' handling), so a client revisiting the link sees the outcome instead of the
 // live accept/decline/counter form.
 
+import { isUuidString } from '@/lib/utils/uuid'
 import { resolveReplyTo } from '@/lib/email/reply-to'
 import { createServiceClient } from '@/lib/supabase/server'
 import { lookupMissResponse } from '@/lib/documents/co-lookup'
@@ -52,6 +53,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const { id }  = await params
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    if (!isUuidString(id)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
     // Same permission the flag-side exception action requires — granting scope away for free is a
     // distinct authority from SEND_CHANGE_ORDERS (which close/withdraw/send use), not a lesser version
     // of it: a person who can send change orders isn't automatically someone who should be able to

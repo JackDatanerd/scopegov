@@ -107,8 +107,8 @@ vi.mock('@/lib/documents/co-contract-value', () => ({ getContractValueBefore: as
 vi.mock('@/lib/documents/executed-pdf', () => ({ fetchExecutedPdf: async () => null }))
 
 const project = { id: 'p1', name: 'Site', status: 'Active', currency: 'USD', type: 'project', client_id: 'c1', clients: { name: 'C', email: 'c@c.co', cc_emails: [] }, workspaces: { agency_name: 'A', brand_colour: '#000' } }
-const co = (o: any = {}) => ({ id: 'co1', workspace_id: 'w1', title: 'T', status: 'draft', flag_id: null, token: null, project_id: 'p1', total: 100, version: 1, root_co_id: null, projects: project, ...o })
-const status = (id = 'co1') => state.db.change_orders.find((r: any) => r.id === id)?.status
+const co = (o: any = {}) => ({ id: 'aaaaaaaa-0000-4000-8000-000000000001', workspace_id: 'w1', title: 'T', status: 'draft', flag_id: null, token: null, project_id: 'p1', total: 100, version: 1, root_co_id: null, projects: project, ...o })
+const status = (id = 'aaaaaaaa-0000-4000-8000-000000000001') => state.db.change_orders.find((r: any) => r.id === id)?.status
 const mkReq = (body: any = {}) => ({ json: async () => body }) as any
 
 const ctx = (id: string) => ({ params: Promise.resolve({ id }) }) as any
@@ -120,7 +120,7 @@ describe('revise (countered): failure and retry leave nothing half-done', () => 
   it('a failed approval lookup removes the revision draft and leaves the original countered (500)', async () => {
     const { POST } = await import('@/app/api/co/[id]/revise/route')
     state.db = seed(); state.cancelThrows = true
-    const res = await POST(mkReq({}), ctx('co1'))
+    const res = await POST(mkReq({}), ctx('aaaaaaaa-0000-4000-8000-000000000001'))
     expect(res.status).toBe(500)
     expect(status()).toBe('countered')
     expect(state.db.change_orders).toHaveLength(1)
@@ -130,10 +130,10 @@ describe('revise (countered): failure and retry leave nothing half-done', () => 
     const { POST } = await import('@/app/api/co/[id]/revise/route')
     state.db = {
       change_orders: [co({ status: 'countered', line_items: [], subtotal: 100 }),
-        co({ id: 'stray', status: 'draft', version: 2, root_co_id: 'co1', title: 'edited by the user', projects: undefined })],
+        co({ id: 'stray', status: 'draft', version: 2, root_co_id: 'aaaaaaaa-0000-4000-8000-000000000001', title: 'edited by the user', projects: undefined })],
       co_attachments: [],
     }
-    const res = await POST(mkReq({}), ctx('co1'))
+    const res = await POST(mkReq({}), ctx('aaaaaaaa-0000-4000-8000-000000000001'))
     const json = await res.json()
     expect(res.status).toBe(200)
     expect(json.coId).toBe('stray')
@@ -146,11 +146,11 @@ describe('revise (countered): failure and retry leave nothing half-done', () => 
     const { POST } = await import('@/app/api/co/[id]/revise/route')
     state.db = {
       change_orders: [co({ status: 'countered', line_items: [], subtotal: 100 }),
-        co({ id: 'stray', status: 'draft', version: 2, root_co_id: 'co1', projects: undefined })],
+        co({ id: 'stray', status: 'draft', version: 2, root_co_id: 'aaaaaaaa-0000-4000-8000-000000000001', projects: undefined })],
       co_attachments: [],
     }
     state.cancelBlocked = true
-    const res = await POST(mkReq({}), ctx('co1'))
+    const res = await POST(mkReq({}), ctx('aaaaaaaa-0000-4000-8000-000000000001'))
     expect(res.status).toBe(409)
     expect(status()).toBe('countered')
     expect(state.db.change_orders).toHaveLength(2)
@@ -160,10 +160,10 @@ describe('revise (countered): failure and retry leave nothing half-done', () => 
     const { POST } = await import('@/app/api/co/[id]/revise/route')
     state.db = {
       change_orders: [co({ status: 'declined', line_items: [], subtotal: 100 }),
-        co({ id: 'd2', status: 'draft', version: 2, root_co_id: 'co1', projects: undefined })],
+        co({ id: 'd2', status: 'draft', version: 2, root_co_id: 'aaaaaaaa-0000-4000-8000-000000000001', projects: undefined })],
       co_attachments: [],
     }
-    const res = await POST(mkReq({}), ctx('co1'))
+    const res = await POST(mkReq({}), ctx('aaaaaaaa-0000-4000-8000-000000000001'))
     const json = await res.json()
     expect(json).toMatchObject({ coId: 'd2', existing: true })
     expect(status()).toBe('declined')

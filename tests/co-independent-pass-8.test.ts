@@ -65,7 +65,7 @@ describe('B1 GET /api/co/[id] route', () => {
     vi.doMock('@/lib/utils/project-access', () => ({ canReadProject: async () => true }))
     vi.doMock('@/lib/approvals/engine', () => ({ getPendingApprovalForDocument: async () => null }))
     const { GET } = await import('@/app/api/co/[id]/route')
-    return GET({} as any, { params: Promise.resolve({ id: 'c1' }) })
+    return GET({} as any, { params: Promise.resolve({ id: 'aaaaaaaa-0000-4000-8000-000000000001' }) })
   }
 
   it('returns 404 when there is genuinely no such change order', async () => {
@@ -89,13 +89,13 @@ describe('B2 a failed sibling read blocks instead of passing', () => {
   })
   it('send guard: a failed lookup refuses the send with a retryable message', async () => {
     const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
-    const msg = await liveCoSiblingMessage(svc({ data: null, error: { message: 'boom' } }), { id: 'c1', root_co_id: null })
+    const msg = await liveCoSiblingMessage(svc({ data: null, error: { message: 'boom' } }), { id: 'aaaaaaaa-0000-4000-8000-000000000001', root_co_id: null })
     expect(msg).toMatch(/try again/i)
     spy.mockRestore()
   })
   it('still allows the send when the lookup works and finds nothing, and blocks when it finds a live one', async () => {
-    expect(await liveCoSiblingMessage(svc({ data: [], error: null }), { id: 'c1' })).toBeNull()
-    const msg = await liveCoSiblingMessage(svc({ data: [{ id: 'c0', version: 1, status: 'awaiting_response' }], error: null }), { id: 'c1' })
+    expect(await liveCoSiblingMessage(svc({ data: [], error: null }), { id: 'aaaaaaaa-0000-4000-8000-000000000001' })).toBeNull()
+    const msg = await liveCoSiblingMessage(svc({ data: [{ id: 'c0', version: 1, status: 'awaiting_response' }], error: null }), { id: 'aaaaaaaa-0000-4000-8000-000000000001' })
     expect(msg).toMatch(/Version 1 .* still open/)
   })
   it('revise and exception stop on a failed sibling read', () => {
@@ -111,13 +111,13 @@ describe('B3 auto-send refuses a change order that changed size after approval w
     return { from: () => chain }
   }
   const co = (total: number, extra: any = {}) => ({
-    id: 'c1', title: 'T', status: 'draft', note: null, total, version: 1, document_number: null, root_co_id: null, project_id: 'p1',
+    id: 'aaaaaaaa-0000-4000-8000-000000000001', title: 'T', status: 'draft', note: null, total, version: 1, document_number: null, root_co_id: null, project_id: 'p1',
     is_retainer_renewal: false, renewal_term_months: null, is_credit: false,
     line_items: [{ id: 'l1', description: 'Work', quantity: 1, rate: total, total }], ...extra,
     projects: { id: 'p1', name: 'P', status: 'Active', currency: 'USD', type: 'fixed', retainer_duration_months: null, client_id: 'cl1', deleted_at: null,
       clients: { name: 'C', email: 'c@x.co', cc_emails: [] }, workspaces: { id: 'w1', agency_name: 'Ag', brand_colour: '#000' } },
   })
-  const params = { coId: 'c1', workspaceId: 'w1', actorId: 'u1', actorEmail: 'a@x.co', actorName: 'A' }
+  const params = { coId: 'aaaaaaaa-0000-4000-8000-000000000001', workspaceId: 'w1', actorId: 'u1', actorEmail: 'a@x.co', actorName: 'A' }
 
   it('refuses with a clear 409 when the amount no longer matches what was approved', async () => {
     const { sendCoDocument } = await import('@/lib/documents/send-co')

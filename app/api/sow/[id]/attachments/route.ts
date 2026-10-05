@@ -24,6 +24,7 @@ export const runtime = 'nodejs'
 // could land on a locked SOW. The insert now goes through sow_attachment_add (migration 109),
 // which rechecks both under a row lock; the pre-checks below remain only as a cheap fast-path.
 
+import { isUuidString } from '@/lib/utils/uuid'
 import { randomUUID } from 'crypto'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
@@ -44,6 +45,7 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
     const { id } = await params
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    if (!isUuidString(id)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
     const service = createServiceClient()
     const { data: sow } = await (service as any)
@@ -82,6 +84,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const { id } = await params
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    if (!isUuidString(id)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
     if (!hasPermission(session, 'EDIT_SOW'))
       return NextResponse.json({ error: 'Missing permission: EDIT_SOW' }, { status: 403 })
 

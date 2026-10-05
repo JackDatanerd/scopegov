@@ -1,5 +1,6 @@
 export const runtime = 'nodejs'
 
+import { isUuidString } from '@/lib/utils/uuid'
 import { resolveReplyTo } from '@/lib/email/reply-to'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
@@ -16,6 +17,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const { id }  = await params
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    if (!isUuidString(id)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
     if (!hasPermission(session, 'SEND_INVOICES'))
       return NextResponse.json({ error: 'Missing permission: SEND_INVOICES' }, { status: 403 })
 

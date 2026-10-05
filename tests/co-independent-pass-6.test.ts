@@ -115,8 +115,8 @@ vi.mock('@/lib/documents/co-contract-value', () => ({ getContractValueBefore: as
 vi.mock('@/lib/documents/executed-pdf', () => ({ fetchExecutedPdf: async () => null }))
 
 const project = { id: 'p1', name: 'Site', status: 'Active', currency: 'USD', type: 'project', client_id: 'c1', clients: { name: 'C', email: 'c@c.co', cc_emails: [] }, workspaces: { agency_name: 'A', brand_colour: '#000' } }
-const co = (o: any = {}) => ({ id: 'co1', workspace_id: 'w1', title: 'T', status: 'draft', flag_id: null, token: null, project_id: 'p1', total: 100, version: 1, root_co_id: null, projects: project, ...o })
-const status = (id = 'co1') => state.db.change_orders.find((r: any) => r.id === id)?.status
+const co = (o: any = {}) => ({ id: 'aaaaaaaa-0000-4000-8000-000000000001', workspace_id: 'w1', title: 'T', status: 'draft', flag_id: null, token: null, project_id: 'p1', total: 100, version: 1, root_co_id: null, projects: project, ...o })
+const status = (id = 'aaaaaaaa-0000-4000-8000-000000000001') => state.db.change_orders.find((r: any) => r.id === id)?.status
 const mkReq = (body: any = {}) => ({ json: async () => body }) as any
 const ctx = (id: string) => ({ params: Promise.resolve({ id }) })
 
@@ -129,7 +129,7 @@ describe('close / withdraw: approvals are cancelled before the status write and 
   it('close refuses (409) and leaves the CO untouched when the cancel is blocked by a live send', async () => {
     const { POST } = await import('@/app/api/co/[id]/close/route')
     state.db = { change_orders: [co()] }; state.cancelBlocked = true
-    const res = await POST(mkReq({}), ctx('co1'))
+    const res = await POST(mkReq({}), ctx('aaaaaaaa-0000-4000-8000-000000000001'))
     expect(res.status).toBe(409)
     expect(status()).toBe('draft')
     expect(state.calls).not.toContain('audit:co.closed')
@@ -137,7 +137,7 @@ describe('close / withdraw: approvals are cancelled before the status write and 
   it('close cancels both request kinds BEFORE writing the status', async () => {
     const { POST } = await import('@/app/api/co/[id]/close/route')
     state.db = { change_orders: [co()] }
-    const res = await POST(mkReq({}), ctx('co1'))
+    const res = await POST(mkReq({}), ctx('aaaaaaaa-0000-4000-8000-000000000001'))
     expect(res.status).toBe(200)
     expect(status()).toBe('closed')
     expect(state.calls).toContain('cancel:co')
@@ -147,14 +147,14 @@ describe('close / withdraw: approvals are cancelled before the status write and 
   it('withdraw refuses (409) and leaves the CO untouched when the cancel is blocked', async () => {
     const { POST } = await import('@/app/api/co/[id]/withdraw/route')
     state.db = { change_orders: [co()] }; state.cancelBlocked = true
-    const res = await POST(mkReq({}), ctx('co1'))
+    const res = await POST(mkReq({}), ctx('aaaaaaaa-0000-4000-8000-000000000001'))
     expect(res.status).toBe(409)
     expect(status()).toBe('draft')
   })
   it('withdraw cancels BEFORE writing the status', async () => {
     const { POST } = await import('@/app/api/co/[id]/withdraw/route')
     state.db = { change_orders: [co()] }
-    const res = await POST(mkReq({}), ctx('co1'))
+    const res = await POST(mkReq({}), ctx('aaaaaaaa-0000-4000-8000-000000000001'))
     expect(res.status).toBe(200)
     expect(status()).toBe('withdrawn')
     expect(state.calls.indexOf('cancel:co')).toBeLessThan(state.calls.indexOf('db.update:change_orders:withdrawn'))
@@ -166,7 +166,7 @@ describe('exception: cancel ordering and the newer-version guard', () => {
   it('refuses (409), removes the ledger row and leaves the CO alone when the cancel is blocked', async () => {
     const { POST } = await import('@/app/api/co/[id]/exception/route')
     state.db = { change_orders: [co()], exceptions_log: [] }; state.cancelBlocked = true
-    const res = await POST(mkReq(body), ctx('co1'))
+    const res = await POST(mkReq(body), ctx('aaaaaaaa-0000-4000-8000-000000000001'))
     expect(res.status).toBe(409)
     expect(status()).toBe('draft')
     expect(state.db.exceptions_log).toHaveLength(0)
@@ -174,14 +174,14 @@ describe('exception: cancel ordering and the newer-version guard', () => {
   it('a normal grant keeps its ledger row and cancels before the status write', async () => {
     const { POST } = await import('@/app/api/co/[id]/exception/route')
     state.db = { change_orders: [co()], exceptions_log: [] }
-    const res = await POST(mkReq(body), ctx('co1'))
+    const res = await POST(mkReq(body), ctx('aaaaaaaa-0000-4000-8000-000000000001'))
     expect(res.status).toBe(200)
     expect(status()).toBe('exception_granted')
     expect(state.db.exceptions_log).toHaveLength(1)
     expect(state.calls.indexOf('cancel:co')).toBeLessThan(state.calls.indexOf('db.update:change_orders:exception_granted'))
   })
 
-  const sib = (v: number, s: string) => co({ id: 'v' + v, status: s, version: v, root_co_id: 'co1' })
+  const sib = (v: number, s: string) => co({ id: 'v' + v, status: s, version: v, root_co_id: 'aaaaaaaa-0000-4000-8000-000000000001' })
   const cases: Array<[string, Array<[number, string]>, number, RegExp | null]> = [
     ['newer withdrawn version does not block', [[2, 'withdrawn']], 200, null],
     ['newer closed version does not block', [[2, 'closed']], 200, null],
@@ -197,15 +197,15 @@ describe('exception: cancel ordering and the newer-version guard', () => {
     it(name, async () => {
       const { POST } = await import('@/app/api/co/[id]/exception/route')
       state.db = { change_orders: [co({ status: 'declined' }), ...sibs.map(([v, s]) => sib(v, s))], exceptions_log: [] }
-      const res = await POST(mkReq(body), ctx('co1'))
+      const res = await POST(mkReq(body), ctx('aaaaaaaa-0000-4000-8000-000000000001'))
       expect(res.status).toBe(want)
       if (msg) expect((await res.json()).error).toMatch(msg)
     })
   }
   it('the newest version is never blocked by an OLDER one', async () => {
     const { POST } = await import('@/app/api/co/[id]/exception/route')
-    state.db = { change_orders: [co({ id: 'v1', status: 'declined', version: 1 }), co({ id: 'v2', status: 'declined', version: 2, root_co_id: 'v1' })], exceptions_log: [] }
-    const res = await POST(mkReq(body), ctx('v2'))
+    state.db = { change_orders: [co({ id: 'v1', status: 'declined', version: 1 }), co({ id: 'aaaaaaaa-0000-4000-8000-000000000002', status: 'declined', version: 2, root_co_id: 'v1' })], exceptions_log: [] }
+    const res = await POST(mkReq(body), ctx('aaaaaaaa-0000-4000-8000-000000000002'))
     expect(res.status).toBe(200)
   })
 })
@@ -215,7 +215,7 @@ describe('revise (countered): the co_counter request is cancelled before the ori
   it('backs out when a send is live: 409, the original stays countered, the revision draft is removed', async () => {
     const { POST } = await import('@/app/api/co/[id]/revise/route')
     state.db = seed(); state.cancelBlocked = true
-    const res = await POST(mkReq({}), ctx('co1'))
+    const res = await POST(mkReq({}), ctx('aaaaaaaa-0000-4000-8000-000000000001'))
     expect(res.status).toBe(409)
     expect(status()).toBe('countered')
     expect(state.db.change_orders).toHaveLength(1)
@@ -223,7 +223,7 @@ describe('revise (countered): the co_counter request is cancelled before the ori
   it('a normal revise cancels first, then supersedes and leaves a draft', async () => {
     const { POST } = await import('@/app/api/co/[id]/revise/route')
     state.db = seed()
-    const res = await POST(mkReq({}), ctx('co1'))
+    const res = await POST(mkReq({}), ctx('aaaaaaaa-0000-4000-8000-000000000001'))
     expect(res.status).toBe(200)
     expect(status()).toBe('closed')
     expect(state.db.change_orders).toHaveLength(2)
@@ -232,7 +232,7 @@ describe('revise (countered): the co_counter request is cancelled before the ori
   it('reviving a declined CO is unchanged', async () => {
     const { POST } = await import('@/app/api/co/[id]/revise/route')
     state.db = { change_orders: [co({ status: 'declined', line_items: [], subtotal: 100 })], co_attachments: [] }
-    const res = await POST(mkReq({}), ctx('co1'))
+    const res = await POST(mkReq({}), ctx('aaaaaaaa-0000-4000-8000-000000000001'))
     expect(res.status).toBe(200)
     expect(state.db.change_orders).toHaveLength(2)
   })
@@ -244,15 +244,15 @@ describe('revise (countered): the co_counter request is cancelled before the ori
 describe('send: a live sibling is refused BEFORE the approval gate', () => {
   const seed = (siblingStatus: string) => ({
     change_orders: [
-      co({ id: 'v2', status: 'draft', version: 2, root_co_id: 'co1', line_items: [{ description: 'x', quantity: 1, rate: 100, total: 100 }] }),
-      co({ id: 'co1', status: siblingStatus, version: 1 }),
+      co({ id: 'aaaaaaaa-0000-4000-8000-000000000002', status: 'draft', version: 2, root_co_id: 'aaaaaaaa-0000-4000-8000-000000000001', line_items: [{ description: 'x', quantity: 1, rate: 100, total: 100 }] }),
+      co({ id: 'aaaaaaaa-0000-4000-8000-000000000001', status: siblingStatus, version: 1 }),
     ],
     sow_documents: [{ id: 's', project_id: 'p1', status: 'signed' }],
   })
   it('409s, creates no approval request and sends nothing', async () => {
     const { POST } = await import('@/app/api/co/[id]/send/route')
     state.db = seed('awaiting_response')
-    const res = await POST(mkReq({}), ctx('v2'))
+    const res = await POST(mkReq({}), ctx('aaaaaaaa-0000-4000-8000-000000000002'))
     expect(res.status).toBe(409)
     expect((await res.json()).error).toMatch(/Version 1.*still open/)
     expect(state.calls).not.toContain('gate')
@@ -261,7 +261,7 @@ describe('send: a live sibling is refused BEFORE the approval gate', () => {
   it('with no live sibling the gate runs and the send proceeds', async () => {
     const { POST } = await import('@/app/api/co/[id]/send/route')
     state.db = seed('declined')
-    const res = await POST(mkReq({}), ctx('v2'))
+    const res = await POST(mkReq({}), ctx('aaaaaaaa-0000-4000-8000-000000000002'))
     expect(res.status).toBe(200)
     expect(state.calls).toContain('gate')
     expect(state.calls).toContain('sendCoDocument')
@@ -399,11 +399,11 @@ describe('flag-drafted CO line description fits the editor\'s 500-character limi
 // 4. internal CO PDF sanitizes the note like the portal PDF
 // ---------------------------------------------------------------------------------------------------------------
 describe('internal CO PDF re-sanitizes the note', () => {
-  const base = { id: 'co1', workspace_id: 'w1', title: 'T', status: 'draft', version: 1, document_number: null, pdf_path: null, is_retainer_renewal: false, is_credit: false, line_items: [], subtotal: 0, tax_rate: 0, tax_inclusive: false, total: 0, project_id: 'p1', projects: { id: 'p1', name: 'S', type: 'project', currency: 'USD', contract_value: 100, clients: { name: 'C' }, workspaces: { agency_name: 'A' } } }
+  const base = { id: 'aaaaaaaa-0000-4000-8000-000000000001', workspace_id: 'w1', title: 'T', status: 'draft', version: 1, document_number: null, pdf_path: null, is_retainer_renewal: false, is_credit: false, line_items: [], subtotal: 0, tax_rate: 0, tax_inclusive: false, total: 0, project_id: 'p1', projects: { id: 'p1', name: 'S', type: 'project', currency: 'USD', contract_value: 100, clients: { name: 'C' }, workspaces: { agency_name: 'A' } } }
   const render = async (note: string | null) => {
     const { GET } = await import('@/app/api/pdf/co/[id]/route')
     state.db = { change_orders: [{ ...base, note }] }
-    await GET(mkReq(), ctx('co1'))
+    await GET(mkReq(), ctx('aaaaaaaa-0000-4000-8000-000000000001'))
     return state.captured
   }
   it('what reaches the renderer is exactly what the sanitizer returns (no scripts, no handlers)', async () => {

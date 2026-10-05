@@ -1,3 +1,4 @@
+import { isUuidString } from '@/lib/utils/uuid'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
@@ -162,7 +163,8 @@ export async function POST(request: NextRequest) {
     // member of workspace A could attach a project to workspace B's client and
     // read that client's details through every later join).
     if (clientId) {
-      if (typeof clientId !== 'string') return NextResponse.json({ error: 'Client not found' }, { status: 404 })
+      // Non-UUID strings would hit the uuid filter as 22P02 (a 500 after the whole wizard was filled in).
+      if (!isUuidString(clientId)) return NextResponse.json({ error: 'Client not found' }, { status: 404 })
       // FIX (Projects & Dashboard pass 10, B1): `error` was ignored, so a failed read answered 404 "Client not found" for a client that exists
       // (and the person had just filled in the whole wizard).
       const { data: client, error: clientLookupErr } = await (service as any)

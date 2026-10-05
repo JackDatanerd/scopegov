@@ -1,3 +1,4 @@
+import { isUuidString } from '@/lib/utils/uuid'
 import { createServiceClient } from '@/lib/supabase/server'
 import { lookupMissResponse } from '@/lib/documents/co-lookup'
 import { parseRenewalTerm } from '@/lib/documents/renewal-term'
@@ -15,6 +16,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const { id }  = await params
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    if (!isUuidString(id)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
     const service = createServiceClient()
     const { data: co, error: coLookupErr } = await (service as any)
@@ -111,6 +113,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     const { id }  = await params
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    if (!isUuidString(id)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
     if (!hasPermission(session, 'CREATE_CHANGE_ORDERS'))
       return NextResponse.json({ error: 'Missing permission' }, { status: 403 })
 

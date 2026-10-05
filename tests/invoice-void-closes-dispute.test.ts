@@ -23,7 +23,7 @@ vi.mock('@/lib/supabase/server', () => ({
         insert: () => { mode = 'insert'; return b },
         eq: () => b, neq: () => b, in: () => b, limit: () => b,
         single: async () => ({ data: table === 'invoices' ? state.invoice : null }),
-        maybeSingle: async () => ({ data: mode === 'update' ? { id: 'inv1' } : null, error: null }),
+        maybeSingle: async () => ({ data: mode === 'update' ? { id: 'aaaaaaaa-0000-4000-8000-000000000001' } : null, error: null }),
         then: (res: any) => res({ data: [], error: null }),
       }
       return b
@@ -35,9 +35,9 @@ import { POST } from '@/app/api/invoices/[id]/void/route'
 
 const call = () => POST(
   new Request('http://x/api/invoices/inv1/void', { method: 'POST', body: JSON.stringify({}) }) as any,
-  { params: Promise.resolve({ id: 'inv1' }) },
+  { params: Promise.resolve({ id: 'aaaaaaaa-0000-4000-8000-000000000001' }) },
 )
-const base = { id: 'inv1', title: 'T', status: 'sent', amount: 100, amount_paid: 0, currency: 'USD', token: null, milestone_id: null, project_id: 'p1', sent_at: null, projects: null }
+const base = { id: 'aaaaaaaa-0000-4000-8000-000000000001', title: 'T', status: 'sent', amount: 100, amount_paid: 0, currency: 'USD', token: null, milestone_id: null, project_id: 'p1', sent_at: null, projects: null }
 
 describe('void invoice closes an open dispute', () => {
   beforeEach(() => { state.updates = [] })

@@ -11,6 +11,7 @@ export const runtime = 'nodejs'
 // Attachments are internal working material for the agency (they are NOT shown in the client portal or the PDF), and
 // like SOW attachments they can only change while the CO is an editable draft with no approval in flight.
 
+import { isUuidString } from '@/lib/utils/uuid'
 import { randomUUID } from 'crypto'
 import { createServiceClient } from '@/lib/supabase/server'
 import { lookupMissResponse } from '@/lib/documents/co-lookup'
@@ -31,6 +32,7 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
     const { id } = await params
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    if (!isUuidString(id)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
     const service = createServiceClient()
     const { data: co, error: coLookupErr } = await (service as any)
@@ -66,6 +68,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const { id } = await params
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    if (!isUuidString(id)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
     if (!hasPermission(session, 'CREATE_CHANGE_ORDERS'))
       return NextResponse.json({ error: 'Missing permission: CREATE_CHANGE_ORDERS' }, { status: 403 })
 

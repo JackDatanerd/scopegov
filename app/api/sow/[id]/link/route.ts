@@ -8,6 +8,7 @@ export const runtime = 'nodejs'
 // credential (anyone holding it can sign as the client), so this is limited to members who could
 // send the SOW in the first place and is never included in the general SOW GET response.
 
+import { isUuidString } from '@/lib/utils/uuid'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
@@ -19,6 +20,7 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
     const { id } = await params
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    if (!isUuidString(id)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
     if (!hasPermission(session, 'SEND_SOW'))
       return NextResponse.json({ error: 'Missing permission: SEND_SOW' }, { status: 403 })
 

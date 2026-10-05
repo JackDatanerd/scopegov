@@ -1,6 +1,7 @@
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
+import { isUuidString } from '@/lib/utils/uuid'
 import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
 import { getPendingApprovalForDocument, cancelApprovalRequest, projectApprovalSendInFlight, SEND_IN_FLIGHT_MESSAGE } from '@/lib/approvals/engine'
@@ -61,6 +62,8 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     const { id }   = await params
     const session  = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    // A mistyped / truncated id is a 404, not a Postgres 22P02 surfacing as a 500 (see lib/utils/uuid.ts).
+    if (!isUuidString(id)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
     const body = await request.json().catch(() => null)
     if (!body || typeof body !== 'object')
@@ -180,7 +183,8 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       if (p.value !== project.currency) { updates.currency = p.value; changes.currency = { from: project.currency, to: p.value } }
     }
     if (body.clientId !== undefined && body.clientId !== project.client_id) {
-      if (typeof body.clientId !== 'string')
+      // A non-UUID string would reach the uuid column filter (22P02 -> 500); it names no client either way.
+      if (!isUuidString(body.clientId))
         return NextResponse.json({ error: 'Client not found' }, { status: 404 })
       const { data: client, error: clientErr } = await (service as any)
         .from('clients').select('id, status').eq('id', body.clientId).eq('workspace_id', session.workspaceId).maybeSingle()
@@ -371,6 +375,7 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
     const { id }  = await params
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    if (!isUuidString(id)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
     if (!hasPermission(session, 'DELETE_PROJECTS'))
       return NextResponse.json({ error: 'Missing permission: DELETE_PROJECTS' }, { status: 403 })
 
@@ -463,6 +468,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const { id }  = await params
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    if (!isUuidString(id)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
     const service = createServiceClient()
     const { data: project, error: projectErr } = await (service as any)
       .from('projects')

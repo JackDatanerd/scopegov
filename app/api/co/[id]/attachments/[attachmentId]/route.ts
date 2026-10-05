@@ -4,6 +4,7 @@ export const runtime = 'nodejs'
 // Same draft-only lock as uploading: removal must not become a way to alter the working record of a change order
 // that has already gone out.
 
+import { isUuidString } from '@/lib/utils/uuid'
 import { createServiceClient } from '@/lib/supabase/server'
 import { lookupMissResponse } from '@/lib/documents/co-lookup'
 import { NextResponse, type NextRequest } from 'next/server'
@@ -22,6 +23,7 @@ export async function DELETE(
     const { id, attachmentId } = await params
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    if (!isUuidString(id) || !isUuidString(attachmentId)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
     if (!hasPermission(session, 'CREATE_CHANGE_ORDERS'))
       return NextResponse.json({ error: 'Missing permission: CREATE_CHANGE_ORDERS' }, { status: 403 })
 

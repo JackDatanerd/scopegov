@@ -1,5 +1,6 @@
 export const runtime = 'nodejs'
 
+import { isUuidString } from '@/lib/utils/uuid'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
@@ -14,6 +15,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const { id }  = await params
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    if (!isUuidString(id)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
     if (!hasPermission(session, 'VIEW_FINANCIALS'))
       return NextResponse.json({ error: 'Missing permission: VIEW_FINANCIALS' }, { status: 403 })
 
@@ -63,6 +65,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     const { id }  = await params
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    if (!isUuidString(id)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
     if (!hasPermission(session, 'SEND_INVOICES'))
       return NextResponse.json({ error: 'Missing permission: SEND_INVOICES' }, { status: 403 })
 
@@ -322,6 +325,7 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
     const { id }  = await params
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    if (!isUuidString(id)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
     if (!hasPermission(session, 'SEND_INVOICES'))
       return NextResponse.json({ error: 'Missing permission: SEND_INVOICES' }, { status: 403 })
 

@@ -7,6 +7,7 @@
 // ordinary team collaboration — if you're on the project, you can talk
 // about it.
 
+import { isUuidString } from '@/lib/utils/uuid'
 import { hasUnstorableText, UNSTORABLE_TEXT_ERROR } from '@/lib/utils/client-input'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
@@ -43,6 +44,7 @@ export async function GET(
     const { id: projectId } = await params
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    if (!isUuidString(projectId)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
     const service = createServiceClient()
     const project = await loadProject(service, session.workspaceId, projectId)
@@ -154,6 +156,7 @@ export async function POST(
     const { id: projectId } = await params
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    if (!isUuidString(projectId)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
     const body = await request.json().catch(() => null)
     const typed = typeof body?.body === 'string' ? body.body.trim() : ''

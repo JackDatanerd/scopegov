@@ -3,6 +3,7 @@
 
 export const runtime = 'nodejs'
 
+import { isUuidString } from '@/lib/utils/uuid'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
@@ -27,6 +28,7 @@ export async function GET(
     // whole section that skipped both checks. Bring it in line.
     if (!hasPermission(session, 'ASSIGN_TEAM_MEMBERS'))
       return NextResponse.json({ error: 'Missing permission' }, { status: 403 })
+    if (!isUuidString(projectId)) return NextResponse.json({ error: 'Project not found' }, { status: 404 })
     if (!(await canReadProject(service, session, projectId)))
       return NextResponse.json({ error: 'Project not found' }, { status: 404 })
     // Soft-deleted projects are not assignable.

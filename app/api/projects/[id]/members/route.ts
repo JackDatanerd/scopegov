@@ -29,6 +29,8 @@ export async function POST(
     // FIX (Projects & Dashboard pass 4 — B3): a non-UUID id reached the uuid column filters; on DELETE the failed delete was
     // thrown as a 500 (POST only degraded to a 404). It is a malformed request — 400 on both.
     if (!isUuidString(memberId)) return NextResponse.json({ error: 'Invalid memberId' }, { status: 400 })
+    // The URL's project id too: a non-UUID reaches the uuid filters as 22P02 and answered 500.
+    if (!isUuidString(projectId)) return NextResponse.json({ error: 'Project not found' }, { status: 404 })
 
     const service = createServiceClient()
 
@@ -159,6 +161,8 @@ export async function DELETE(
     // FIX (Projects & Dashboard pass 4 — B3): a non-UUID id reached the uuid column filters; on DELETE the failed delete was
     // thrown as a 500 (POST only degraded to a 404). It is a malformed request — 400 on both.
     if (!isUuidString(memberId)) return NextResponse.json({ error: 'Invalid memberId' }, { status: 400 })
+    // The URL's project id too: a non-UUID reaches the uuid filters as 22P02 and answered 500.
+    if (!isUuidString(projectId)) return NextResponse.json({ error: 'Project not found' }, { status: 404 })
 
     const service = createServiceClient()
 
