@@ -15,6 +15,7 @@
 import { parseTableAmount, isTableSection } from '@/lib/sow/table-schema'
 import { roundCurrency } from '@/lib/utils/format'
 import { paymentStructureError, storedPaymentStructure } from '@/lib/sow/payment-structure'
+import { isBlankText } from '@/lib/utils/client-input'
 
 export interface SowSendValidation {
   errors: string[]
@@ -138,11 +139,11 @@ export function validateSowForSend(input: {
   // nothing under the heading when content is empty (the exact "floating
   // heading" failure class SowTable already got a placeholder for, just never
   // extended to prose). Same treatment as oos/payment above.
-  if (!textOf(byId('parties')?.content))
+  if (isBlankText(textOf(byId('parties')?.content)))
     errors.push('Fill in the Parties section before sending this SOW.')
-  if (!textOf(byId('governing_law')?.content))
+  if (isBlankText(textOf(byId('governing_law')?.content)))
     errors.push('Fill in the Governing Law section before sending this SOW.')
-  if (!textOf(byId('signature')?.content))
+  if (isBlankText(textOf(byId('signature')?.content)))
     errors.push('Fill in the Signature section before sending this SOW.')
 
   // Payment Terms is authored prose; the contract value is data. Nothing else ties

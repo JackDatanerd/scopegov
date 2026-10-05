@@ -11,6 +11,7 @@ import { INDUSTRIES, CURRENCIES } from '@/lib/constants/workspace-options'
 import { isValidTimeZone, formatDateInZone } from '@/lib/utils/timezone'
 import { diffFields, sameValue } from '@/lib/utils/audit-diff'
 import { stripUnstorableText } from '@/lib/utils/sanitize'
+import { isBlankText } from '@/lib/utils/client-input'
 
 // FEATURE (deep audit, Settings independent re-pass — feature gap):
 // workspaces.slug/slug_changed_at (migration 001) have existed since day
@@ -88,6 +89,14 @@ class FieldError extends Error {
   constructor(message: string, public status = 400) { super(message) }
 }
 
+// FIX (Settings independent pass 12): the numeric fields coerced with String(value), so a direct API call could
+// save [5] as 5, or (threshold) '12abc' as 12 via parseFloat. Only a number, or a non-blank numeric string, counts.
+function toFiniteNumber(value: unknown): number {
+  if (typeof value === 'number') return value
+  if (typeof value === 'string' && value.trim() !== '') return Number(value.trim())
+  return NaN
+}
+
 function requireString(value: unknown, label: string): string {
   if (typeof value !== 'string') throw new FieldError(`${label} must be text`)
   return value
@@ -147,7 +156,9 @@ function parseField(key: string, value: unknown): unknown {
     case 'governingLaw': {
       const v = stripUnstorableText(requireString(value, 'Governing law')).trim()
       if (v.length > 200) throw new FieldError('Governing law must be under 200 characters')
-      return v
+      // FIX (Settings independent pass 12): zero-width / bidi / control characters survive trim(), so a value made of
+      // nothing visible was stored and then passed sow/generate's "governing law is set" hard-block. Blank means unset.
+      return isBlankText(v) ? '' : v
     }
     case 'guardianSensitivityTier': {
       const v = requireString(value, 'Guardian sensitivity tier')
@@ -158,7 +169,7 @@ function parseField(key: string, value: unknown): unknown {
       if (typeof value !== 'boolean') throw new FieldError('Risk alerts setting must be true or false')
       return value
     case 'proactiveRiskThreshold': {
-      const parsed = typeof value === 'number' ? value : parseFloat(String(value))
+      const parsed = toFiniteNumber(value)
       if (!Number.isFinite(parsed) || parsed < 0) throw new FieldError('Risk threshold must be a number of 0 or more')
       return parsed
     }
@@ -170,7 +181,7 @@ function parseField(key: string, value: unknown): unknown {
       const [label, min, max] = key === 'clientReminderAfterDays'
         ? ['Days between reminders', 1, 30] as const
         : ['Maximum reminders', 1, 10] as const
-      const n = typeof value === 'number' ? value : Number(String(value).trim())
+      const n = toFiniteNumber(value)
       if (!Number.isInteger(n) || n < min || n > max)
         throw new FieldError(`${label} must be a whole number from ${min} to ${max}`)
       return n
@@ -187,7 +198,7 @@ function parseField(key: string, value: unknown): unknown {
     }
     case 'defaultTaxRate': {
       // Pre-fills every new invoice / change order (Billing defaults). Numeric(5,2) in the DB.
-      const n = typeof value === 'number' ? value : Number(String(value).trim())
+      const n = toFiniteNumber(value)
       if (String(value).trim() === '' || !Number.isFinite(n) || n < 0 || n > 100)
         throw new FieldError('Default tax rate must be a number from 0 to 100')
       return Math.round(n * 100) / 100
@@ -198,7 +209,7 @@ function parseField(key: string, value: unknown): unknown {
     case 'defaultPaymentTermsDays': {
       // null / blank = no default due date.
       if (value === null || (typeof value === 'string' && value.trim() === '')) return null
-      const n = typeof value === 'number' ? value : Number(String(value).trim())
+      const n = toFiniteNumber(value)
       if (!Number.isInteger(n) || n < 0 || n > 365)
         throw new FieldError('Payment terms must be a whole number of days from 0 to 365')
       return n
@@ -209,10 +220,13 @@ function parseField(key: string, value: unknown): unknown {
       const clean: Record<string, string> = {}
       for (const field of ['line1', 'line2', 'city', 'region', 'postalCode', 'country'] as const) {
         const raw = (value as Record<string, unknown>)[field]
-        if (typeof raw !== 'string') continue
+        if (raw === undefined || raw === null) continue
+        // FIX (Settings independent pass 12): a non-string part was silently dropped with a 200.
+        if (typeof raw !== 'string') throw new FieldError(`Address ${field} must be text`)
         const trimmed = stripUnstorableText(raw).trim()
         if (trimmed.length > 200) throw new FieldError(`Address ${field} must be under 200 characters`)
-        if (trimmed) clean[field] = trimmed
+        // Invisible-only parts are blank, like an empty box.
+        if (trimmed && !isBlankText(trimmed)) clean[field] = trimmed
       }
       return clean
     }
@@ -223,7 +237,7 @@ function parseField(key: string, value: unknown): unknown {
       // FIX (Settings independent pass 7): a pasted NUL or half-emoji made Postgres reject the whole save (generic 500).
       const v = stripUnstorableText(requireString(value, spec.label)).trim()
       if (v.length > spec.max) throw new FieldError(`${spec.label} must be under ${spec.max} characters`)
-      return v
+      return isBlankText(v) ? null : v
     }
   }
 }

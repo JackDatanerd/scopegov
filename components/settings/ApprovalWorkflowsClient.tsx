@@ -158,7 +158,7 @@ export default function ApprovalWorkflowsClient({ initialWorkflows, roles, membe
                       {w.approval_workflow_steps.length} step{w.approval_workflow_steps.length !== 1 ? 's' : ''}:{' '}
                       {w.approval_workflow_steps
                         .slice().sort((a, b) => a.step_order - b.step_order)
-                        .map(s => s.roles?.name || s.user?.name || '—').join(' → ')}
+                        .map(s => s.roles?.name || s.user?.name || s.user?.email || '—').join(' → ')}
                     </div>
                     {(() => {
                       const broken = w.approval_workflow_steps

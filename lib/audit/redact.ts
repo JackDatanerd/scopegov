@@ -20,6 +20,9 @@ const LEGACY_KEYS = new Set([
   'amount', 'balance_due', 'estimated_value', 'counter_amount', 'client_counter_amount',
   'total', 'subtotal', 'contract_value', 'contractValue', 'schedule_sum',
   'threshold_amount', 'new_monthly_amount',
+  // Settings independent pass 12: the Guardian risk-alert threshold is a contract-value figure in the workspace
+  // currency; "threshold" is not a money word, so its from/to showed to viewers without VIEW_FINANCIALS.
+  'proactiveRiskThreshold', 'proactive_risk_threshold',
 ])
 
 // FIX (Reports & Audit re-pass #4): the generic "value" word match caught
@@ -34,6 +37,8 @@ const LEGACY_KEYS = new Set([
 // to catch real money-shaped keys like contract_value or schedule_sum.
 const NON_MONEY_KEYS = new Set([
   'old_value', 'new_value',
+  // A number of days, not an amount (the "payment" word otherwise blanked it).
+  'defaultPaymentTermsDays', 'default_payment_terms_days',
 ])
 
 const MONEY_WORDS = new Set([

@@ -17,6 +17,7 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { getPendingApprovalForDocument } from '@/lib/approvals/engine'
 import { logAudit } from '@/lib/utils/audit'
 import { sanitizeRichText, truncateText } from '@/lib/utils/sanitize'
+import { isBlankText } from '@/lib/utils/client-input'
 import { applyAgencyStandards, ensureContractValueStated, type AgencyStandards } from '@/lib/ai/sow-content'
 import { pickAgencyStandards } from '@/lib/utils/agency-standards'
 import { canReadProject } from '@/lib/utils/project-access'
@@ -205,7 +206,9 @@ export async function POST(request: NextRequest) {
     // contract; guessing it on the agency's behalf produced SOWs with a
     // silently wrong jurisdiction. Hard-block instead, same pattern
     // already used for invoice due date / payment instructions.
-    const governingLaw  = project.workspaces?.governing_law?.trim() || null
+    // Settings independent pass 12: a value made only of zero-width / control characters is not a governing law.
+    const governingLawRaw = project.workspaces?.governing_law?.trim() || null
+    const governingLaw  = governingLawRaw && !isBlankText(governingLawRaw) ? governingLawRaw : null
     if (!governingLaw) {
       return NextResponse.json({
         error: 'Set your workspace\'s governing law in Settings → Workspace before generating a SOW.',

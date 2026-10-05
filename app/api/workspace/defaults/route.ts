@@ -11,6 +11,7 @@ import type { SessionUser } from '@/lib/supabase/types'
 import { staleWorkspaceResponse } from '@/lib/utils/workspace-guard'
 import { stripUnstorableText } from '@/lib/utils/sanitize'
 import { sameInstant } from '@/lib/utils/timestamps'
+import { isBlankText } from '@/lib/utils/client-input'
 
 const PROJECT_TYPES = ['web', 'mobile', 'brand', 'ecomm', 'marketing', 'retainer', 'video', 'other'] as const
 type ProjectType = typeof PROJECT_TYPES[number]
@@ -90,6 +91,8 @@ async function saveDefaults(workspaceId: string, body: any, actor: SessionUser):
     if (typeof governingLaw !== 'string') throw new DefaultsValidationError('Governing law must be text')
     // FIX (Settings independent pass 8): a pasted NUL / half-emoji failed the save with a generic 500.
     governingLawValue = stripUnstorableText(governingLaw).trim()
+    // Settings independent pass 12: invisible-only text is blank (it survives trim() and defeated the SOW hard-block).
+    if (isBlankText(governingLawValue)) governingLawValue = ''
     if (governingLawValue.length > GOVERNING_LAW_MAX) {
       throw new DefaultsValidationError(`Governing law must be under ${GOVERNING_LAW_MAX} characters`)
     }

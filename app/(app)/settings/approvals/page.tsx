@@ -152,7 +152,7 @@ export default async function ApprovalWorkflowsPage() {
     .map((r: any) => ({ id: r.id, name: r.name, canApprove: r.permissions?.APPROVE_DOCUMENTS === true }))
   const members   = (membersRes.data || [])
     .filter((m: any) => m.users)
-    .map((m: any) => ({ id: m.users.id, name: m.users.name, email: m.users.email, roleId: m.role_id ?? null, canApprove: m.effective_permissions?.APPROVE_DOCUMENTS === true }))
+    .map((m: any) => ({ id: m.users.id, name: m.users.name || m.users.email, email: m.users.email, roleId: m.role_id ?? null, canApprove: m.effective_permissions?.APPROVE_DOCUMENTS === true }))
   const workspaceCurrency = wsRes.data?.currency || 'USD'
   const projectCurrencies: string[] = Array.from(new Set<string>((projectCurrenciesRes.data || []).map((p: any) => String(p.currency || '').toUpperCase()).filter(Boolean))).sort()
 

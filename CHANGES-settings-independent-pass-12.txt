@@ -1,0 +1,31 @@
+scopegov — Section 5 (Settings) independent pass 12 — fixes
+===========================================================
+Cold audit of app/(app)/settings (+ approvals, audit tabs), api/workspace/settings, defaults and
+branding (+ logo). No migration required.
+
+FIXES (6)
+---------
+1. Invisible-only text counted as a value (api/workspace/settings, api/workspace/defaults,
+   api/sow/generate, lib/sow/validate-send). Zero-width / bidi / control characters survive trim(), so a
+   governing law of "\u200b" was stored and then passed sow/generate's "governing law is set" hard-block and
+   validate-send's empty-section checks — a SOW could go out with a visually blank Governing Law clause.
+   governingLaw (both routes), taxId, phone, website, defaultPaymentInstructions and every legal-address part
+   now treat invisible-only input as blank (isBlankText). SOW generate and validate-send (parties,
+   governing_law, signature) use the same test.
+2. api/workspace/branding/logo — DELETE ignored a failed workspace read and answered 200 "nothing to
+   remove", so the UI cleared its preview while the logo stayed saved and in use. It now answers 500.
+   POST refuses before uploading when the same read fails (it used to leave the old object orphaned in
+   the public bucket on a PNG<->JPG switch).
+3. lib/audit/redact.ts — proactiveRiskThreshold (a contract-value figure) was visible to audit viewers
+   without VIEW_FINANCIALS ("threshold" is not a money word). Now redacted. defaultPaymentTermsDays (a day
+   count) was being redacted by the "payment" word; now exempt.
+4. settings/approvals (page + client) — members / step users with an empty name rendered as blank options
+   and "—". Falls back to the email.
+5. api/workspace/settings — a non-string legal-address part was silently dropped with a 200; now a 400.
+6. api/workspace/settings — numeric fields coerced loosely ([5] -> 5; threshold '12abc' -> 12 via
+   parseFloat). Only a number or a non-blank numeric string is accepted.
+
+TEST (1 new file)
+-----------------
+  tests/settings-independent-pass-12.test.ts   (20 tests)
+Full suite: 274 files / 2752 tests pass; tsc clean.

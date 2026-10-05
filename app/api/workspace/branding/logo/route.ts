@@ -121,8 +121,14 @@ export async function POST(request: NextRequest) {
     // whatever's currently on record and, if this upload lands at a
     // different path, remove the stale one after the new one is safely in
     // place. Best-effort: a failure here shouldn't fail the upload itself.
-    const { data: existingWs } = await (service as any)
+    const { data: existingWs, error: existingErr } = await (service as any)
       .from('workspaces').select('logo_storage_path').eq('id', session.workspaceId).maybeSingle()
+    // FIX (Settings independent pass 12): a failed read left previousPath undefined, so a PNG→JPG switch never
+    // cleaned up the old object (orphaned in the public bucket). Refuse before touching storage; a retry is safe.
+    if (existingErr) {
+      console.error('Logo upload: could not read current logo:', existingErr)
+      return NextResponse.json({ error: 'Upload failed' }, { status: 500 })
+    }
     const previousPath: string | undefined = existingWs?.logo_storage_path
 
     const { error } = await (service as any).storage
@@ -240,8 +246,14 @@ export async function DELETE(request: NextRequest) {
 
     const service = createServiceClient()
 
-    const { data: ws } = await (service as any)
+    const { data: ws, error: wsErr } = await (service as any)
       .from('workspaces').select('logo_storage_path').eq('id', session.workspaceId).maybeSingle()
+    // FIX (Settings independent pass 12): a failed read used to fall into the "nothing to remove" branch below and
+    // answer 200 {ok:true}, so the UI cleared its preview and baseline while the logo was still saved and in use.
+    if (wsErr) {
+      console.error('Logo removal: could not read current logo:', wsErr)
+      return NextResponse.json({ error: 'Could not remove logo. Try again.' }, { status: 500 })
+    }
     const currentPath: string | undefined = ws?.logo_storage_path
 
     if (!currentPath) {
