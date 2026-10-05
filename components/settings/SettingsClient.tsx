@@ -39,6 +39,7 @@ import DocumentNumberingSection from '@/components/settings/DocumentNumberingSec
 import { GRACE_DAYS } from '@/lib/billing/plans'
 import { isValidTimeZone, formatDateInZone } from '@/lib/utils/timezone'
 import { sameValue } from '@/lib/utils/audit-diff'
+import { isBlankText } from '@/lib/utils/client-input'
 
 type SettingsTab = 'account' | 'workspace' | 'branding' | 'defaults' | 'guardian' | 'billing' | 'notifications' | 'integrations' | 'danger'
 
@@ -174,7 +175,7 @@ function workspaceSnapshot(ws: any): Record<string, unknown> {
   return snap
 }
 
-const stdLines = (text: string) => text.split('\n').map(l => l.trim()).filter(Boolean)
+const stdLines = (text: string) => text.split('\n').map(l => l.trim()).filter(l => l && !isBlankText(l))
 const stdText  = (list: unknown) => (Array.isArray(list) ? list.join('\n') : '')
 
 const TABS: { key: SettingsTab; label: string }[] = [

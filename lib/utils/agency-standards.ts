@@ -6,6 +6,7 @@
 // keeps when it reads them back, so nothing a user saves is silently cut.
 
 import { sanitizePlainText, stripUnstorableText } from '@/lib/utils/sanitize'
+import { isBlankText } from '@/lib/utils/client-input'
 import type { AgencyStandards } from '@/lib/ai/sow-content'
 
 export const STANDARD_TEXT_MAX = 1500
@@ -47,6 +48,10 @@ function parseText(value: unknown, label: string): { ok: true; value: string | n
   // FIX (Settings independent pass 8): sanitizePlainText leaves NUL and unpaired surrogates in place, and Postgres
   // rejects either, so a pasted one failed the whole save with a generic 500. Same strip workspace/settings applies.
   const clean = sanitizePlainText(stripUnstorableText(value))
+  // FIX (Settings independent pass 13): zero-width / bidi / filler characters survive trim(), so wording made of
+  // nothing visible was stored and then appended to client-facing SOWs as an empty paragraph. It is the same
+  // explicit "nothing" as '' (still distinct from null = inherit).
+  if (isBlankText(clean)) return { ok: true, value: '' }
   if (clean.length > STANDARD_TEXT_MAX) return { ok: false, error: `${label} must be ${STANDARD_TEXT_MAX} characters or fewer` }
   return { ok: true, value: clean }
 }
@@ -58,7 +63,8 @@ function parseClauses(value: unknown, label: string): { ok: true; value: string[
   for (const item of value) {
     if (typeof item !== 'string') return { ok: false, error: `${label} must be a list of text items` }
     const clean = sanitizePlainText(stripUnstorableText(item))
-    if (!clean) continue
+    // Settings independent pass 13: an invisible-only line is an empty line, not an item.
+    if (!clean || isBlankText(clean)) continue
     if (clean.length > CLAUSE_MAX) return { ok: false, error: `Each item in ${label} must be ${CLAUSE_MAX} characters or fewer` }
     out.push(clean)
   }
@@ -93,8 +99,9 @@ export function parseStandardsInput(body: Record<string, unknown>): StandardsPar
   return { ok: true, values }
 }
 
-const hasText = (v: unknown) => typeof v === 'string' && v.trim().length > 0
-const hasList = (v: unknown) => Array.isArray(v) && v.length > 0
+// Settings independent pass 13: rows saved before invisible-only text was refused can still hold it.
+const hasText = (v: unknown) => typeof v === 'string' && !isBlankText(v)
+const hasList = (v: unknown) => Array.isArray(v) && v.some(hasText)
 
 type DefaultsRow = StandardsColumns & { project_type?: string | null }
 

@@ -1,0 +1,19 @@
+Settings independent pass 13 (c5: settings, settings/approvals, settings/audit, api/workspace/{settings,defaults,branding})
+HEAD audited: 6cfaf4f
+
+BUG 1 — standard terms made only of invisible characters were stored and appended to SOWs
+  Zero-width space / word joiner / Hangul filler survive trim() and sanitizePlainText, so revision-policy and
+  payment-terms wording, and exclusion / assumption lines, made of nothing visible passed parseStandardsInput and were
+  saved. SOW generation then appended an empty <li> / <p> to a client-facing section, sent a blank bullet to the model,
+  and a project-type override of only invisible text counted as a real override (skipping the inherit-from-global collapse).
+  Pass 12 closed the same hole for governing law only.
+
+  lib/utils/agency-standards.ts   parseText -> '' for invisible-only; parseClauses drops such items;
+                                  hasText / hasList (pickAgencyStandards) ignore legacy invisible-only rows.
+  lib/ai/sow-content.ts           cleanClauses + revision / payment wording ignore invisible-only text (covers rows
+                                  already stored before this fix) in standardsPromptBlock and applyAgencyStandards.
+  app/api/workspace/defaults/route.ts   isBlankStandard treats invisible-only text / all-blank lists as blank.
+  components/settings/SettingsClient.tsx  stdLines skips invisible-only lines so the counter and item cap match the server.
+  tests/settings-independent-pass-13.test.ts  7 tests.
+
+No migration. No behaviour change for visible text.

@@ -37,6 +37,7 @@
 // malformed it's dropped, not fatal to the whole document.
 
 import { escapeHtml, sanitizePlainText, truncateText } from '@/lib/utils/sanitize'
+import { isBlankText } from '@/lib/utils/client-input'
 import { amountsStated } from '@/lib/sow/validate-send'
 import { SOW_TABLE_SCHEMAS, type SowTableSectionId, type SowTableRow } from '@/lib/sow/table-schema'
 import { roundCurrency } from '@/lib/utils/format'
@@ -125,9 +126,13 @@ export interface AgencyStandards {
 
 const norm = (t: string) => t.replace(/<[^>]*>/g, ' ').replace(/&[a-z#0-9]+;/gi, ' ').replace(/\s+/g, ' ').trim().toLowerCase()
 
+// Settings independent pass 13: text with nothing visible in it (zero-width / bidi / filler characters) is blank —
+// a saved standard made of those used to be appended to the SOW as an empty bullet or paragraph.
+const visibleText = (t: string): string => (isBlankText(t) ? '' : t)
+
 function cleanClauses(list: string[] | null | undefined): string[] {
   return (Array.isArray(list) ? list : [])
-    .map(c => truncateText(sanitizePlainText(String(c ?? '')), 500))
+    .map(c => visibleText(truncateText(sanitizePlainText(String(c ?? '')), 500)))
     .filter(Boolean)
     .slice(0, 30)
 }
@@ -140,9 +145,9 @@ export function standardsPromptBlock(standards: AgencyStandards | null | undefin
   const assumptions = cleanClauses(standards.assumptions)
   if (oos.length) lines.push(`- The agency's standard exclusions — include EACH of these in the Out of Scope section as its own item, in addition to the project-specific ones:\n${oos.map(c => `    • ${c}`).join('\n')}`)
   if (assumptions.length) lines.push(`- The agency's standard assumptions — include EACH in the Assumptions section:\n${assumptions.map(c => `    • ${c}`).join('\n')}`)
-  const rp = truncateText(sanitizePlainText(standards.revisionPolicy || ''), 1500)
+  const rp = visibleText(truncateText(sanitizePlainText(standards.revisionPolicy || ''), 1500))
   if (rp) lines.push(`- The agency's standard revision-policy wording — reflect it in the Revision Policy section: "${rp}"`)
-  const pt = truncateText(sanitizePlainText(standards.paymentTerms || ''), 1500)
+  const pt = visibleText(truncateText(sanitizePlainText(standards.paymentTerms || ''), 1500))
   if (pt) lines.push(`- The agency's standard payment-terms wording — reflect it in the Payment section without changing any amount: "${pt}"`)
   return lines.length ? `\n${lines.join('\n')}` : ''
 }
@@ -197,7 +202,7 @@ export function applyAgencyStandards(
   }
   addList('oos', cleanClauses(standards.outOfScopeClauses))
   addList('assumptions', cleanClauses(standards.assumptions))
-  const revisionPolicy = truncateText(sanitizePlainText(standards.revisionPolicy || ''), 1500)
+  const revisionPolicy = visibleText(truncateText(sanitizePlainText(standards.revisionPolicy || ''), 1500))
   // FIX (fresh independent audit, section 9): skip the append rather than let the document
   // state two different revision-round counts in the same section — see
   // conflictingRoundCount's own comment. Nothing else downstream (validate-send.ts included)
@@ -206,7 +211,7 @@ export function applyAgencyStandards(
   if (!(typeof revisionRounds === 'number' && conflictingRoundCount(revisionPolicy, revisionRounds))) {
     addParagraph('revisions', revisionPolicy)
   }
-  addParagraph('payment', truncateText(sanitizePlainText(standards.paymentTerms || ''), 1500))
+  addParagraph('payment', visibleText(truncateText(sanitizePlainText(standards.paymentTerms || ''), 1500)))
   return out
 }
 

@@ -179,8 +179,10 @@ async function saveDefaults(workspaceId: string, body: any, actor: SessionUser):
   // that type's SOWs — and made merely opening a type and pressing Save create a phantom override.
   // A deliberately blank override is only meaningful against a NON-blank global value, and that
   // case still stores the explicit blank.
+  // Settings independent pass 13: invisible-only text / items count as blank here too (a legacy stored row can hold them).
   const isBlankStandard = (v: unknown): boolean =>
-    v === null || v === undefined || (typeof v === 'string' && v.trim() === '') || (Array.isArray(v) && v.length === 0)
+    v === null || v === undefined || (typeof v === 'string' && isBlankText(v)) ||
+    (Array.isArray(v) && v.every(i => typeof i === 'string' && isBlankText(i)))
   const sameStandardsValue = (a: unknown, b: unknown): boolean => {
     if (isBlankStandard(a) && isBlankStandard(b)) return true
     if (a === null || b === null) return a === b
