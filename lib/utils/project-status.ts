@@ -34,3 +34,10 @@ export function isTerminalStatus(status: string): boolean {
 export function isInProgressStatus(status: string): boolean {
   return (IN_PROGRESS_STATUSES as readonly string[]).includes(status)
 }
+
+/**
+ * close_reason prefix written on every flag that PATCH /api/projects/[id]/complete closes automatically
+ * ("Project marked complete by <name>"). Guardian's duplicate lookup (migration 147) matches this exact prefix to tell a
+ * flag closed by completion (nobody judged the request) from one a person decided on - keep both in step.
+ */
+export const PROJECT_COMPLETE_CLOSE_PREFIX = 'Project marked complete by '

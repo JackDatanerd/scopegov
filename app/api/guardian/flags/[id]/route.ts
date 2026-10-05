@@ -577,7 +577,9 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
           status: 'open', updated_at: now,
         }).eq('id', id).eq('status', 'converted_to_co')
         if (releaseErr) console.error('Could not release flag claim after CO insert failure:', id, releaseErr.message)
-        return NextResponse.json({ error: coErr?.message || 'Could not create change order' }, { status: 500 })
+        // FIX (independent pass 13, section 13 - B2): the raw Postgres message (constraint / column names) was returned to the browser.
+        console.error('Guardian draft_co: change order insert failed:', coErr?.message)
+        return NextResponse.json({ error: 'Could not create the change order — nothing was changed. Please try again.' }, { status: 500 })
       }
 
       case 'confirm_out_of_scope': {

@@ -4,6 +4,7 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { isUuidString } from '@/lib/utils/uuid'
 import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
+import { PROJECT_COMPLETE_CLOSE_PREFIX } from '@/lib/utils/project-status'
 import { liveChangeOrders } from '@/lib/utils/attention'
 import { cancelApprovalRequest, projectApprovalSendInFlight, SEND_IN_FLIGHT_MESSAGE } from '@/lib/approvals/engine'
 
@@ -109,7 +110,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       // "not confirmed as scope creep" outcome (`not_out_of_scope`, restored to borderline_review on reopen); an open
       // flag gets the plain `closed` resolution. Each update also CAS-es on the status it read, so a flag someone
       // resolved / converted a moment ago is not overwritten.
-      const closeReason = `Project marked complete by ${session.name}`
+      const closeReason = `${PROJECT_COMPLETE_CLOSE_PREFIX}${session.name}`
       const closeGroup = async (status: 'open' | 'borderline_review', resolution: 'closed' | 'not_out_of_scope') => {
         const ids = openFlags.filter((f: any) => f.status === status).map((f: any) => f.id)
         if (ids.length === 0) return null

@@ -26,6 +26,7 @@ import { logAudit } from '@/lib/utils/audit'
 import { stripUnstorableText, truncateText } from '@/lib/utils/sanitize'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
+import { PROJECT_COMPLETE_CLOSE_PREFIX } from '@/lib/utils/project-status'
 
 export const DEDUP_THRESHOLD = 0.85
 export const DEDUP_WINDOW_DAYS = 30
@@ -115,6 +116,27 @@ export function dedupSinceIso(nowMs: number, scopeChangedAt?: string | null): st
   return new Date(Number.isFinite(changed) ? Math.max(windowStart, changed) : windowStart).toISOString()
 }
 
+/**
+ * FIX (independent pass 13, section 13 - B1): the duplicate lookup matched ANY classified check in the window, but an
+ * `out_of_scope` / `borderline` verdict only protects the team when a flag came out of it. Two cases left a request
+ * swallowed with nobody ever told:
+ *   - a retroactive check on a Complete/Archived project is recorded with `recordOnly` (verdict, no flag). After the
+ *     project is reopened (the snapshot - and so the window - does not move) the client re-sends the same request and
+ *     it matched that flagless record: marked duplicate, never classified, no flag, no email;
+ *   - flags that "Mark complete" closed automatically (close_reason PROJECT_COMPLETE_CLOSE_PREFIX) were never judged by
+ *     anyone, so after a reopen the same request must be raised afresh rather than absorbed by them.
+ * A check matches only if its verdict does not need a flag (in_scope / covered_by_co) or a flag exists for it that was
+ * not closed by project completion. A flag a person resolved / closed / escalated still absorbs repeats, as before.
+ * migration 147 applies the same rule inside guardian_find_duplicate_check.
+ */
+export const FLAG_REQUIRING_OUTCOMES = new Set(['out_of_scope', 'borderline'])
+export function isFlagBackedMatch(
+  outcome: string, flags: Array<{ status: string; close_reason?: string | null }>,
+): boolean {
+  if (!FLAG_REQUIRING_OUTCOMES.has(outcome)) return true
+  return flags.some(f => !(f.status === 'closed' && String(f.close_reason ?? '').startsWith(PROJECT_COMPLETE_CLOSE_PREFIX)))
+}
+
 export async function findDuplicateCheck(
   service: any, projectId: string, embedding: number[], scopeChangedAt?: string | null,
 ): Promise<string | null> {
@@ -131,7 +153,7 @@ export async function findDuplicateCheck(
   console.error('guardian_find_duplicate_check RPC failed — falling back to in-process scan:', error.message)
   const { data: recent } = await service
     .from('guardian_checks')
-    .select('id, embedding')
+    .select('id, embedding, outcome')
     .eq('project_id', projectId)
     .eq('is_duplicate', false)
     .not('embedding', 'is', null)
@@ -141,12 +163,32 @@ export async function findDuplicateCheck(
     .or(`classified_at.gte.${since},and(classified_at.is.null,created_at.gte.${since})`)
     .order('created_at', { ascending: false })
     .limit(300)
-  let best: { id: string; sim: number } | null = null
+  const matches: Array<{ id: string; sim: number; outcome: string }> = []
   for (const c of (recent || [])) {
     const sim = cosineSimilarity(embedding, c.embedding)
-    if (sim > DEDUP_THRESHOLD && (!best || sim > best.sim)) best = { id: c.id, sim }
+    if (sim > DEDUP_THRESHOLD) matches.push({ id: c.id, sim, outcome: c.outcome })
   }
-  return best?.id ?? null
+  if (matches.length === 0) return null
+  matches.sort((a, b) => b.sim - a.sim)
+
+  // Same flag-backing rule as the RPC (migration 147) - see isFlagBackedMatch.
+  const needFlag = matches.filter(m => FLAG_REQUIRING_OUTCOMES.has(m.outcome)).map(m => m.id)
+  let flagsByCheck = new Map<string, Array<{ status: string; close_reason: string | null }>>()
+  if (needFlag.length) {
+    const { data: flags, error: flagsErr } = await service
+      .from('guardian_flags').select('check_id, status, close_reason').in('check_id', needFlag)
+    // Fail toward classifying: with no flag information those matches are simply not usable as duplicates.
+    if (flagsErr) console.error('Guardian dedup fallback: flag lookup failed:', flagsErr.message)
+    else for (const f of (flags || [])) {
+      const list = flagsByCheck.get(f.check_id) || []
+      list.push({ status: f.status, close_reason: f.close_reason ?? null })
+      flagsByCheck.set(f.check_id, list)
+    }
+  }
+  for (const m of matches) {
+    if (isFlagBackedMatch(m.outcome, flagsByCheck.get(m.id) || [])) return m.id
+  }
+  return null
 }
 
 /** Best-effort embedding — null on failure (dedup is then skipped, not fatal). */

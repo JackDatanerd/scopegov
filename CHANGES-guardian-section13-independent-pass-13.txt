@@ -1,0 +1,18 @@
+Section 13 (Guardian / scope governance) - independent pass 13
+
+B1 (low) Duplicate detection swallowed a real request that never reached the team.
+  guardian_find_duplicate_check (migration 144) and the in-process fallback matched ANY classified check in the window.
+  A flagless out_of_scope/borderline record (retroactive check on a Complete/Archived project = recordOnly) or a check whose
+  only flag was auto-closed by "Mark complete" still matched; after the project was reopened (snapshot/window unchanged)
+  the client's repeat was marked duplicate: no classification, no flag, no email.
+  Fix: migration 147 redefines the RPC - out_of_scope/borderline checks match only if a guardian_flags row exists for them
+  that was not closed by project completion (close_reason 'Project marked complete by %'). in_scope/covered_by_co and any
+  flag a person decided on behave as before. lib/ai/guardian-pipeline.ts: same rule in the fallback scan
+  (isFlagBackedMatch, FLAG_REQUIRING_OUTCOMES; a failed flag lookup fails toward classifying).
+  lib/utils/project-status.ts: PROJECT_COMPLETE_CLOSE_PREFIX, now used by projects/[id]/complete so the string cannot drift.
+  *** RUN supabase/migrations/147_guardian_dedup_requires_flag.sql in the Supabase SQL editor. ***
+
+B2 (low) POST/PATCH /api/guardian/flags/[id] action draft_co returned the raw Postgres error text (coErr.message) in its 500.
+  Now logged, with a generic message returned.
+
+Tests: tests/guardian-section13-pass13-fixes.test.ts. Full suite 2804 passed, tsc clean.
