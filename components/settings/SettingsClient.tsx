@@ -2289,7 +2289,7 @@ function NotificationsTab({ permissions, workspaceId }: { permissions: { manageW
     try {
       const res = await fetch('/api/notifications/preferences', {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ eventType: key, enabled: next, channel: inAppOnly ? 'in_app' : channel }),
+        body: JSON.stringify({ eventType: key, enabled: next, channel: inAppOnly ? 'in_app' : channel, ...(workspaceId ? { workspaceId } : {}) }),
       })
       if (!res.ok) throw new Error()
     } catch {

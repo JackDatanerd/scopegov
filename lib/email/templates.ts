@@ -649,7 +649,7 @@ export async function sendEscalationEmail(params: {
     body: `
       <p style="font-size:14px;color:${C.text};line-height:1.7;margin:0 0 16px;">Hi ${assigneeName},</p>
       <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
-        A ${entityType} on <strong>${entityName}</strong> has been escalated to you for review.
+        A ${escapeHtml(entityType)} on <strong>${entityName}</strong> has been escalated to you for review.
       </p>
       <div style="background:${C.amberLt};border-left:3px solid ${C.amber};padding:14px 16px;margin:16px 0;border-radius:0 6px 6px 0;">
         <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:${C.amber};margin-bottom:6px;">Escalation note</div>
@@ -1443,7 +1443,7 @@ export async function sendInvoiceEmail(params: {
   const html = baseTemplate({
     agencyName,
     headerColour: brandColour || C.green,
-    label: invoiceNumber ? `Invoice ${invoiceNumber}` : 'Invoice',
+    label: invoiceNumber ? `Invoice ${escapeHtml(invoiceNumber)}` : 'Invoice',
     headline: `Invoice for ${projectName}`,
     body: `
       <p style="font-size:14px;color:${C.text};line-height:1.7;margin:0 0 16px;">Hi ${clientName},</p>
@@ -1519,7 +1519,7 @@ export async function sendInvoiceReminderEmail(params: {
       <p style="font-size:14px;color:${C.text};line-height:1.7;margin:0 0 16px;">Hi ${clientName},</p>
       <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
         A friendly reminder that <strong>${money(balanceDue, currency)}</strong> is
-        ${isOverdue ? 'now overdue' : dueSoon ? 'coming due' : 'outstanding'} on invoice${invoiceNumber ? ` ${invoiceNumber}` : ''} for
+        ${isOverdue ? 'now overdue' : dueSoon ? 'coming due' : 'outstanding'} on invoice${invoiceNumber ? ` ${escapeHtml(invoiceNumber)}` : ''} for
         <strong>${projectName}</strong>.
         ${dueDate ? ` ${dueSoon || dueInFuture ? 'It is due on' : 'Due date was'} ${new Date(dueDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' })}.` : ''}
       </p>
@@ -1566,7 +1566,7 @@ export async function sendInvoicePaymentRecordedEmail(params: {
     agencyName: 'ScopeGov',
     headerColour: C.green,
     label: 'Payment recorded',
-    headline: isFullyPaid ? `Invoice${invoiceNumber ? ` ${invoiceNumber}` : ''} paid in full` : `Payment received`,
+    headline: isFullyPaid ? `Invoice${invoiceNumber ? ` ${escapeHtml(invoiceNumber)}` : ''} paid in full` : `Payment received`,
     body: `
       <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
         A payment of <strong>${money(amount, currency)}</strong> from <strong>${clientName}</strong>
@@ -1609,7 +1609,7 @@ export async function sendInvoiceSentInternalEmail(params: {
     agencyName: 'ScopeGov',
     headerColour: C.green,
     label: 'Invoice sent',
-    headline: `Invoice${invoiceNumber ? ` ${invoiceNumber}` : ''} sent to ${clientName}`,
+    headline: `Invoice${invoiceNumber ? ` ${escapeHtml(invoiceNumber)}` : ''} sent to ${clientName}`,
     body: `
       <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
         An invoice for <strong>${money(amount, currency)}</strong> was sent to
@@ -1646,7 +1646,7 @@ export async function sendInvoiceOverdueInternalEmail(params: {
     headline: `${clientName} has an overdue invoice`,
     body: `
       <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
-        Invoice${invoiceNumber ? ` ${invoiceNumber}` : ''} on <strong>${projectName}</strong> passed its due date
+        Invoice${invoiceNumber ? ` ${escapeHtml(invoiceNumber)}` : ''} on <strong>${projectName}</strong> passed its due date
         with <strong>${money(balanceDue, currency)}</strong> still outstanding.
       </p>
     `,
@@ -1831,7 +1831,7 @@ export async function sendInvoiceDisputedEmail(params: {
     headline: `${clientName} has a question about an invoice`,
     body: `
       <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
-        <strong>${clientName}</strong> flagged invoice${invoiceNumber ? ` ${invoiceNumber}` : ''} on
+        <strong>${clientName}</strong> flagged invoice${invoiceNumber ? ` ${escapeHtml(invoiceNumber)}` : ''} on
         <strong>${projectName}</strong> from the client portal.
       </p>
       <div style="background:${C.bg};border:1px solid ${C.border};border-radius:6px;padding:14px 16px;margin:16px 0;">
@@ -2464,7 +2464,7 @@ export async function sendInvoiceDisputeResolvedEmail(params: {
     body: `
       <p style="font-size:14px;color:${C.text};line-height:1.7;margin:0 0 16px;">Hi ${clientName},</p>
       <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
-        <strong>${agencyName}</strong> has reviewed the question you raised on invoice${invoiceNumber ? ` ${invoiceNumber}` : ''}
+        <strong>${agencyName}</strong> has reviewed the question you raised on invoice${invoiceNumber ? ` ${escapeHtml(invoiceNumber)}` : ''}
         for <strong>${projectName}</strong> and marked it resolved.
       </p>
       ${note ? `

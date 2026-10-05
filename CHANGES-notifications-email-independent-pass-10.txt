@@ -1,0 +1,16 @@
+Notifications & email — independent pass 10 (bugs only)
+
+1. Stale-tab writes. The active workspace is stored per user on the server, so a tab left open across a workspace switch
+   elsewhere wrote to whichever workspace was active NOW — personal preference toggles, inbox "Mark all read", "Clear read"
+   (permanent delete) and per-row delete. Every other Settings write already carried the stale-workspace guard.
+   - app/api/notifications/route.ts: GET returns workspaceId; PATCH and DELETE refuse a mismatched workspaceId with 409.
+   - app/api/notifications/preferences/route.ts: GET returns workspaceId; PATCH refuses a mismatch with 409.
+   - components/notifications/NotificationsClient.tsx: remembers the workspace of the list on screen and sends it with every
+     write; a 409 reloads the list; returning to the tab replaces the list only if the active workspace changed.
+   - components/layout/NotificationBell.tsx: same (a refused write resyncs via the existing load()).
+   - components/settings/SettingsClient.tsx: personal toggles send the page's workspaceId (the admin defaults already did).
+   A request with no workspaceId (older client) behaves as before.
+2. lib/email/templates.ts: the invoice number (6 templates + the payment-recorded headline) and the escalation entity type
+   were interpolated into HTML unescaped. Not exploitable today (invoice prefixes are DB-constrained to A-Z/0-9/-; callers pass
+   fixed entity types) — hardened so a future caller cannot introduce markup. Subjects still use the raw text.
+Tests: tests/notifications-email-pass-10.test.ts (new). tsc clean; full suite 276 files / 2766 tests pass.

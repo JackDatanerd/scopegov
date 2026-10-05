@@ -22,6 +22,9 @@ export default function NotificationsClient() {
   // quickly, or reloaded after "Mark all read" while an earlier request was still on the wire) is dropped
   // instead of overwriting the list that belongs to the current filter.
   const reloadSeq = useRef(0)
+  // The workspace the list on screen belongs to (from the last response). Sent with every write so the server can refuse
+  // one made from a tab that is stale after a workspace switch elsewhere.
+  const workspaceRef = useRef<string | null>(null)
 
   const fetchPage = useCallback(async (f: Filter, after: string | null) => {
     const qs = new URLSearchParams({ limit: '30' })
@@ -30,7 +33,7 @@ export default function NotificationsClient() {
     const res = await fetch(`/api/notifications?${qs.toString()}`)
     const json = await res.json().catch(() => ({}))
     if (!res.ok) throw new Error(json.error || 'Could not load notifications')
-    return json as { notifications: AppNotification[]; unreadCount: number; hasMore: boolean; nextCursor: string | null }
+    return json as { workspaceId?: string; notifications: AppNotification[]; unreadCount: number; hasMore: boolean; nextCursor: string | null }
   }, [])
 
   const reload = useCallback(async (f: Filter) => {
@@ -39,6 +42,7 @@ export default function NotificationsClient() {
     try {
       const page = await fetchPage(f, null)
       if (mySeq !== reloadSeq.current) return
+      if (page.workspaceId) workspaceRef.current = page.workspaceId
       setItems(page.notifications); setUnreadCount(page.unreadCount)
       setHasMore(page.hasMore); setCursor(page.nextCursor)
     } catch (e: unknown) {
@@ -56,6 +60,27 @@ export default function NotificationsClient() {
     return () => window.removeEventListener(NOTIFICATIONS_CHANGED_EVENT, onChanged)
   }, [filter, reload])
 
+  // A tab left open across a workspace switch elsewhere still shows the OLD workspace's notifications, and its
+  // "Mark all read" / "Clear read" / delete would act on the NEW one. When the tab becomes visible again, look at page one
+  // and replace the list only if it now belongs to a different workspace (a plain refocus must not throw away "Load older").
+  useEffect(() => {
+    const check = async () => {
+      if (document.visibilityState !== 'visible' || !workspaceRef.current) return
+      const mySeq = reloadSeq.current
+      try {
+        const page = await fetchPage(filter, null)
+        if (mySeq !== reloadSeq.current || !page.workspaceId || page.workspaceId === workspaceRef.current) return
+        reloadSeq.current++
+        workspaceRef.current = page.workspaceId
+        setItems(page.notifications); setUnreadCount(page.unreadCount)
+        setHasMore(page.hasMore); setCursor(page.nextCursor); setError('')
+      } catch { /* a failed background check changes nothing */ }
+    }
+    document.addEventListener('visibilitychange', check)
+    window.addEventListener('focus', check)
+    return () => { document.removeEventListener('visibilitychange', check); window.removeEventListener('focus', check) }
+  }, [filter, fetchPage])
+
   async function loadMore() {
     if (!cursor) return
     const mySeq = reloadSeq.current
@@ -63,6 +88,7 @@ export default function NotificationsClient() {
     try {
       const page = await fetchPage(filter, cursor)
       if (mySeq !== reloadSeq.current) return // the list was reloaded (filter changed) while this page loaded
+      if (page.workspaceId && workspaceRef.current && page.workspaceId !== workspaceRef.current) { await reload(filter); return }
       setItems(prev => {
         const seen = new Set(prev.map(n => n.id))
         return [...prev, ...page.notifications.filter(n => !seen.has(n.id))]
@@ -74,10 +100,12 @@ export default function NotificationsClient() {
 
   async function call(method: 'PATCH' | 'DELETE', body: Record<string, unknown>) {
     const res = await fetch('/api/notifications', {
-      method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      method, headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...body, ...(workspaceRef.current ? { workspaceId: workspaceRef.current } : {}) }),
     })
     if (!res.ok) {
       const j = await res.json().catch(() => ({}))
+      if (res.status === 409) reload(filter) // the workspace changed under this tab: show the current one's list
       throw new Error(j.error || 'Request failed')
     }
     announceNotificationsChanged('inbox') // the sidebar bell keeps its own badge — tell it now
@@ -120,7 +148,8 @@ export default function NotificationsClient() {
       // Fire and forget: navigation must not wait on it. A rejected request (fetch only throws on a
       // network error — an HTTP 4xx/5xx resolves) puts the row back to unread instead of lying.
       fetch('/api/notifications', {
-        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: [n.id] }),
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: [n.id], ...(workspaceRef.current ? { workspaceId: workspaceRef.current } : {}) }),
       }).then(res => {
         if (!res.ok) throw new Error('mark-read failed')
         announceNotificationsChanged('inbox')

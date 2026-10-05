@@ -25,6 +25,9 @@ export default function NotificationBell() {
   // A response that comes back for an older request (a poll that began before the person's click was written)
   // must not overwrite newer state — only the latest request is applied.
   const loadSeq = useRef(0)
+  // Workspace of the list on screen (from the last response), sent with writes so a stale tab's write is refused (409 → resync).
+  const workspaceRef = useRef<string | null>(null)
+  const wsBody = () => (workspaceRef.current ? { workspaceId: workspaceRef.current } : {})
   async function load() {
     const mySeq = ++loadSeq.current
     try {
@@ -32,6 +35,7 @@ export default function NotificationBell() {
       if (!res.ok) throw new Error(String(res.status))
       const json = await res.json()
       if (mySeq !== loadSeq.current) return
+      if (json.workspaceId) workspaceRef.current = json.workspaceId
       setItems(json.notifications || [])
       setUnreadCount(json.unreadCount ?? (json.notifications || []).filter((n: Notification) => !n.read).length)
       setLoadError(false)
@@ -78,7 +82,7 @@ export default function NotificationBell() {
     try {
       const res = await fetch('/api/notifications', {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ all: true }),
+        body: JSON.stringify({ all: true, ...wsBody() }),
       })
       if (!res.ok) throw new Error(String(res.status))
       announceNotificationsChanged('bell') // the /notifications inbox may be open beside this bell
@@ -92,7 +96,7 @@ export default function NotificationBell() {
       setUnreadCount(prev => Math.max(0, prev - 1))
       fetch('/api/notifications', {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ids: [n.id] }),
+        body: JSON.stringify({ ids: [n.id], ...wsBody() }),
       }).then(res => { if (!res.ok) load(); else announceNotificationsChanged('bell') }).catch(() => load())
     }
     const href = entityHref(n)

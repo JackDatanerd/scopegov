@@ -2,6 +2,7 @@
 import { getSession } from '@/lib/auth/session'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
+import { staleWorkspaceResponse } from '@/lib/utils/workspace-guard'
 import { ALL_EVENT_TYPES, IN_APP_ONLY_EVENT_TYPES as IN_APP_ONLY, isInAppOnly } from '@/lib/constants/notification-events'
 
 // Event lists live in lib/constants/notification-events.ts (they were hand-synced in four places).
@@ -71,7 +72,7 @@ export async function GET() {
         inAppPrefs[row.event_type] = row.in_app_enabled
     }
 
-    return NextResponse.json({ prefs, inAppPrefs, locked, inAppOnlyEventTypes: IN_APP_ONLY_EVENT_TYPES })
+    return NextResponse.json({ workspaceId: session.workspaceId, prefs, inAppPrefs, locked, inAppOnlyEventTypes: IN_APP_ONLY_EVENT_TYPES })
   } catch (err) {
     // FIX (deep audit, Settings re-pass): this returned err.message straight
     // to the client — same info-disclosure pattern already fixed for every
@@ -89,6 +90,10 @@ export async function PATCH(request: NextRequest) {
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     const body = await request.json().catch(() => null)
+    // Stale-tab guard (lib/utils/workspace-guard.ts): without it a toggle made in a tab left open from before a workspace
+    // switch is saved against whichever workspace is active now.
+    const stale = staleWorkspaceResponse((body as any)?.workspaceId, session.workspaceId)
+    if (stale) return stale
     const { eventType, enabled, channel } = (body || {}) as { eventType?: string; enabled?: unknown; channel?: unknown }
     if (!eventType || !ALL_EVENT_TYPES.includes(eventType)) return NextResponse.json({ error: 'Unknown event type' }, { status: 400 })
     // FIX (Notifications & email fix round): `!!enabled` turned a missing / non-boolean value into

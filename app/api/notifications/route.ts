@@ -4,6 +4,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession } from '@/lib/auth/session'
 import { parseIds, parseCursor, MAX_IDS } from '@/lib/utils/notification-input'
+import { staleWorkspaceResponse } from '@/lib/utils/workspace-guard'
 
 // Notifications & email fix round — what changed here and why:
 //
@@ -70,6 +71,8 @@ export async function GET(request: NextRequest) {
     const hasMore = (rows || []).length > limit
     const last = page[page.length - 1]
     return NextResponse.json({
+      // The workspace this list belongs to. Writes send it back (stale-tab guard, see PATCH / DELETE).
+      workspaceId: session.workspaceId,
       notifications: page,
       unreadCount: count || 0,
       hasMore,
@@ -89,6 +92,10 @@ export async function PATCH(request: NextRequest) {
     const body = await request.json().catch(() => null)
     if (!body || typeof body !== 'object')
       return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
+    // Stale-tab guard (lib/utils/workspace-guard.ts): the active workspace is stored per user on the server, so a tab left
+    // open from before a workspace switch would otherwise mark read / delete rows in whichever workspace is active NOW.
+    const stale = staleWorkspaceResponse((body as any).workspaceId, session.workspaceId)
+    if (stale) return stale
     const { ids, all } = body as { ids?: unknown; all?: unknown }
 
     const idList = all === true ? null : parseIds(ids)
@@ -125,6 +132,8 @@ export async function DELETE(request: NextRequest) {
     const body = await request.json().catch(() => null)
     if (!body || typeof body !== 'object')
       return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
+    const stale = staleWorkspaceResponse((body as any).workspaceId, session.workspaceId)
+    if (stale) return stale
     const { ids, allRead } = body as { ids?: unknown; allRead?: unknown }
 
     const idList = allRead === true ? null : parseIds(ids)
