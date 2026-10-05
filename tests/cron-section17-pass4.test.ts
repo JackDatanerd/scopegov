@@ -135,7 +135,7 @@ describe('B4 — a lost bell after an irreversible change is surfaced', () => {
 
   it('approval-stall: a failed send-failure escalation is NOT bumped, so it is retried next run', async () => {
     h.notify = false
-    h.db = createFakeSupabase({ approval_requests: [{ id: 'r1', workspace_id: 'w1', project_id: 'p1', document_type: 'sow', status: 'approved', send_failed_at: ago(5), send_failed_reason: 'x', updated_at: ago(5), workspaces: { deleted_at: null } }] })
+    h.db = createFakeSupabase({ approval_requests: [{ id: 'r1', workspace_id: 'w1', project_id: 'p1', document_type: 'sow', status: 'approved', send_failed_at: ago(5), send_failed_reason: 'x', updated_at: ago(5), send_failure_alerts: 0, workspaces: { deleted_at: null } }] })
     const before = h.db.tables.approval_requests[0].updated_at
     const { body } = await call(approvalStall)
     expect(h.db.tables.approval_requests[0].updated_at).toBe(before)
@@ -144,11 +144,12 @@ describe('B4 — a lost bell after an irreversible change is surfaced', () => {
   })
 
   it('approval-stall: a successful send-failure escalation is still bumped and counted', async () => {
-    h.db = createFakeSupabase({ approval_requests: [{ id: 'r1', workspace_id: 'w1', project_id: 'p1', document_type: 'sow', status: 'approved', send_failed_at: ago(5), send_failed_reason: 'x', updated_at: ago(5), workspaces: { deleted_at: null } }] })
+    h.db = createFakeSupabase({ approval_requests: [{ id: 'r1', workspace_id: 'w1', project_id: 'p1', document_type: 'sow', status: 'approved', send_failed_at: ago(5), send_failed_reason: 'x', updated_at: ago(5), send_failure_alerts: 0, workspaces: { deleted_at: null } }] })
     const before = h.db.tables.approval_requests[0].updated_at
     const { body } = await call(approvalStall)
     expect(h.db.tables.approval_requests[0].updated_at).not.toBe(before)
     expect(body.sendFailureEscalated).toBe(1)
+    expect(h.db.tables.approval_requests[0].send_failure_alerts).toBe(1)
   })
 })
 

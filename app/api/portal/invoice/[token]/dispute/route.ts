@@ -66,17 +66,26 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       }
     }
 
-    // Not a CAS-guarded lifecycle transition — status is untouched, this
-    // just stamps when + what. A client can re-flag with an updated note
-    // any time; last write wins, same as any other informational field.
-    // A fresh dispute re-opens the thread: clear any earlier agency resolution.
-    const { error: disputeErr } = await (service as any).from('invoices')
+    // FIX (Invoicing independent pass): the 15-minute / same-note throttle above reads `disputed_at` from a
+    // snapshot taken BEFORE this write, and the write used to be keyed on the id alone. N simultaneous POSTs
+    // with different notes all read the same pre-write state, all passed, and each one then notified up to 25
+    // finance members (bell + email) and mailed the client a receipt - the exact flood the throttle exists to
+    // stop, and rotating IPs defeats the per-IP limit. The write is now compare-and-set on the dispute state
+    // this request observed (null or the exact timestamps), so only the request that actually flips the row
+    // continues to the notify/email flow; a loser is answered like any other duplicate / too-soon request.
+    // A fresh dispute still re-opens a RESOLVED thread (the observed resolved_at is part of the guard).
+    let disputeQuery = (service as any).from('invoices')
       .update({ disputed_at: now, dispute_note: note, dispute_resolved_at: null, dispute_resolution_note: null, dispute_resolved_by: null })
       .eq('id', invoice.id)
+    disputeQuery = invoice.disputed_at ? disputeQuery.eq('disputed_at', invoice.disputed_at) : disputeQuery.is('disputed_at', null)
+    disputeQuery = invoice.dispute_resolved_at ? disputeQuery.eq('dispute_resolved_at', invoice.dispute_resolved_at) : disputeQuery.is('dispute_resolved_at', null)
+    const { data: disputeRows, error: disputeErr } = await disputeQuery.select('id')
     if (disputeErr) {
       console.error('Invoice dispute: update failed:', disputeErr)
       return NextResponse.json({ error: 'Could not record your message — please try again.' }, { status: 500 })
     }
+    if (!disputeRows || disputeRows.length === 0)
+      return NextResponse.json({ ok: true, duplicate: true })
 
     await logAudit(service, {
       // FIX (build, Reports & Audit re-pass): actor_id is `uuid REFERENCES

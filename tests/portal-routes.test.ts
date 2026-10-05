@@ -121,9 +121,11 @@ describe("POST /api/portal/invoice/[token]/paid — the client's \"I've paid\" n
 
 describe('POST /api/portal/invoice/[token]/dispute — per-invoice throttle', () => {
   const note = 'The second line item does not match what we agreed'
+  // The dispute write is compare-and-set on the state the request observed, so the stored row must mirror it.
+  const row = (over: Row = {}) => ({ id: 'i1', disputed_at: null, dispute_note: null, dispute_resolved_at: null, ...over })
 
   it('first dispute is recorded and notifies; the SAME message re-sent while open is acknowledged silently', async () => {
-    h.invoice = inv(); h.db = createFakeSupabase({ invoices: [{ id: 'i1' }] })
+    h.invoice = inv(); h.db = createFakeSupabase({ invoices: [row()] })
     expect((await run(dispute, { note })).status).toBe(200)
     expect(h.notified).toHaveLength(1)
     h.invoice = inv({ disputed_at: new Date().toISOString(), dispute_note: note })
@@ -133,19 +135,47 @@ describe('POST /api/portal/invoice/[token]/dispute — per-invoice throttle', ()
   })
 
   it('a DIFFERENT message within 15 minutes is throttled (429), after 15 minutes it is accepted', async () => {
-    h.db = createFakeSupabase({ invoices: [{ id: 'i1' }] })
-    h.invoice = inv({ disputed_at: new Date(Date.now() - 2 * 60_000).toISOString(), dispute_note: 'first message here' })
+    const recent = new Date(Date.now() - 2 * 60_000).toISOString()
+    h.db = createFakeSupabase({ invoices: [row({ disputed_at: recent, dispute_note: 'first message here' })] })
+    h.invoice = inv({ disputed_at: recent, dispute_note: 'first message here' })
     expect((await run(dispute, { note })).status).toBe(429)
     expect(h.notified).toHaveLength(0)
-    h.invoice = inv({ disputed_at: new Date(Date.now() - 20 * 60_000).toISOString(), dispute_note: 'first message here' })
+    const old = new Date(Date.now() - 20 * 60_000).toISOString()
+    h.db = createFakeSupabase({ invoices: [row({ disputed_at: old, dispute_note: 'first message here' })] })
+    h.invoice = inv({ disputed_at: old, dispute_note: 'first message here' })
     expect((await run(dispute, { note })).status).toBe(200)
     expect(h.notified).toHaveLength(1)
   })
 
   it('once the agency has resolved it, a fresh dispute is always allowed', async () => {
-    h.db = createFakeSupabase({ invoices: [{ id: 'i1' }] })
-    h.invoice = inv({ disputed_at: new Date().toISOString(), dispute_note: note, dispute_resolved_at: new Date().toISOString() })
+    const at = new Date().toISOString()
+    h.db = createFakeSupabase({ invoices: [row({ disputed_at: at, dispute_note: note, dispute_resolved_at: at })] })
+    h.invoice = inv({ disputed_at: at, dispute_note: note, dispute_resolved_at: at })
     expect((await run(dispute, { note })).status).toBe(200)
+    expect(h.db.tables.invoices[0].dispute_resolved_at).toBeNull() // thread re-opened
+  })
+
+  it('two simultaneous different messages: only the request that wins the write notifies anyone', async () => {
+    // Both requests read the SAME pre-write snapshot (nothing disputed yet), so the in-memory throttle lets both through.
+    h.db = createFakeSupabase({ invoices: [row()] })
+    h.invoice = inv()
+    const a = await run(dispute, { note: 'First concurrent message, long enough' })
+    const b = await run(dispute, { note: 'Second concurrent message, long enough' })
+    expect(a.status).toBe(200)
+    expect(b.body).toMatchObject({ ok: true, duplicate: true })
+    expect(h.notified).toHaveLength(1) // one page to finance, not two
+    expect(h.emails.filter(e => e[0] === 'receipt')).toHaveLength(1)
+    expect(h.db.tables.invoices[0].dispute_note).toBe('First concurrent message, long enough')
+  })
+
+  it('a resolve that lands between the read and the write is not silently overwritten', async () => {
+    const at = new Date(Date.now() - 30 * 60_000).toISOString()
+    // The request saw an open dispute; by the time it writes, the agency has resolved it.
+    h.invoice = inv({ disputed_at: at, dispute_note: 'earlier', dispute_resolved_at: null })
+    h.db = createFakeSupabase({ invoices: [row({ disputed_at: at, dispute_note: 'earlier', dispute_resolved_at: new Date().toISOString() })] })
+    const res = await run(dispute, { note })
+    expect(res.body).toMatchObject({ ok: true, duplicate: true })
+    expect(h.notified).toHaveLength(0)
   })
 })
 

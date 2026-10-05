@@ -1,0 +1,20 @@
+Invoicing independent pass (c12)
+
+BUG (low): POST /api/portal/invoice/[token]/dispute
+  The per-invoice throttle (same note ignored while open, different note at most once per 15 min) read disputed_at
+  from a snapshot and then wrote keyed on id alone. Simultaneous POSTs with different notes all passed the check and
+  each notified up to 25 finance members (bell + email) and mailed the client a receipt. The write is now
+  compare-and-set on the dispute state the request observed (disputed_at / dispute_resolved_at, null or exact);
+  a loser is answered as a duplicate and notifies nobody. Same pattern as portal/invoice/[token]/paid.
+  This also stops a request from overwriting a dispute the agency resolved between its read and its write.
+
+TESTS
+  tests/portal-routes.test.ts: fixtures mirror the observed state; added a concurrent-dispute case and a
+    resolve-between-read-and-write case (both fail against the old route).
+  tests/cron-section17-pass4.test.ts: approval-stall fixtures carry send_failure_alerts (added by migration 146
+    and the ad9c398 filter); the success case now also asserts the counter increments.
+  tests/trial-plan-workspace-pass-1-cron.test.ts: templates mock is an explicit object (a catch-all Proxy is rejected
+    by vitest, so no trial-expiry email was ever captured).
+
+DEPLOY NOTE: migration 146 (approval_requests.send_failure_alerts) must be applied before the next approval-stall
+cron run, or that cron's send-failure step errors.

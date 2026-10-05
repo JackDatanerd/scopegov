@@ -23,10 +23,14 @@ vi.mock('@/lib/billing/ops-alert', () => ({ alertBillingOps: async () => true })
 vi.mock('@/lib/integrations/paystack', () => ({ cancelPaystackSubscription: async () => ({ ok: true }) }))
 vi.mock('@/lib/utils/money', () => ({ formatMoney: (n: any) => String(n) }))
 vi.mock('@/lib/email/delivery', () => ({ checkedSend: async (fn: any) => { await fn(); return { ok: true } } }))
-vi.mock('@/lib/email/templates', () => new Proxy({}, {
-  get: (_t, p: string) => p === 'sendTrialWarningEmail'
-    ? async (a: any) => { h.sent.push(a); return { ok: true } }
-    : async () => ({ ok: true }),
+// An explicit object, not a Proxy: vitest wraps a mock factory's result and throws "No X export is defined" for any
+// name it cannot see as an own key, so a catch-all Proxy never reached `sendTrialWarningEmail` and no email was ever captured.
+vi.mock('@/lib/email/templates', () => ({
+  sendTrialWarningEmail: async (a: any) => { h.sent.push(a); return { ok: true } },
+  sendPaymentFailedEmail: async () => ({ ok: true }),
+  sendInvoiceOverdueInternalEmail: async () => ({ ok: true }),
+  sendPaymentMilestoneOverdueEmail: async () => ({ ok: true }),
+  sendSubscriptionEndedEmail: async () => ({ ok: true }),
 }))
 vi.mock('@/lib/utils/permissions-query', () => ({
   getMemberEmailsWithPermission: async () => [],
