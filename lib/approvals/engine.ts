@@ -441,7 +441,7 @@ async function dispatchSend(
       : request.document_type === 'co_counter'
       ? await acceptCoCounter(service, { coId: request.document_id, ...sendParams })
       : request.document_type === 'invoice'
-      ? await sendInvoiceDocument(service, { invoiceId: request.document_id, ...sendParams })
+      ? await sendInvoiceDocument(service, { invoiceId: request.document_id, ...sendParams, approvedGateAmount: request.context?.amount ?? null })
       : await sendCoDocument(service, { coId: request.document_id, ...sendParams, expiresInDays, approvedGateAmount: request.context?.amount ?? null })
     if (!result.ok) return { ok: false, error: result.error || 'The send failed.' }
     return { ok: true, emailSent: result.emailSent !== false, emailError: result.emailError }

@@ -59,6 +59,8 @@ export async function sendInvoiceDocument(service: any, params: {
   // Present when this send was triggered by an approval chain clearing,
   // rather than a direct user click — carried into the audit metadata.
   approvalRequestId?: string
+  /** The amount the approval chain signed off on (context.amount). When given, an invoice that has since changed size is not sent. */
+  approvedGateAmount?: number | null
 }): Promise<SendInvoiceResult> {
   const { invoiceId, workspaceId, actorId, actorEmail, actorName, actorAgencyName, approvalRequestId } = params
 
@@ -76,6 +78,18 @@ export async function sendInvoiceDocument(service: any, params: {
     return { ok: false, error: 'Invoice not found', status: 404 }
   }
   if (invoice.status !== 'draft') return { ok: false, error: 'Only draft invoices can be sent', status: 400 }
+
+  // FIX (section-11 pass, approved-amount re-check): sendCoDocument refuses to auto-send a CO whose size no longer matches what
+  // the approval chain signed off on; this path had no equivalent. The edit lock (PATCH /api/invoices/[id]) reads the approval
+  // state and then writes through update_invoice_capped, which guards only on status='draft' — so an edit landing in the instant
+  // a send-for-approval was created (or a slow, reordered autosave) could change the amount AFTER it was submitted, and the
+  // auto-send would then put an unapproved figure in front of the client with a freshly assigned invoice number. Refuse it here,
+  // before a number is consumed; the requester cancels the request and sends again at the real amount.
+  if (params.approvedGateAmount != null && Number.isFinite(Number(params.approvedGateAmount))) {
+    const current = Math.abs(Number(invoice.amount) || 0)
+    if (Math.abs(current - Math.abs(Number(params.approvedGateAmount))) > 0.005)
+      return { ok: false, status: 409, error: 'This invoice was edited after it was submitted for approval, so the approved amount no longer matches. Cancel this request and send it again for approval.' }
+  }
 
   const project   = invoice.projects
   const client    = project?.clients
