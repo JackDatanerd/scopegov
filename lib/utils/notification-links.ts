@@ -77,7 +77,10 @@ export function timeAgo(iso: string, now: number = Date.now()): string {
   const hrs = Math.floor(mins / 60)
   if (hrs < 24) return `${hrs}h ago`
   const days = Math.floor(hrs / 24)
-  // Beyond a week "23d ago" stops being useful; show the date.
+  // Beyond a week "23d ago" stops being useful; show the date. The year is shown whenever it differs from the current one
+  // (notifications live up to ~270 days, so an age threshold never reached it and "1 Dec" read as the wrong year).
   if (days < 7) return `${days}d ago`
-  return new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: days > 300 ? 'numeric' : undefined })
+  const then = new Date(iso)
+  const sameYear = then.getUTCFullYear() === new Date(now).getUTCFullYear()
+  return then.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: sameYear ? undefined : 'numeric' })
 }

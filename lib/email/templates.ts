@@ -24,7 +24,7 @@ const deliver = (payload: EmailPayload, log?: EmailLogContext): Promise<SendResu
 // team members (who have a ScopeGov login and a Settings page); client-
 // facing emails (SOW/CO/invoice sends, reminders, cancellations) don't get
 // this, since clients never have an account or a preferences page to visit.
-const APP_URL = process.env.NEXT_PUBLIC_APP_URL || ''
+const appUrl = () => process.env.NEXT_PUBLIC_APP_URL || ''
 
 // FIX (audit round 4, finding #7): none of these templates HTML-escaped
 // interpolated dynamic content — client/project/agency names, notes,
@@ -137,7 +137,7 @@ function baseTemplate({
       </p>
       ${showPreferencesLink ? `
       <p style="font-size:11px;color:${C.text3};margin:6px 0 0;">
-        <a href="${APP_URL}/settings?tab=notifications" style="color:${C.text3};text-decoration:underline;">Manage notification preferences</a>
+        <a href="${appUrl()}/settings?tab=notifications" style="color:${C.text3};text-decoration:underline;">Manage notification preferences</a>
       </p>
       ` : ''}
     </div>
@@ -256,7 +256,7 @@ export async function sendSowSignedAgencyEmail(params: {
     // The only caller passes the project deep link as `portalUrl` (and no projectId), so fall back to it:
     // without this the email carried no button at all.
     ...(projectId
-      ? { cta: 'Open project in ScopeGov', ctaUrl: `${process.env.NEXT_PUBLIC_APP_URL}/projects/${projectId}?tab=sow` }
+      ? { cta: 'Open project in ScopeGov', ctaUrl: `${appUrl()}/projects/${projectId}?tab=sow` }
       : portalUrl ? { cta: 'Open project in ScopeGov', ctaUrl: portalUrl } : {}),
   })
 
@@ -353,7 +353,7 @@ export async function sendSowDeclinedEmail(params: {
       </p>
     `,
     cta: 'Open project in ScopeGov',
-    ctaUrl: projectId ? `${process.env.NEXT_PUBLIC_APP_URL}/projects/${projectId}?tab=sow` : `${process.env.NEXT_PUBLIC_APP_URL}/projects`,
+    ctaUrl: projectId ? `${appUrl()}/projects/${projectId}?tab=sow` : `${appUrl()}/projects`,
     showPreferencesLink: true,
   })
 
@@ -2177,7 +2177,7 @@ export async function sendWorkspaceCreatedEmail(params: { to: string; name: stri
       </p>
     `,
     cta: 'Finish setting up →',
-    ctaUrl: `${process.env.NEXT_PUBLIC_APP_URL}/onboarding`,
+    ctaUrl: `${appUrl()}/onboarding`,
   })
   return deliver({ from: systemFrom(), to, subject: `Welcome to ${agencyNameRaw} on ScopeGov`, html })
 }
@@ -2226,8 +2226,8 @@ export async function sendWorkspaceRestoredEmail(params: { to: string; name: str
     `,
     cta: 'Open workspace →',
     ctaUrl: isRestorer
-      ? `${process.env.NEXT_PUBLIC_APP_URL}/dashboard`
-      : `${process.env.NEXT_PUBLIC_APP_URL}/workspace-open?id=${workspaceId}`,
+      ? `${appUrl()}/dashboard`
+      : `${appUrl()}/workspace-open?id=${workspaceId}`,
   })
   return deliver({ from: systemFrom(), to, subject: `${agencyNameRaw} has been restored`, html })
 }
@@ -2299,7 +2299,7 @@ export async function sendOwnershipTransferredEmail(params: {
         Wasn't expected? Contact the people involved right away.
       </p>
     `,
-    ctaUrl: `${process.env.NEXT_PUBLIC_APP_URL}/team`,
+    ctaUrl: `${appUrl()}/team`,
     cta: 'View team →',
   })
   return deliver({ from: systemFrom(), to, subject: `Ownership of ${agencyNameRaw} was transferred`, html })
@@ -2326,7 +2326,7 @@ export async function sendMemberRoleChangedEmail(params: {
         What you can see and do in the workspace may have changed with it.
       </p>
     `,
-    ctaUrl: `${process.env.NEXT_PUBLIC_APP_URL}/dashboard`,
+    ctaUrl: `${appUrl()}/dashboard`,
     cta: 'Open ScopeGov →',
   })
   return deliver({ from: systemFrom(), to, subject: roleRaw ? `Your role in ${agencyNameRaw} is now ${roleRaw}` : `Your permissions in ${agencyNameRaw} changed`, html })
@@ -2352,7 +2352,7 @@ export async function sendMemberAccessChangedEmail(params: {
           : `<strong>${by}</strong> reactivated your account in <strong>${agencyName}</strong>. You can sign in again.`}
       </p>
     `,
-    ...(off ? {} : { ctaUrl: `${process.env.NEXT_PUBLIC_APP_URL}/login`, cta: 'Sign in →' }),
+    ...(off ? {} : { ctaUrl: `${appUrl()}/login`, cta: 'Sign in →' }),
   })
   return deliver({
     from: systemFrom(), to,

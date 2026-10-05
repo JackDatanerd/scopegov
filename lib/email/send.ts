@@ -66,6 +66,15 @@ export function isValidReplyTo(email: string | null | undefined): email is strin
   return isDeliverableAddress(email) && EMAIL_RE.test(email.trim())
 }
 
+/**
+ * Strict check applied to every address that actually goes into a request. Resend rejects the WHOLE message (422) if any
+ * single address is malformed, and addresses already stored (legacy client rows accepted as-is) can still be shapes such as
+ * `a@b..co` or `a..b@c.co` that the loose SIMPLE_EMAIL pattern lets through.
+ */
+function isSendableAddress(email: string): boolean {
+  return isDeliverableAddress(email) && EMAIL_RE.test(email.trim())
+}
+
 export function isDeliverableAddress(email: string | null | undefined): email is string {
   return !!email && SIMPLE_EMAIL.test(email.trim()) && !DEAD_ADDRESS.test(email.trim())
 }
@@ -82,7 +91,7 @@ function uniqueLower(list: string[]): string[] {
 
 export async function sendEmail(payload: EmailPayload, log?: EmailLogContext): Promise<SendResult> {
   const toList = uniqueLower((Array.isArray(payload.to) ? payload.to : [payload.to]).filter(Boolean))
-  const deliverableTo = toList.filter(isDeliverableAddress)
+  const deliverableTo = toList.filter(isSendableAddress)
   if (deliverableTo.length === 0) {
     // Nothing legitimate to send to. A dead/invalid *primary* recipient is an
     // error for a single-recipient send (the caller should know), but a list
@@ -96,7 +105,7 @@ export async function sendEmail(payload: EmailPayload, log?: EmailLogContext): P
   // request (422) if any single address is malformed.
   const toKeys = new Set(deliverableTo.map(e => e.toLowerCase()))
   const cc = uniqueLower(payload.cc || [])
-    .filter(isDeliverableAddress)
+    .filter(isSendableAddress)
     .filter(e => !toKeys.has(e.toLowerCase()))
 
   const body: Record<string, unknown> = {
