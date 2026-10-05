@@ -270,8 +270,8 @@ function NewProjectPageInner() {
           retainerDurationMonths: projectType === 'retainer' ? (retainerMonths || null) : null,
         }),
       })
-      const json = await res.json()
-      if (!res.ok) throw new Error(json.error || 'Failed to create project')
+      const json = await res.json().catch(() => ({} as any))
+      if (!res.ok || !json.projectId) throw new Error(json.error || 'Failed to create project')
       setProjectId(json.projectId)
       setCreatedClientId(json.clientId || clientId || null)
       setCreatedClientEmail(clientEmail.trim().toLowerCase())
@@ -291,8 +291,8 @@ function NewProjectPageInner() {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ briefText, projectId, projectType }),
       })
-      const json = await res.json()
-      if (!res.ok) throw new Error(json.error)
+      const json = await res.json().catch(() => ({} as any))
+      if (!res.ok) throw new Error(json.error || 'Could not parse brief — please fill in manually')
       const brief = json.brief || {}
       setObjective(brief.objective || '')
       setDeliverables(brief.deliverables || '')
@@ -357,8 +357,8 @@ function NewProjectPageInner() {
           contractValue: parseFloat(contractValue) || 0, currency,
         }),
       })
-      const json = await res.json()
-      if (!res.ok) throw new Error(json.error || 'Failed to generate SOW')
+      const json = await res.json().catch(() => ({} as any))
+      if (!res.ok) throw new Error(json.error || (res.status >= 502 ? "The request timed out before it finished — the SOW may still have been created. Refresh the project's SOW tab before trying again." : 'Failed to generate SOW'))
       router.push(`/projects/${projectId}?tab=sow&new=1`)
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to generate SOW')

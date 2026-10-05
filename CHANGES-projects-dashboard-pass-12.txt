@@ -1,0 +1,18 @@
+Projects & Dashboard pass 12 (independent audit, bugs only)
+
+B1  A gateway error body (502/504 HTML or plain text — SOW generation runs up to 120 s, so this is reachable) made a bare
+    `await res.json()` throw a SyntaxError whose raw text ("Unexpected token 'A', ...") was shown to the person; on the
+    SOW-generation paths the SOW may in fact have been created. Separately, `throw new Error(json.error)` with no fallback
+    gave an empty message, so a failed guardian paste-check showed nothing at all.
+    - components/projects/ProjectDetail.tsx: handleRetrySend, handleReopen, GenerateSowModal.extractFromBrief / .generate,
+      GuardianTab.handlePasteSubmit, GuardianHistoryPanel.retryCheck now parse with .catch and always carry fallback text.
+    - app/(app)/projects/new/page.tsx: project create, brief parse, SOW generate, same treatment.
+    - SOW generation on a 5xx says the request timed out and the SOW may exist (refresh the SOW tab) instead of "failed".
+    - A 200 lacking projectId / sowId is an error rather than a navigation to /undefined.
+
+B2  Guardian tab on a project stalled with stall_reason 'sow_unsigned' (no signed SOW) said "Guardian paused — you can still
+    check content against the signed scope" and offered the forwarding address, while Overview said "Not yet active".
+    There is no signed scope in that state. It now reads "Guardian not yet active / Activates when client signs the SOW",
+    and offers "Log a past check" like any other pre-signature project. (A legacy row with a signed SOW is unaffected.)
+
+Tests: tests/projects-dashboard-pass-12.test.ts (new).

@@ -806,7 +806,7 @@ function SowTab({ project, sows, amendments, permissions, router, pendingApprova
     setRetrying(true); setError('')
     try {
       const res  = await fetch(`/api/approvals/${approvalRequestId}/retry-send`, { method: 'POST' })
-      const json = await res.json()
+      const json = await res.json().catch(() => ({} as any))
       if (!res.ok) throw new Error(json.error || 'Retry failed')
       // Approved and sent, but the mail provider rejected the client email.
       if (json.deliveryWarning) alert(json.deliveryWarning)
@@ -937,8 +937,8 @@ function SowTab({ project, sows, amendments, permissions, router, pendingApprova
     setReopening(true); setError('')
     try {
       const res  = await fetch(`/api/sow/${currentSow.id}/reopen`, { method: 'POST' })
-      const json = await res.json()
-      if (!res.ok) throw new Error(json.error || 'Could not start a new version')
+      const json = await res.json().catch(() => ({} as any))
+      if (!res.ok || !json.sowId) throw new Error(json.error || 'Could not start a new version')
       router.push(`/projects/${project.id}/sow/${json.sowId}`)
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Could not start a new version')
@@ -1207,8 +1207,8 @@ function GenerateSowModal({ project, existingSow, onClose, onDone }: any) {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ briefText, projectType: project.type }),
       })
-      const json = await res.json()
-      if (!res.ok) throw new Error(json.error)
+      const json = await res.json().catch(() => ({} as any))
+      if (!res.ok) throw new Error(json.error || 'Could not read that brief — you can still fill the fields in manually below.')
       // FIX (section-9 audit, 9-B1): /api/sow/parse-brief returns
       // `{ brief: {...} }` — this read the fields off the top level, so
       // every one of them was undefined. The AI call ran, the rate-limit
@@ -1265,8 +1265,8 @@ function GenerateSowModal({ project, existingSow, onClose, onDone }: any) {
           contractValue: project.contract_value || 0, currency: project.currency || 'USD',
         }),
       })
-      const json = await res.json()
-      if (!res.ok) throw new Error(json.error || 'SOW generation failed — please try again.')
+      const json = await res.json().catch(() => ({} as any))
+      if (!res.ok) throw new Error(json.error || (res.status >= 502 ? "The request timed out before it finished — the SOW may still have been created. Refresh the project's SOW tab before trying again." : 'SOW generation failed — please try again.'))
       onDone()
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'SOW generation failed — please try again.')
@@ -1426,7 +1426,10 @@ function GuardianTab({ project, flags, exceptions = [], permissions, router, tea
   // Guardian panel claimed "not yet active" and offered no paste box at
   // all. This is the actual live-monitoring gate; isActive above is now
   // only used for the pure display language ("active" vs "paused").
-  const canSubmitLive = ['Active', 'Stalled'].includes(project.status)
+  // A project stalled because its SOW was never signed has no signed scope to check against — Guardian never started, it is not merely paused.
+  const unsignedStall = project.status === 'Stalled' && project.stall_reason === 'sow_unsigned'
+    && !(project.sow_documents || []).some((s: any) => s.status === 'signed')
+  const canSubmitLive = ['Active', 'Stalled'].includes(project.status) && !unsignedStall
   const openFlags  = flags.filter((f: any) => f.status === 'open')
   // FIX (re-audit, Guardian ghost-feature finding): borderline_review flags
   // (added in a prior fix round) were entirely invisible in this UI — no
@@ -1447,8 +1450,8 @@ function GuardianTab({ project, flags, exceptions = [], permissions, router, tea
           isRetroactive: pasteRetroactive,
         }),
       })
-      const json = await res.json()
-      if (!res.ok) throw new Error(json.error)
+      const json = await res.json().catch(() => ({} as any))
+      if (!res.ok) throw new Error(json.error || 'Submission failed — please try again.')
       setPasteText(''); setPasteMode(false); setPasteRetroactive(false)
       setLastResult(json)
       // Only worth a refresh if a flag was actually created — otherwise
@@ -1472,7 +1475,7 @@ function GuardianTab({ project, flags, exceptions = [], permissions, router, tea
                   same "not yet active" bucket as a project that never had a
                   scope signed at all — misleading, since a Stalled project's
                   Guardian is fully wired and checkable, just paused. */}
-              {isActive ? 'Guardian active' : project.status === 'Stalled' ? 'Guardian paused' : ['Complete','Archived'].includes(project.status) ? 'Guardian inactive' : 'Guardian not yet active'}
+              {isActive ? 'Guardian active' : project.status === 'Stalled' && !unsignedStall ? 'Guardian paused' : ['Complete','Archived'].includes(project.status) ? 'Guardian inactive' : 'Guardian not yet active'}
             </div>
             <div style={{ fontSize: 11, color: 'var(--text-3)' }}>
               {isActive ? `Monitoring via ${project.guardian_email || 'forwarding email'}`
@@ -1821,7 +1824,7 @@ function GuardianHistoryPanel({ projectId, canRetry, onFlagCreated }: { projectI
     setRetryingId(checkId); setRetryError(null)
     try {
       const res  = await fetch(`/api/guardian/checks/${checkId}/retry`, { method: 'POST' })
-      const json = await res.json()
+      const json = await res.json().catch(() => ({} as any))
       if (!res.ok) throw new Error(json.error || 'Retry failed')
       // Targeted update rather than a full refetch — a retry only ever
       // changes the one row that was retried, and refetching would also
