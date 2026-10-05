@@ -71,10 +71,14 @@ export async function POST(request: NextRequest) {
     try { payload = JSON.parse(rawBody) }
     catch { return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 }) }
 
-    const toEmail    = String(payload.OriginalRecipient || payload.To || '')
-    const fromEmail  = String(payload.From || '')
-    const fromAddr   = senderEmail(payload)
-    const subject    = String(payload.Subject || '')
+    // FIX (independent pass, section 13 - B1): these four headers go into source_metadata (jsonb), the flag's audit
+    // metadata and the retry path, but were the only inbound text not scrubbed. A NUL (or half an emoji) in a
+    // Subject/From - trivial to craft with a MIME encoded-word - made the check insert fail, the route answered 500
+    // and Postmark redelivered it forever: the email was never stored or checked. Scrub and cap them like the body.
+    const toEmail    = truncateText(stripUnstorableText(String(payload.OriginalRecipient || payload.To || '')), 500)
+    const fromEmail  = truncateText(stripUnstorableText(String(payload.From || '')), 500)
+    const fromAddr   = truncateText(stripUnstorableText(senderEmail(payload)), 320)
+    const subject    = truncateText(stripUnstorableText(String(payload.Subject || '')), 1000)
     const messageId  = typeof payload.MessageID === 'string' && payload.MessageID ? truncateText(stripUnstorableText(payload.MessageID), 200) : null
 
     // Extract the project from the guardian address (proj-{8chars}@guard.scopegov.app).

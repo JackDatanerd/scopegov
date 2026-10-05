@@ -1,0 +1,15 @@
+Section 13 (Guardian / scope governance) - independent pass 12
+
+B1  app/api/guardian/inbound/route.ts
+    toEmail / fromEmail / fromAddr / subject were the only inbound text not run through stripUnstorableText + truncateText.
+    They land in source_metadata (jsonb), the flag audit metadata/emailPath and the retry path. A NUL or lone surrogate in a
+    Subject/From (easy via a MIME encoded-word) failed the check insert -> 500 -> Postmark redelivers forever; the email was
+    never stored or checked. Now scrubbed and capped (500/500/320/1000).
+
+B2  lib/ai/guardian.ts (interpretClassifierOutput)
+    reasoning.slice(0,1000) / matchedReference.slice(0,300) could split an emoji (or carry a NUL from the model's JSON) and fail
+    the verdict write / flag insert. Now stripUnstorableText + truncateText.
+
+Withdrawn: bare "--" as a signature delimiter is deliberate and covered by pass-5 tests; left unchanged.
+
+Tests: tests/guardian-section13-pass12-fixes.test.ts

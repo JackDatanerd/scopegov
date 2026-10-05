@@ -480,8 +480,8 @@ export function interpretClassifierOutput(
     creepConfidence:  creepConf,
     matchedAgainst,
     matchedReference: typeof parsed.matchedReference === 'string' && parsed.matchedReference.trim()
-      ? parsed.matchedReference.trim().slice(0, 300) : null,
-    reasoning:        typeof parsed.reasoning === 'string' ? parsed.reasoning.slice(0, 1000) : '',
+      ? truncateText(stripUnstorableText(parsed.matchedReference.trim()), 300) || null : null,
+    reasoning:        typeof parsed.reasoning === 'string' ? truncateText(stripUnstorableText(parsed.reasoning), 1000) : '', // a cut/NUL must not fail the verdict write
   }
 }
 
