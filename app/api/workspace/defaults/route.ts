@@ -62,7 +62,9 @@ async function findRow(service: any, workspaceId: string, projectType: ProjectTy
 
 function parseRevisionRounds(value: unknown): number | undefined {
   if (value === undefined || value === null || value === '') return undefined
-  const n = typeof value === 'number' ? value : Number(String(value).trim())
+  // Settings independent pass 16 (B3): only a number or a numeric string counts — String([5]) is '5', which used to be accepted
+  // (settings/route.ts's toFiniteNumber closed the same hole in pass 12).
+  const n = typeof value === 'number' ? value : typeof value === 'string' ? Number(value.trim()) : NaN
   if (!Number.isInteger(n) || n < REVISION_ROUNDS_MIN || n > REVISION_ROUNDS_MAX) {
     throw new DefaultsValidationError(`Revision rounds must be a whole number from ${REVISION_ROUNDS_MIN} to ${REVISION_ROUNDS_MAX}`)
   }

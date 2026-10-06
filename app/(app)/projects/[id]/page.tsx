@@ -328,11 +328,19 @@ export default async function ProjectPage({ params, searchParams }: Props) {
   // FIX (doc-completeness audit): workspace.default_payment_instructions
   // was set in Settings but never read anywhere — the new-invoice form
   // always started blank. Fetch it so BillingTab can prefill.
-  const { data: workspaceBilling } = await (service as any)
-    .from('workspaces')
-    .select('default_payment_instructions')
-    .eq('id', session.workspaceId)
-    .single()
+  // FIX (Settings independent pass 16, B1): the agency's bank / wire instructions were read for EVERY member who opens a
+  // project and handed to ProjectDetail (a Client Component), so they sat in the page payload of people who can't even
+  // see the Billing tab. Settings withholds the same field from anyone without MANAGE_WORKSPACE_SETTINGS. Only a member
+  // who can create invoices (SEND_INVOICES — the only place the prefill is used) gets it.
+  let workspaceBilling: { default_payment_instructions?: string | null } | null = null
+  if (hasPermission(session, 'SEND_INVOICES')) {
+    const { data } = await (service as any)
+      .from('workspaces')
+      .select('default_payment_instructions')
+      .eq('id', session.workspaceId)
+      .single()
+    workspaceBilling = data
+  }
 
   // FEATURE (Settings & Team round): workspace billing defaults (migration 076) — read separately and
   // tolerantly, like the client-reminder columns in Settings, so a deploy that runs ahead of the

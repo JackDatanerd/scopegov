@@ -446,20 +446,50 @@ export async function PATCH(request: NextRequest) {
       }, { status: 409 })
     }
 
+    // FIX (Settings independent pass 16, B2): a value-threshold approval rule only compares documents in ITS OWN currency
+    // (lib/approvals/pick-workflow.ts, migration 023) unless it is flagged to cover other currencies. Changing the workspace
+    // currency therefore silently stopped every such rule from gating new documents in the new currency — the same
+    // meaning-shift the risk-threshold reset above guards against, but with an approval control and no notice at all.
+    // The rules are left alone (the admin decides); name the ones that no longer apply. Best-effort: a failed read only
+    // drops the warning, never the save.
+    let approvalRulesUncovered: string[] = []
+    if (changedKeys.includes('currency')) {
+      const newCurrency = String(proposed.currency).toUpperCase()
+      const { data: rules, error: rulesErr } = await (service as any)
+        .from('approval_workflows')
+        .select('name, threshold_currency, apply_to_other_currencies')
+        .eq('workspace_id', session.workspaceId).eq('is_active', true).not('threshold_amount', 'is', null)
+      if (rulesErr) console.error('Workspace settings: approval rule currency check failed:', rulesErr)
+      else approvalRulesUncovered = (rules || [])
+        .filter((r: any) => !r.apply_to_other_currencies && String(r.threshold_currency ?? '').trim().toUpperCase() !== newCurrency)
+        .map((r: any) => String(r.name))
+    }
+
     await logAudit(service, {
       workspaceId: session.workspaceId, actorId: session.id,
       actorEmail: session.email, actorName: session.name,
       eventType: 'workspace.settings_updated', entityType: 'workspace',
       entityId: session.workspaceId, entityName: session.workspaceName,
-      metadata: { fields: changedKeys, changes, ...(autoSlug ? { slugRegenerated: true } : {}) },
+      metadata: {
+        fields: changedKeys, changes, ...(autoSlug ? { slugRegenerated: true } : {}),
+        ...(approvalRulesUncovered.length ? { approvalRulesNoLongerApplying: approvalRulesUncovered.length } : {}),
+      },
     })
+
+    const warnings: string[] = []
+    if (thresholdReset) {
+      warnings.push(`Your currency changed, so the Guardian risk-alert threshold has been reset to ${DEFAULT_RISK_THRESHOLD.toLocaleString()} in the new currency. Review it under Settings \u2192 Guardian.`)
+    }
+    if (approvalRulesUncovered.length) {
+      const shown = approvalRulesUncovered.slice(0, 3).map(n => `\u201c${n}\u201d`).join(', ')
+      const more = approvalRulesUncovered.length > 3 ? ` and ${approvalRulesUncovered.length - 3} more` : ''
+      warnings.push(`Your currency changed, so ${approvalRulesUncovered.length === 1 ? 'this approval rule no longer applies' : 'these approval rules no longer apply'} to documents in ${proposed.currency}: ${shown}${more}. Rules with a value threshold only compare amounts in their own currency. Update them under Settings \u2192 Approval workflows.`)
+    }
 
     return NextResponse.json({
       ok: true, changed: changedKeys, values: proposed,
-      ...(thresholdReset ? {
-        thresholdReset: true,
-        warning: `Your currency changed, so the Guardian risk-alert threshold has been reset to ${DEFAULT_RISK_THRESHOLD.toLocaleString()} in the new currency. Review it under Settings \u2192 Guardian.`,
-      } : {}),
+      ...(thresholdReset ? { thresholdReset: true } : {}),
+      ...(warnings.length ? { warning: warnings.join(' ') } : {}),
     })
   } catch (err) {
     if (err instanceof FieldError) return NextResponse.json({ error: err.message }, { status: err.status })

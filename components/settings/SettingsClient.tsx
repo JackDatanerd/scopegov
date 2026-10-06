@@ -1698,13 +1698,15 @@ function GuardianTab({ form, setForm, permissions, onSave, saving, currency }: a
             // FIX (Settings independent pass, minor): the blank/garbage fallback used to be saved while the
             // input stayed empty — the same on-screen-vs-persisted mismatch as the 0 case above. Show what
             // was actually saved.
-            if (String(form.riskThreshold) !== String(threshold) && !(Number.isFinite(parsed) && parsed >= 0)) {
+            if (form.riskEnabled && String(form.riskThreshold) !== String(threshold) && !(Number.isFinite(parsed) && parsed >= 0)) {
               set('riskThreshold', String(threshold))
             }
             onSave('/api/workspace/settings', {
               guardianSensitivityTier: form.sensitivity,
               proactiveRiskAlertsEnabled: form.riskEnabled,
-              proactiveRiskThreshold: threshold,
+              // Settings independent pass 16 (B4): with alerts off the threshold box is hidden, so a blank / invalid value in it
+              // must not be replaced by 10000 and saved over the real threshold. Send it only when it is valid or visible.
+              ...((Number.isFinite(parsed) && parsed >= 0) || form.riskEnabled ? { proactiveRiskThreshold: threshold } : {}),
             })
           }}>
           {saving ? <span className="spin" /> : 'Save settings'}
