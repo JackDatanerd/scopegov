@@ -1,0 +1,33 @@
+Scope-loss calculator (Oct 6) — NO migration, no new env vars.
+
+WHAT: an estimate of what scope creep costs an agency per year and which plan fits/pays for itself.
+  Signed-in:  /plan-calculator  (prefilled from the workspace's own numbers; works on a read-only/lapsed workspace)
+  Public:     /calculator       (blank; signup CTA; reachable signed-out)
+
+MODEL (lib/billing/roi-model.ts, pure, tested)
+  leaked      = MAX(projects x value x creep%, measured granted-free)   -- never summed: granted-free is part of creep
+  recoverable = leaked x recovery rate (starts at 25%, always editable; a workspace's own flag->change-order rate is
+                offered as an alternative once it has 5+ flags)
+  plan        = cheapest plan whose seats, active-project cap and features fit (fit before price), net = recoverable - plan cost
+  non-USD     = no net figure until the user enters an exchange rate (plans are priced in USD; currencies are never subtracted)
+  verdicts    = worth_it | not_yet (honest "does not pay for itself yet") | needs_fx | no_plan_fits
+  inputs are clamped (no NaN/Infinity/negatives); copy never promises a result and lists every assumption.
+
+MEASURED NUMBERS (lib/billing/roi-inputs.ts)
+  Reuses getScopeReportData (same code as Reports), so the two cannot disagree. Last 12 months or since the workspace
+  started if younger (nothing annualised). Only loaded for VIEW_FINANCIALS + VIEW_ALL_PROJECTS (the Reports rollup gate);
+  everyone else gets the manual calculator. A failed read shows a banner, never a confident zero.
+
+ENTRY POINTS: lapsed read-only banner ("See what a plan would recover"), Billing tab above "Available plans",
+  running-trial dashboard (quiet link for billing holders), public pricing section ("Estimate what scope creep costs you...").
+
+FILES
+  new:  lib/billing/roi-model.ts, lib/billing/roi-inputs.ts, components/calculator/{PlanCalculator,CalculatorShell}.tsx,
+        styles/calculator.module.css, app/(app)/plan-calculator/page.tsx, app/calculator/{page,layout}.tsx,
+        tests/scope-loss-calculator.test.ts (32), tests/scope-loss-calculator-render.test.ts (5)
+  edit: middleware.ts (/calculator public), app/(app)/layout.tsx, app/(app)/dashboard/page.tsx,
+        components/settings/SettingsClient.tsx, components/marketing/MarketingHome.tsx
+
+VERIFIED: tsc clean; next build succeeds (/calculator prerendered, /plan-calculator dynamic); full suite 305 files /
+  3040 tests pass; 5 mutations of the model/loader (sum-not-max, ignore seats, ignore fx, swallow read error, drop the
+  permission gate) are each caught by a test. Not run against a live Supabase.

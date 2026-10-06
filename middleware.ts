@@ -114,6 +114,8 @@ export async function middleware(request: NextRequest) {
     pathname.startsWith('/portal/') ||
     pathname.startsWith('/invite/') ||
     pathname.startsWith('/legal/') ||
+    // Public scope-loss calculator (blank, no workspace data): reachable signed-out like the marketing site.
+    pathname === '/calculator' ||
     pathname.startsWith('/api/portal/') ||
     pathname.startsWith('/api/team/invite/') ||
     pathname.startsWith('/api/auth/callback') ||

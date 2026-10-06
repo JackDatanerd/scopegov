@@ -1,0 +1,53 @@
+/* Scope-loss calculator. Self-contained palette so it renders the same inside the signed-in app shell and the public page. */
+.calc {
+  --c-ink: #1B1B17; --c-ink-2: #4A4A42; --c-ink-3: #77776B;
+  --c-green: #1A5C3A; --c-green-lt: #EDFAF2; --c-green-mid: #B7DCC8;
+  --c-gold: #92680A; --c-gold-lt: #FBF4E3;
+  --c-red: #B91C1C; --c-red-lt: #FEF2F2;
+  --c-border: #DFDBCE; --c-surface: #FFFFFF; --c-surface-2: #F9F8F5;
+  color: var(--c-ink); font-size: 14px; line-height: 1.5; max-width: 1040px; margin: 0 auto;
+}
+.hd { margin-bottom: 20px; }
+.title { font-size: 26px; font-weight: 600; margin: 0 0 6px; letter-spacing: -.01em; }
+.sub { color: var(--c-ink-2); margin: 0; max-width: 680px; }
+.grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr); gap: 20px; align-items: start; }
+@media (max-width: 860px) { .grid { grid-template-columns: minmax(0, 1fr); } }
+.card { background: var(--c-surface); border: 1px solid var(--c-border); border-radius: 8px; padding: 18px 20px; margin-bottom: 16px; }
+.cardTitle { font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--c-ink-3); margin: 0 0 12px; }
+.field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
+.field label, .label { font-size: 13px; font-weight: 500; }
+.hint { font-size: 12px; color: var(--c-ink-3); }
+.input { border: 1px solid var(--c-border); border-radius: 6px; padding: 8px 10px; font: inherit; background: #fff; color: var(--c-ink); width: 100%; box-sizing: border-box; }
+.input:focus { outline: 2px solid var(--c-green-mid); border-color: var(--c-green); }
+.row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.check { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; margin-bottom: 8px; cursor: pointer; }
+.seg { display: inline-flex; border: 1px solid var(--c-border); border-radius: 6px; overflow: hidden; }
+.seg button { border: 0; background: #fff; padding: 6px 12px; font: inherit; cursor: pointer; color: var(--c-ink-2); }
+.seg button[aria-pressed="true"] { background: var(--c-green); color: #fff; }
+.link { background: none; border: 0; padding: 0; color: var(--c-green); cursor: pointer; font: inherit; text-decoration: underline; }
+.measured { background: var(--c-green-lt); border-color: var(--c-green-mid); }
+.measuredList { margin: 0; padding: 0; list-style: none; display: grid; gap: 4px; font-size: 13px; }
+.measuredList b { font-variant-numeric: tabular-nums; }
+.warn { background: var(--c-gold-lt); border: 1px solid #E4C97A; color: var(--c-gold); border-radius: 6px; padding: 8px 10px; font-size: 12px; margin-top: 10px; }
+.lines { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
+.lines li { display: flex; justify-content: space-between; gap: 12px; padding: 9px 0; border-bottom: 1px solid var(--c-border); }
+.lines li:last-child { border-bottom: 0; }
+.lines small { display: block; color: var(--c-ink-3); font-size: 12px; }
+.num { font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; }
+.pos { color: var(--c-green); } .neg { color: var(--c-red); }
+.verdict { border-radius: 8px; padding: 14px 16px; margin-bottom: 16px; border: 1px solid; }
+.verdictGood { background: var(--c-green-lt); border-color: var(--c-green-mid); }
+.verdictNeutral { background: var(--c-gold-lt); border-color: #E4C97A; }
+.verdictTitle { font-weight: 600; margin: 0 0 4px; font-size: 15px; }
+.verdict p { margin: 0; color: var(--c-ink-2); }
+.table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.table th { text-align: left; font-weight: 600; color: var(--c-ink-3); font-size: 12px; padding: 6px 6px 6px 0; }
+.table td { padding: 8px 6px 8px 0; border-top: 1px solid var(--c-border); vertical-align: top; }
+.rec td:first-child { font-weight: 600; }
+.muted { color: var(--c-ink-3); }
+.tag { display: inline-block; font-size: 11px; border-radius: 10px; padding: 1px 8px; background: var(--c-green); color: #fff; margin-left: 6px; }
+.tagCur { background: var(--c-ink-3); }
+.cta { display: inline-block; background: var(--c-green); color: #fff !important; text-decoration: none !important; border-radius: 6px; padding: 9px 16px; font-weight: 500; margin-top: 12px; }
+.assump { margin: 0; padding-left: 18px; color: var(--c-ink-2); font-size: 13px; }
+.assump li { margin-bottom: 4px; }
+.fine { font-size: 12px; color: var(--c-ink-3); margin-top: 8px; }

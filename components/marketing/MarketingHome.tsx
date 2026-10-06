@@ -412,6 +412,7 @@ export default function MarketingHome() {
             </div>
           </Reveal>
           <p className={styles.pricingNote}>Prices in USD, billed monthly. Annual billing available at checkout. Cancel anytime &mdash; you keep read access to your SOWs and change orders for 90 days after cancellation.</p>
+          <p className={styles.pricingNote}>Not sure which plan? <Link href="/calculator">Estimate what scope creep costs you and which plan fits &rarr;</Link></p>
         </div>
       </section>
 

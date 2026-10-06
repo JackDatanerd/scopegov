@@ -23,7 +23,10 @@ export default async function AppLayout({ children }: { children: React.ReactNod
                 : 'Its trial or subscription has ended. Ask a workspace admin with billing access to choose a plan. Your data is untouched and can still be viewed and exported.'}
             </span>
             {session.permissions.includes('MANAGE_BILLING') && (
-              <Link href="/settings?tab=billing"><button className="btn btn-primary btn-sm">Choose a plan</button></Link>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0 }}>
+                <Link href="/plan-calculator" style={{ fontSize: 12 }}>See what a plan would recover</Link>
+                <Link href="/settings?tab=billing"><button className="btn btn-primary btn-sm">Choose a plan</button></Link>
+              </span>
             )}
           </div>
         )}

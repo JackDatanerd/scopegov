@@ -2173,6 +2173,10 @@ function BillingTab({ workspace, billing, billingLoadFailed = false, session, pe
 
       <div className="settings-section">
         <div className="settings-section-title">Available plans</div>
+        <p style={{ fontSize: 12.5, color: 'var(--text-2)', margin: '0 0 12px' }}>
+          Not sure which fits?{' '}
+          <Link href="/plan-calculator">See what scope creep is costing you and which plan pays for itself</Link>.
+        </p>
         <div style={{ display: 'inline-flex', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', overflow: 'hidden', marginBottom: 20 }}>
           {(['monthly', 'annual'] as const).map(iv => (
             <button key={iv} onClick={() => setPlanInterval(iv)}

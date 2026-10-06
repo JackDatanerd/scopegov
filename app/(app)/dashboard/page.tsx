@@ -267,6 +267,7 @@ export default async function DashboardPage() {
   return (
     <div className="page" style={{ maxWidth: 980 }}>
       <TrialBanner session={session} daysLeft={daysLeft} />
+      <CalculatorNudge session={session} />
 
       {/* Header */}
       <div className="page-hd">
@@ -488,10 +489,22 @@ function TrialBanner({ session, daysLeft }: { session: SessionUser; daysLeft: nu
   return null
 }
 
+// A running trial: a quiet pointer to the scope-loss calculator for the people who can act on it. Not shown on a
+// lapsed workspace (the app-wide banner carries its own link) or to members who cannot choose a plan.
+function CalculatorNudge({ session }: { session: SessionUser }) {
+  if (session.lapsed || session.planTier !== 'trial' || !session.permissions.includes('MANAGE_BILLING')) return null
+  return (
+    <p style={{ fontSize: 12.5, color: 'var(--text-2)', margin: '0 0 14px' }}>
+      Wondering which plan fits? <Link href="/plan-calculator">See what a plan would recover from your own numbers &rarr;</Link>
+    </p>
+  )
+}
+
 function EmptyDash({ session, canCreate, daysLeft, greetingText }: { session: SessionUser; canCreate: boolean; daysLeft: number | null; greetingText: string }) {
   return (
     <div className="page" style={{ maxWidth: 980 }}>
       <TrialBanner session={session} daysLeft={daysLeft} />
+      <CalculatorNudge session={session} />
       <div className="page-hd">
         <div>
           <h1 className="page-title">{greetingText}, {session.name.split(' ')[0]}</h1>
