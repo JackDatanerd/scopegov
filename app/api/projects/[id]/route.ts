@@ -79,7 +79,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     // a transient failure answered 404 "Not found" for a project that exists. A failed read is a 500, not an answer.
     const { data: project, error: projectErr } = await (service as any)
       .from('projects')
-      .select('id,name,disc,status,stall_reason,type,client_id,currency,contract_value,start_date,internal_ref,retainer_duration_months,sow_documents(id,status)')
+      .select('id,name,disc,status,stall_reason,type,client_id,currency,contract_value,start_date,internal_ref,retainer_duration_months,created_by,sow_documents(id,status)')
       .eq('id', id).eq('workspace_id', session.workspaceId).is('deleted_at', null).maybeSingle()
     if (projectErr) {
       console.error('Project update: project read failed:', projectErr)
@@ -200,6 +200,11 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     }
 
     // ── Contract value ────────────────────────────────────────
+    // The creator may set the price while the project is still being set up (Draft/Intake): POST accepts a value from
+    // anyone with CREATE_PROJECTS, and the wizard's Back-and-edit step uses this route, so refusing them here made the
+    // wizard fail for a creator without VIEW_FINANCIALS. Once the project moves on, VIEW_FINANCIALS is required again.
+    const canReprice = hasPermission(session, 'VIEW_FINANCIALS') ||
+      (project.created_by === session.id && ['Draft', 'Intake'].includes(project.status))
     if (body.contractValue !== undefined) {
       const p = parseContractValue(body.contractValue)
       if (!p.ok) return NextResponse.json({ error: p.error }, { status: 400 })
@@ -207,7 +212,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       if (newValue !== Number(project.contract_value)) {
         // FIX (Projects & Dashboard independent pass — B1): same rule as POST/PATCH /api/co (CO-5): a member who cannot see
         // financials cannot re-price either (an unchanged echo, as the wizard sends, is not a change and passes).
-        if (!hasPermission(session, 'VIEW_FINANCIALS'))
+        if (!canReprice)
           return NextResponse.json({ error: 'Missing permission: VIEW_FINANCIALS' }, { status: 403 })
         const lockError = await checkSowLock(service, sows, 'contract value', 'contract value', 'value')
         if (lockError) return NextResponse.json({ error: lockError }, { status: 409 })
@@ -243,7 +248,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       if (!p.ok) return NextResponse.json({ error: p.error }, { status: 400 })
       if (p.value !== project.retainer_duration_months) {
         // FIX (independent pass — B1): the term multiplies the monthly rate, so it re-prices the project exactly like contractValue.
-        if (!hasPermission(session, 'VIEW_FINANCIALS'))
+        if (!canReprice)
           return NextResponse.json({ error: 'Missing permission: VIEW_FINANCIALS' }, { status: 403 })
         const lockError = await checkSowLock(service, sows, 'retainer duration', 'retainer term', 'duration')
         if (lockError) return NextResponse.json({ error: lockError }, { status: 409 })

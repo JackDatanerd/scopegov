@@ -8,7 +8,11 @@ describe('Projects & Dashboard independent pass 13', () => {
     const src = read('app/api/projects/[id]/route.ts')
     expect(src.match(/Missing permission: VIEW_FINANCIALS/g)?.length).toBe(2)
     const cv = src.indexOf('newValue !== Number(project.contract_value)')
-    expect(src.slice(cv, cv + 600)).toContain("hasPermission(session, 'VIEW_FINANCIALS')")
+    // The price guard is VIEW_FINANCIALS, or the creator while the project is still Draft/Intake (the wizard's Back-and-edit step).
+    expect(src).toContain("const canReprice = hasPermission(session, 'VIEW_FINANCIALS') ||")
+    expect(src).toContain("project.created_by === session.id && ['Draft', 'Intake'].includes(project.status)")
+    expect(src.slice(cv, cv + 600)).toContain('!canReprice')
+    expect(src.match(/if \(!canReprice\)/g)?.length).toBe(2)
   })
   it('B1: the edit modal hides and never sends the retainer term without financials', () => {
     const src = read('components/projects/EditProjectModal.tsx')

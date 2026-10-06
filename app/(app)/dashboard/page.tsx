@@ -21,6 +21,10 @@ export const metadata = { title: 'Dashboard' }
 // actually guarded against the cap until now.
 const DASHBOARD_PROJECTS_MAX_ROWS = 20000
 
+// Rows read before the live-project filter trims the feed to 14. Rows of soft-deleted projects are dropped after the
+// read, so a window of only 60 could leave the feed nearly empty after a burst of deletions.
+const ACTIVITY_OVERFETCH = 200
+
 // Projects & Dashboard deep audit: this used new Date().getHours() on the
 // SERVER (UTC on Vercel), so the greeting was wrong for almost everyone
 // ("Good morning" at 1pm in Nairobi, "Good afternoon" at 8am in California).
@@ -175,19 +179,19 @@ export default async function DashboardPage() {
   // Over-fetch, then keep only rows whose project is still live: audit rows of soft-deleted projects (and, for
   // restricted members, project_members rows pointing at deleted projects) otherwise render as name-less entries
   // linking to a page that 404s. The project's own Activity route already hides them.
-  activityQuery = activityQuery.order('created_at', { ascending: false }).order('id', { ascending: false }).limit(60)
+  activityQuery = activityQuery.order('created_at', { ascending: false }).order('id', { ascending: false }).limit(ACTIVITY_OVERFETCH)
   return activityQuery
   }
 
   let activityRaw: any[] = []
   if (!canViewAll) {
-    // Chunked (B4): each chunk returns its newest 60; merge and keep the newest 60 overall.
+    // Chunked (B4): each chunk returns its newest ACTIVITY_OVERFETCH; merge and keep the newest ACTIVITY_OVERFETCH overall.
     const res = await queryInChunks<any>(accessibleProjectIds || [], chunk => buildActivityQuery().in('project_id', chunk))
     // FIX (Projects & Dashboard pass 10, B1): a failed read rendered "No recent activity" with nothing in the logs. Still degrades; now logged.
     if (res.error) console.error('Dashboard: activity feed read failed — the feed is empty or partial:', res.error.message)
     activityRaw = res.data
       .sort((a: any, b: any) => String(b.created_at).localeCompare(String(a.created_at)) || String(b.id).localeCompare(String(a.id)))
-      .slice(0, 60)
+      .slice(0, ACTIVITY_OVERFETCH)
   } else {
     const res = await buildActivityQuery()
     if (res.error) console.error('Dashboard: activity feed read failed — the feed is empty:', res.error.message)
