@@ -190,11 +190,15 @@ export async function POST(request: NextRequest) {
     // to converted_to_co if it is STILL open and unlinked at write time.
     let flagClaimed = false
     if (validatedFlagId) {
-      const { data: claimed } = await (service as any)
+      const { data: claimed, error: claimErr } = await (service as any)
         .from('guardian_flags')
         .update({ status: 'converted_to_co', updated_at: new Date().toISOString() })
         .eq('id', validatedFlagId).eq('status', 'open').is('change_order_id', null)
         .select('id')
+      // CO-5: the error was never read, so a database failure on the claim was reported as a 409 "just claimed by another
+      // change order" - a conflict that never existed. Only an empty result is a lost race; a failed write is a retryable
+      // 500 (nothing has been claimed or created yet, so there is nothing to roll back).
+      if (claimErr) throw new Error(`flag claim failed: ${claimErr.message}`)
       if (!claimed || claimed.length === 0) {
         return NextResponse.json({
           error: 'This flag was just claimed by another change order',

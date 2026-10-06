@@ -12,7 +12,7 @@ import { insertNextCoVersion } from '@/lib/documents/co-version'
 import { parseStoredLineItems } from '@/lib/documents/co-totals'
 import { sendDocumentCancelledEmail } from '@/lib/email/templates'
 import { checkedSend } from '@/lib/email/delivery'
-import { releaseFlagFromCo } from '@/lib/documents/co-flag'
+import { releaseFlagFromCo, claimFlagForRevision } from '@/lib/documents/co-flag'
 import { withPrimaryContactCc } from '@/lib/utils/client-contacts'
 import { resolveReplyTo } from '@/lib/email/reply-to'
 
@@ -124,6 +124,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const adopted = !!openDraft
     let revision: { id: string; version: number }
     let clientNotified = true
+    // CO-2: set when the flag could not be carried onto the revision because another change order now owns it.
+    let flagDetached = false
     if (openDraft) {
       revision = { id: openDraft.id, version: openDraft.version }
     } else {
@@ -352,19 +354,18 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // or (for 'countered') by the supersede block just above; re-claim it for this revision, otherwise the
     // same flag can be converted into a second CO.
     if (co.flag_id) {
-      // The write's error used to be ignored: a transient failure left the flag 'open' and unlinked while the revision
-      // carried its id, so a second change order could still be drafted from the same flag. Retry once, then say so loudly
-      // (zero matched rows with no error just means the flag is not ours to claim - already linked or resolved).
-      let claimErr: any = null
-      for (let attempt = 0; attempt < 2; attempt++) {
-        const r = await (service as any).from('guardian_flags')
-          .update({ status: 'converted_to_co', change_order_id: revision.id, updated_at: new Date().toISOString() })
-          .eq('id', co.flag_id).eq('status', 'open').is('change_order_id', null)
-          .select('id')
-        claimErr = r.error
-        if (!claimErr) break
+      const outcome = await claimFlagForRevision(service, { flagId: co.flag_id, revisionId: revision.id })
+      if (outcome === 'unavailable') {
+        // CO-2: the flag now belongs to another change order (or is resolved). The revision was cloned with its flag_id, so it
+        // would sit beside that other CO as a second live change order for the same flag - the same work billable twice.
+        // Detach it; the revision itself is still perfectly valid, it just no longer claims the flag. Guarded on draft so a
+        // revision that has since been sent is left alone.
+        const { error: unlinkErr } = await (service as any).from('change_orders')
+          .update({ flag_id: null, updated_at: new Date().toISOString() })
+          .eq('id', revision.id).eq('status', 'draft')
+        if (unlinkErr) console.error('CO revise: could not detach the revision from a flag owned by another change order:', revision.id, co.flag_id, unlinkErr.message)
+        else flagDetached = true
       }
-      if (claimErr) console.error('CO revise: could not re-claim the linked flag:', co.flag_id, revision.id, claimErr.message)
     }
 
     await logAudit(service, {
@@ -376,10 +377,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         from_co_id: co.id, from_status: co.status,
         from_version: co.version, new_version: revision.version,
         ...(co.counter_amount != null ? { client_counter_amount: co.counter_amount } : {}),
+        ...(flagDetached ? { flag_detached: co.flag_id } : {}),
       },
     })
 
-    return NextResponse.json({ coId: revision.id, version: revision.version, clientNotified })
+    return NextResponse.json({ coId: revision.id, version: revision.version, clientNotified, ...(flagDetached ? { flagDetached: true } : {}) })
   } catch (err) {
     console.error('CO revise error:', err)
     return NextResponse.json({ error: 'Could not create a revision. Please try again.' }, { status: 500 })

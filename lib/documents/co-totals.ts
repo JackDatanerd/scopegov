@@ -26,6 +26,7 @@ import { roundCurrency } from '@/lib/utils/format'
 import { isAdjustmentLine } from '@/lib/utils/rescale-line-items'
 import { nanoid } from 'nanoid'
 import { stripUnstorableText } from '@/lib/utils/sanitize'
+import { parsePlainDecimal } from '@/lib/documents/strict-number'
 
 export interface CoLineItem {
   id?: string
@@ -100,7 +101,7 @@ export function stripAdjustmentLines(items: unknown, existingAdjustmentIds: Read
 
 function strictNumber(v: unknown, blankIsZero: boolean): number {
   if (typeof v === 'number') return v
-  if (typeof v === 'string') return v.trim() !== '' ? Number(v) : blankIsZero ? 0 : NaN
+  if (typeof v === 'string') return v.trim() !== '' ? parsePlainDecimal(v) : blankIsZero ? 0 : NaN
   if (v === null && blankIsZero) return 0
   return NaN
 }
@@ -124,7 +125,7 @@ export function computeCoTotals(
 
   // Number('') is 0 and Number([]) is 0 — only a real number or a numeric string is a tax rate.
   const taxRate = typeof rawTaxRate === 'number' ? rawTaxRate
-    : typeof rawTaxRate === 'string' && rawTaxRate.trim() !== '' ? Number(rawTaxRate)
+    : typeof rawTaxRate === 'string' && rawTaxRate.trim() !== '' ? parsePlainDecimal(rawTaxRate)
     : rawTaxRate === undefined || rawTaxRate === null || rawTaxRate === '' ? 0 : NaN
   if (!Number.isFinite(taxRate) || taxRate < 0 || taxRate > 100)
     return { ok: false, error: 'Tax rate must be between 0 and 100' }

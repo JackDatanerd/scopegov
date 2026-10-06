@@ -6,6 +6,10 @@
 // caller, and nothing capped any length.
 
 import { sanitizePlainText, truncateText } from '@/lib/utils/sanitize'
+import { parsePlainDecimal } from '@/lib/documents/strict-number'
+import { hasVisibleText } from '@/lib/documents/visible-text'
+
+// CO-3: a title made only of invisible characters is not a title (see visible-text.ts).
 
 export const MAX_CO_TITLE_LENGTH      = 200
 export const MAX_CO_SCOPE_NOTE_LENGTH = 2000
@@ -26,7 +30,7 @@ export function parseCoFields(body: any): { ok: true; fields: ParsedCoFields } |
   if (body?.title !== undefined) {
     if (typeof body.title !== 'string') return { ok: false, error: 'title must be text' }
     const title = truncateText(sanitizePlainText(body.title), MAX_CO_TITLE_LENGTH)
-    if (!title) return { ok: false, error: 'A change order needs a title' }
+    if (!title || !hasVisibleText(title)) return { ok: false, error: 'A change order needs a title' }
     fields.title = title
   }
 
@@ -43,7 +47,7 @@ export function parseCoFields(body: any): { ok: true; fields: ParsedCoFields } |
     const raw = body.timelineImpactDays
     if (raw === null || raw === '') fields.timelineImpactDays = null
     else {
-      const n = typeof raw === 'number' ? raw : typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : NaN
+      const n = typeof raw === 'number' ? raw : typeof raw === 'string' && raw.trim() !== '' ? parsePlainDecimal(raw) : NaN
       if (!Number.isInteger(n) || n < MIN_CO_TIMELINE_DAYS || n > MAX_CO_TIMELINE_DAYS)
         return { ok: false, error: `Timeline impact must be a whole number of days between ${MIN_CO_TIMELINE_DAYS} and ${MAX_CO_TIMELINE_DAYS}` }
       fields.timelineImpactDays = n

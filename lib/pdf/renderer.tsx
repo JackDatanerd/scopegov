@@ -16,6 +16,7 @@ import { formatAddressLines, roundCurrency, type LegalAddress } from '@/lib/util
 import { resolveTimeZone } from '@/lib/utils/timezone'
 import { PDF_FONT, sanitizeForPdf } from '@/lib/pdf/fonts'
 import { mapPdfSymbols } from '@/lib/pdf/pdf-symbols'
+import { formatRenewalTerm } from '@/lib/documents/co-renewal-term'
 import { coWatermarkLabel, CO_STATUS_LABEL } from '@/lib/pdf/co-watermark'
 import { invoiceSingleLineAmount } from '@/lib/pdf/invoice-line'
 import { formatRate } from '@/lib/utils/money'
@@ -123,6 +124,8 @@ export interface CoPdfData {
   version?: number | null
   // Credit / descope change order (migration 100): amounts are reductions, lines describe removed scope.
   isCredit?: boolean
+  // CO-1: months a retainer renewal extends the retainer by (fixed-term retainers only; see lib/documents/co-renewal-term.ts).
+  renewalTermMonths?: number | null
   acceptedBy?:  string
   acceptedAt?:  string
   agencySignatureData?: string | null
@@ -693,7 +696,10 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
   const hasScopeImpact    = !!data.scopeImpactNote
   const hasTimelineImpact = data.timelineImpactDays != null && data.timelineImpactDays !== 0
   const hasValueImpact    = data.contractValueBefore != null
-  const impactSecNum = (hasScopeImpact || hasTimelineImpact || hasValueImpact) ? ++secN : null
+  // CO-1: a renewal's term is a binding part of what the client signs, so it is stated in its own row (independent of the
+  // value block, which needs a known "before" figure) and is enough on its own to produce the Impact Analysis section.
+  const renewalTerm = data.isRetainerRenewal && (data.renewalTermMonths || 0) > 0 ? Number(data.renewalTermMonths) : null
+  const impactSecNum = (hasScopeImpact || hasTimelineImpact || hasValueImpact || renewalTerm != null) ? ++secN : null
   const revisedValue = data.revisedContractValue != null
     ? data.revisedContractValue
     : data.contractValueBefore != null ? data.contractValueBefore + data.total : null
@@ -817,8 +823,14 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
                   <Text style={s.mono}>{data.timelineImpactDays! > 0 ? '+' : ''}{data.timelineImpactDays} day{Math.abs(data.timelineImpactDays!) === 1 ? '' : 's'}</Text>
                 </View>
               )}
+              {renewalTerm != null && (
+                <View style={s.impactRow}>
+                  <Text style={{ color: '#909090' }}>Retainer Term</Text>
+                  <Text style={s.mono}>Extended by {formatRenewalTerm(renewalTerm)}</Text>
+                </View>
+              )}
               {hasValueImpact && revisedValue != null && (
-                <View style={(hasScopeImpact || hasTimelineImpact) ? { marginTop: 6, paddingTop: 6, borderTop: '1 solid #F2F0EA' } : undefined}>
+                <View style={(hasScopeImpact || hasTimelineImpact || renewalTerm != null) ? { marginTop: 6, paddingTop: 6, borderTop: '1 solid #F2F0EA' } : undefined}>
                   <View style={s.impactRow}>
                     <Text style={{ color: '#909090' }}>{isRenewalDoc ? 'Current Monthly Rate' : 'Original Contract Value'}</Text>
                     <Text style={s.mono}>{data.currency} {fmtMoney(data.contractValueBefore!)}</Text>

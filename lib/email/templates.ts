@@ -820,9 +820,11 @@ export async function sendCoEmail(params: {
   portalUrl: string; brandColour?: string; note?: string
   /** Credit / descope change order: `total` is negative and the document removes scope. */
   isCredit?: boolean
+  /** CO-1: months a retainer renewal extends the retainer by - stated in the email because accepting it commits the client to that term. */
+  renewalTermMonths?: number | null
 }) {
   const { to, cc, clientName: clientNameRaw, agencyName: agencyNameRaw, projectName: projectNameRaw, coTitle: coTitleRaw, total, currency,
-    portalUrl, brandColour, note: noteRaw, isCredit } = params
+    portalUrl, brandColour, note: noteRaw, isCredit, renewalTermMonths } = params
   const clientName  = escapeHtml(clientNameRaw)
   const agencyName  = escapeHtml(agencyNameRaw)
   const projectName = escapeHtml(projectNameRaw)
@@ -843,6 +845,11 @@ export async function sendCoEmail(params: {
         <strong>${agencyName}</strong> has sent ${isCredit ? 'a credit change order' : 'a change order'} for <strong>${projectName}</strong>.
         ${isCredit ? 'Please review the scope being removed and the credit, and respond.' : 'Please review the scope additions and respond.'}
       </p>
+      ${renewalTermMonths && renewalTermMonths > 0 ? `
+      <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
+        This is a retainer renewal: accepting it sets the new monthly rate and extends the retainer by <strong>${renewalTermMonths} month${renewalTermMonths === 1 ? '' : 's'}</strong>.
+      </p>
+      ` : ''}
       ${note ? `
       <div style="background:${C.bg};border:1px solid ${C.border};border-radius:6px;padding:14px 16px;margin:16px 0;">
         <div style="font-size:13px;color:${C.text2};margin:0;line-height:1.6;">${note}</div>

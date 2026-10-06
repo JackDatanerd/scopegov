@@ -3,6 +3,7 @@ import { useState, useEffect, useRef } from 'react'
 import RichTextField from '@/components/ui/RichTextField'
 import { useRouter } from 'next/navigation'
 import { formatCoAmount } from '@/lib/documents/co-money'
+import { hasVisibleText } from '@/lib/documents/visible-text'
 import { nanoid } from 'nanoid'
 import { roundCurrency } from '@/lib/utils/format'
 import { MAX_UPLOAD_BYTES, MAX_UPLOAD_LABEL } from '@/lib/utils/upload-limits'
@@ -385,9 +386,22 @@ export default function CoEditor({ projId, coId }: Props) {
     }
   }
 
+  // CO-4: the explicit button used to call doSave(true) directly. saveStatus was only ever updated by the AUTOSAVE path, so on an
+  // existing draft the button showed a spinner and then nothing - no "Saved", and no way to tell it had worked - and a failed
+  // save also left an unhandled promise rejection behind the error banner. The failure is already surfaced by doSave (setError).
+  async function handleSaveDraft() {
+    try {
+      await doSave(true)
+      // A brand-new CO navigates away on success (router.replace), so this only ever shows on an existing draft.
+      setSaveError('')
+      setSaveStatus('saved')
+      setTimeout(() => setSaveStatus('idle'), 2000)
+    } catch { /* shown by doSave via setError */ }
+  }
+
   async function handleSend() {
     if (!canSend) { setError("You don't have permission to send change orders. Save the draft and ask someone who can."); return }
-    if (!title.trim()) { setError('Title is required'); return }
+    if (!title.trim() || !hasVisibleText(title)) { setError('Title is required'); return }
     if (lineItems.every(l => l.total === 0)) { setError('Add at least one line item with a value'); return }
     // FIX (CO-logic fix round): matches the server-side check in
     // api/co/[id]/send/route.ts — a line item can have a nonzero rate with
@@ -747,11 +761,11 @@ export default function CoEditor({ projId, coId }: Props) {
         {!isLocked && (
           <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
             {canSend && !financialsHidden && (
-              <button className="btn btn-primary" onClick={handleSend} disabled={sending || !title.trim()}>
+              <button className="btn btn-primary" onClick={handleSend} disabled={sending || !hasVisibleText(title)}>
                 {sending ? <><span className="spin" /> Sending…</> : <><i className="ti ti-send" style={{ fontSize: 13 }} /> Send to client</>}
               </button>
             )}
-            <button className="btn btn-ghost" onClick={() => doSave(true)} disabled={saving || !title.trim()}>
+            <button className="btn btn-ghost" onClick={handleSaveDraft} disabled={saving || !hasVisibleText(title)}>
               {saving ? <span className="spin spin-dark" /> : 'Save draft'}
             </button>
             <button className="btn btn-ghost" onClick={() => router.push(`/projects/${projId}?tab=co`)}>Cancel</button>

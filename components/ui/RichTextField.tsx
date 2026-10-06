@@ -52,6 +52,13 @@ export default function RichTextField({ value, onChange, placeholder, disabled, 
   // to the parent, so value === editor.getHTML() and nothing happens —
   // without the guard this would fight the user's cursor on every
   // keystroke).
+  // CO-9: `editable` was only read when the editor was CREATED (useEditor's deps are []), so a `disabled` that changed afterwards
+  // - a permission fetch resolving after mount, a draft locking when its approval starts - left the field fully editable
+  // while the rest of the form was locked.
+  useEffect(() => {
+    if (editor) editor.setEditable(!disabled)
+  }, [editor, disabled])
+
   useEffect(() => {
     if (!editor) return
     if (value !== editor.getHTML()) editor.commands.setContent(value || '', false)

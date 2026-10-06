@@ -13,6 +13,7 @@
 import { resolveReplyTo } from '@/lib/email/reply-to'
 import { logAudit } from '@/lib/utils/audit'
 import { renderCoPdf } from '@/lib/pdf/renderer'
+import { renewalTermForDocument } from '@/lib/documents/co-renewal-term'
 import { sendCoAcceptedEmail, sendCoAcceptedClientEmail } from '@/lib/email/templates'
 import { formatMoney } from '@/lib/utils/money'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
@@ -348,6 +349,9 @@ export async function finalizeCoAcceptance(service: any, params: {
     taxRate: co.tax_rate, taxInclusive: co.tax_inclusive, total: co.total, currency: project.currency || 'USD',
     timelineImpactDays: co.timeline_impact_days ?? null, scopeImpactNote: co.scope_impact_note || null,
     isRetainerRenewal: isRenewal, previousContractValue, ...(isCredit ? { isCredit: true } : {}),
+    // CO-1: the term is part of what the client agreed to, so it is part of the fingerprint (renewals only, so every other
+    // document's hash recipe - and every hash already stored - is unchanged).
+    ...(isRenewal && renewalTermForDocument(co, project) ? { renewalTermMonths: renewalTermForDocument(co, project) } : {}),
     acceptedBy: signerName.trim(), acceptedAt: now, source, signerEmail: client.email,
     signatureSha256: createHash('sha256').update(signatureData).digest('hex'),
   })
@@ -427,6 +431,7 @@ export async function finalizeCoAcceptance(service: any, params: {
       contractValueBefore,
       isRetainerRenewal:  isRenewal,
       revisedContractValue,
+      renewalTermMonths:  isRenewal ? renewalTermForDocument(co, project) : null,
       version:            co.version ?? null,
       isCredit,
     })

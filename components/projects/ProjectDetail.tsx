@@ -2532,6 +2532,9 @@ function CoCard({ co, currency, permissions, projectId, pendingApproval, team }:
       // "your offer was superseded" email to the client vanished with zero indication.
       if (json?.clientNotified === false)
         alert('A new draft was created, but the client could not be notified that their previous offer was superseded — you may want to let them know directly.')
+      // CO-2: the scope flag this change order came from is now tied to another change order, so the revision does not carry it.
+      if (json?.flagDetached)
+        alert('A new draft was created, but the scope flag this change order came from has since been used for another change order, so the draft is not linked to it.')
       router.push(`/projects/${projectId}/co/${json.coId}`)
     } catch {
       setActionError('Could not create a revision.')

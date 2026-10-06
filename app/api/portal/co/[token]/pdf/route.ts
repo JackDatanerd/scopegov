@@ -11,6 +11,7 @@ import { coPdfFilename } from '@/lib/documents/co-pdf-name'
 import { parseStoredLineItems } from '@/lib/documents/co-totals'
 import { getWorkspaceJwtSecret, isWorkspaceDeleted } from '@/lib/utils/workspace-secret'
 import { getContractValueBefore } from '@/lib/documents/co-contract-value'
+import { renewalTermForDocument } from '@/lib/documents/co-renewal-term'
 import { fetchExecutedPdf } from '@/lib/documents/executed-pdf'
 import { sanitizeRichTextOrNull } from '@/lib/utils/sanitize'
 
@@ -54,7 +55,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 
     const CO_PDF_COLUMNS = `id,title,note,status,version,is_credit,line_items,subtotal,tax_rate,tax_inclusive,total,
         timeline_impact_days,scope_impact_note,
-        document_number,accepted_by,accepted_at,client_signature_data,workspace_id,project_id,pdf_path,is_retainer_renewal,
+        document_number,accepted_by,accepted_at,client_signature_data,workspace_id,project_id,pdf_path,is_retainer_renewal,renewal_term_months,
         projects(id,name,type,currency,contract_value,retainer_duration_months,clients(name,email,company_name,billing_address,vat_number),
           workspaces(timezone, id,agency_name,brand_colour,logo_storage_path,agency_signature_data,
             legal_address,tax_id,phone,website))`
@@ -184,6 +185,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       sowNumber:     sow?.document_number || null,
       contractValueBefore,
       isRetainerRenewal: isRenewalCo,
+      renewalTermMonths: isRenewalCo ? renewalTermForDocument(co, project) : null,
       revisedContractValue: isRenewalCo ? Number(co.total || 0) : null,
       timelineImpactDays: co.timeline_impact_days ?? null,
       scopeImpactNote:    co.scope_impact_note || null,

@@ -15,6 +15,7 @@ import { resolveReplyTo } from '@/lib/email/reply-to'
 import { isTerminalStatus } from '@/lib/utils/project-status'
 import { parseStoredLineItems } from '@/lib/documents/co-totals'
 import { coGateAmount } from '@/lib/approvals/gate-amount'
+import { renewalTermForDocument } from '@/lib/documents/co-renewal-term'
 import { findSignedSow, SIGNED_SOW_LOOKUP_FAILED } from '@/lib/documents/signed-sow'
 
 export type SendCoResult =
@@ -226,6 +227,7 @@ export async function sendCoDocument(service: any, params: {
     brandColour: workspace.brand_colour,
     note:        co.note,
     isCredit:    !!co.is_credit,
+    renewalTermMonths: renewalTermForDocument(co, project),
     replyTo,
     log:         { workspaceId, kind: 'co.send', entityType: 'change_order', entityId: coId, projectId: project.id, actorId },
   }), 'CO send email')

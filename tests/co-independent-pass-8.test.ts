@@ -149,9 +149,13 @@ describe('B3 auto-send refuses a change order that changed size after approval w
 // ── B4 ────────────────────────────────────────────────────────────────────────────────────────────────────
 describe('B4 flag writes are checked and retried', () => {
   it('revise re-claims the flag with a checked, retried write', () => {
-    const src = read('app/api/co/[id]/revise/route.ts')
-    expect(src).toMatch(/for \(let attempt = 0; attempt < 2; attempt\+\+\)[\s\S]{0,400}status: 'converted_to_co', change_order_id: revision\.id/)
-    expect(src).toMatch(/could not re-claim the linked flag/)
+    // The checked + retried write now lives in the shared helper (lib/documents/co-flag.ts, CO-2 of pass 12, which also
+    // verifies ownership instead of treating "0 rows" as success); the route must go through it.
+    const route = read('app/api/co/[id]/revise/route.ts')
+    expect(route).toMatch(/claimFlagForRevision\(service, \{ flagId: co\.flag_id, revisionId: revision\.id \}\)/)
+    const helper = read('lib/documents/co-flag.ts')
+    expect(helper).toMatch(/for \(let attempt = 0; attempt < 2; attempt\+\+\)[\s\S]{0,400}status: 'converted_to_co', change_order_id: p\.revisionId/)
+    expect(helper).toMatch(/could not re-claim the linked flag/)
   })
   it('exception retries the flag resolution once', () => {
     // The retry now lives in the shared helper (lib/documents/co-flag.ts); the route must go through it.

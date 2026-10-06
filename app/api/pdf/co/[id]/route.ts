@@ -11,6 +11,7 @@ import { parseStoredLineItems } from '@/lib/documents/co-totals'
 import { canReadProject } from '@/lib/utils/project-access'
 import { sanitizeRichTextOrNull } from '@/lib/utils/sanitize'
 import { getContractValueBefore } from '@/lib/documents/co-contract-value'
+import { renewalTermForDocument } from '@/lib/documents/co-renewal-term'
 import { fetchExecutedPdf } from '@/lib/documents/executed-pdf'
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -29,7 +30,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const service = createServiceClient()
     const { data: co, error: coLookupErr } = await (service as any)
       .from('change_orders')
-      .select(`id, title, note, version, status, document_number, pdf_path, is_retainer_renewal, is_credit, line_items, subtotal, tax_rate, tax_inclusive, total,
+      .select(`id, title, note, version, status, document_number, pdf_path, is_retainer_renewal, renewal_term_months, is_credit, line_items, subtotal, tax_rate, tax_inclusive, total,
         timeline_impact_days, scope_impact_note,
         accepted_at, accepted_by, client_signature_data, project_id,
         projects(id, name, type, currency, contract_value, retainer_duration_months,
@@ -146,6 +147,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       contractValueBefore,
       // A retainer renewal replaces the monthly rate; it is not "original value + this CO".
       isRetainerRenewal: isRenewalCo,
+      renewalTermMonths: isRenewalCo ? renewalTermForDocument(co, co.projects) : null,
       revisedContractValue: isRenewalCo ? Number(co.total || 0) : null,
       timelineImpactDays: co.timeline_impact_days ?? null,
       scopeImpactNote:    co.scope_impact_note || null,

@@ -6,12 +6,13 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { jwtVerify } from 'jose'
 import { formatAddress } from '@/lib/utils/format'
+import { renewalTermForDocument } from '@/lib/documents/co-renewal-term'
 import { getWorkspaceJwtSecret, isWorkspaceDeleted } from '@/lib/utils/workspace-secret'
 
 const CO_COLUMNS = `id,title,note,status,version,is_credit,line_items,subtotal,tax_rate,tax_inclusive,
   total,expires_at,flag_id,workspace_id,accepted_by,accepted_at,client_signature_data,first_viewed_at,
-  timeline_impact_days,scope_impact_note,
-  projects(id,name,currency,clients(name,email,cc_emails,company_name,billing_address,vat_number),
+  timeline_impact_days,scope_impact_note,is_retainer_renewal,renewal_term_months,
+  projects(id,name,type,retainer_duration_months,currency,clients(name,email,cc_emails,company_name,billing_address,vat_number),
     workspaces(id,agency_name,brand_colour,logo_storage_path,agency_signature_data,
       legal_address,tax_id,phone,website))`
 
@@ -225,6 +226,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         // page renders it as normal JSX text, never dangerouslySetInnerHTML.
         scopeImpactNote:    co.scope_impact_note || null,
         timelineImpactDays: co.timeline_impact_days ?? null,
+        // CO-1: accepting a retainer renewal extends the retainer by this many months - the client has to see that before signing.
+        renewalTermMonths:  renewalTermForDocument(co, co.projects),
       },
     })
   } catch (err) {

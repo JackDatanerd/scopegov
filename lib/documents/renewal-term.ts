@@ -7,6 +7,8 @@
 // projects.retainer_duration_months by that amount (lib/documents/finalize-co.ts). The extension is measured
 // from the ORIGINAL term end, so the retainer stays one contiguous run of months.
 
+import { parsePlainDecimal } from '@/lib/documents/strict-number'
+
 export const MAX_RENEWAL_TERM_MONTHS = 120
 
 /** null/'' -> null (not set); a whole number 1..120 -> that number; anything else -> invalid. */
@@ -15,7 +17,7 @@ export function parseRenewalTerm(value: unknown): { ok: true; value: number | nu
   if (typeof value !== 'number' && typeof value !== 'string')
     return { ok: false, error: `Renewal term must be a whole number of months between 1 and ${MAX_RENEWAL_TERM_MONTHS}` }
   if (typeof value === 'string' && value.trim() === '') return { ok: true, value: null }
-  const n = typeof value === 'number' ? value : Number(value.trim())
+  const n = typeof value === 'number' ? value : parsePlainDecimal(value)
   if (!Number.isInteger(n) || n < 1 || n > MAX_RENEWAL_TERM_MONTHS)
     return { ok: false, error: `Renewal term must be a whole number of months between 1 and ${MAX_RENEWAL_TERM_MONTHS}` }
   return { ok: true, value: n }

@@ -10,7 +10,7 @@ import { canReadProject } from '@/lib/utils/project-access'
 import { claimAiRateSlot } from '@/lib/utils/rate-limit'
 import { isTerminalStatus } from '@/lib/utils/project-status'
 import Anthropic from '@anthropic-ai/sdk'
-import { sanitizePlainText, truncateText } from '@/lib/utils/sanitize'
+import { sanitizePlainText, truncateText, stripUnstorableText } from '@/lib/utils/sanitize'
 import { MIN_CO_TIMELINE_DAYS, MAX_CO_TIMELINE_DAYS } from '@/lib/documents/co-input'
 
 // Forced tool call instead of "return only JSON" + string parsing (BUG-027's
@@ -133,6 +133,11 @@ Flag description (agency's summary, not the client's own words): ${flag.descript
     const inScope       = (snapshot?.deliverables || []).map((d: any) => d.title || d).join(', ') || 'not specified'
     const outOfScope    = (snapshot?.out_of_scope || []).map((d: any) => d.title || d).join(', ') || 'not specified'
 
+    // CO-7: slice(0, 3000) counts UTF-16 units, so a cut through an emoji left half a surrogate pair in the request, and
+    // the pasted text was never stripped of NUL / lone surrogates - the model call then failed on invalid Unicode and the
+    // user got a generic 500 for a request that looked fine (with the rate-limit slot already spent).
+    const requestText = truncateText(stripUnstorableText(askText), 3000)
+
     const prompt = `You are drafting a change order (extra billable work outside the original scope) for a client project.
 
 Project: ${project.name} (${project.type})
@@ -142,7 +147,7 @@ Already excluded from scope: ${outOfScope}
 ${flagContext}
 The agency describes the extra work the client is asking for:
 """
-${askText.slice(0, 3000)}
+${requestText}
 """
 
 Rules:

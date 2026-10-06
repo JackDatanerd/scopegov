@@ -119,20 +119,34 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     })
     if (uploadError) throw new Error(uploadError.message)
 
-    const { data: attachment, error } = await (service as any)
-      .from('co_attachments')
-      .insert({
-        co_id: id, file_name: displayName, file_size: file.size, mime_type: fileType,
-        storage_path: storagePath, uploaded_by: session.id,
-      })
-      .select('id, uploaded_at')
-      .single()
+    // CO-6: the cap, the draft lock and the approval lock are re-checked atomically inside co_attachment_add (migration 148),
+    // under a row lock on the change order - the pre-checks above are only a fast path, they cannot stop two concurrent
+    // uploads (or an upload racing a send) from both getting through.
+    const { data: added, error } = await (service as any).rpc('co_attachment_add', {
+      p_co_id: id,
+      p_file_name: displayName,
+      p_file_size: file.size,
+      p_mime_type: fileType,
+      p_storage_path: storagePath,
+      p_uploaded_by: session.id,
+    })
 
-    if (error || !attachment) {
+    if (error || !added) {
       // Roll back the orphaned object rather than leaving storage and the DB out of sync.
-      await service.storage.from(EVIDENCE_BUCKET).remove([storagePath])
-      throw new Error(error?.message || 'insert returned no row')
+      const { error: rollbackError } = await service.storage.from(EVIDENCE_BUCKET).remove([storagePath])
+      if (rollbackError) console.error('Could not roll back CO attachment object after failed insert:', rollbackError.message)
+      const msg = String(error?.message || '')
+      if (msg.includes('attachment_limit_exceeded'))
+        return NextResponse.json({ error: `A change order can have at most ${MAX_ATTACHMENTS_PER_CO} attachments.` }, { status: 400 })
+      if (msg.includes('co_locked'))
+        return NextResponse.json({ error: 'This change order is locked — attachments can only be added to a draft.' }, { status: 409 })
+      if (msg.includes('co_approval_pending'))
+        return NextResponse.json({ error: 'This change order has a pending approval request — cancel it before changing attachments.' }, { status: 409 })
+      if (msg.includes('co_not_found'))
+        return NextResponse.json({ error: 'Not found' }, { status: 404 })
+      throw new Error(error?.message || 'co_attachment_add returned no row')
     }
+    const attachment = { id: added.id as string, uploaded_at: added.uploaded_at as string }
 
     await logAudit(service, {
       workspaceId: session.workspaceId, actorId: session.id,

@@ -42,6 +42,8 @@ interface CoData {
   // api/portal/co/[token]/route.ts. Plain text, never dangerouslySetInnerHTML.
   scopeImpactNote:    string | null
   timelineImpactDays: number | null
+  // CO-1: months a retainer renewal extends the retainer by (null when this is not a fixed-term renewal).
+  renewalTermMonths?: number | null
 }
 
 export default function CoPortalPage() {
@@ -338,12 +340,18 @@ export default function CoPortalPage() {
                 the page the client is actually deciding on. Plain text only, rendered as
                 normal JSX (never dangerouslySetInnerHTML): CoEditor collects this via a
                 <textarea>, not a rich-text field. */}
-            {(co.scopeImpactNote || co.timelineImpactDays !== null) && (
+            {(co.scopeImpactNote || co.timelineImpactDays !== null || !!co.renewalTermMonths) && (
               <div style={{ marginTop: 24 }}>
                 <div className="portal-section-title">Impact analysis</div>
                 {co.scopeImpactNote && (
                   <div style={{ fontSize: 13, color: '#333', lineHeight: 1.6, marginBottom: co.timelineImpactDays !== null ? 8 : 0, whiteSpace: 'pre-wrap' }}>
                     <strong>Scope: </strong>{co.scopeImpactNote}
+                  </div>
+                )}
+                {!!co.renewalTermMonths && (
+                  <div style={{ fontSize: 13, color: '#333', lineHeight: 1.6, marginBottom: co.timelineImpactDays !== null ? 8 : 0 }}>
+                    <strong>Retainer term: </strong>
+                    Accepting this renewal extends the retainer by {co.renewalTermMonths} month{co.renewalTermMonths === 1 ? '' : 's'}
                   </div>
                 )}
                 {co.timelineImpactDays !== null && (
