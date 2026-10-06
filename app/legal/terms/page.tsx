@@ -102,18 +102,27 @@ export default function TermsPage() {
         <p>
           <strong>Free trial.</strong> New workspaces start with a 14-day free trial. No card is required to
           start one. Billing begins when you upgrade to a paid plan, and upgrading ends the trial. When the trial
-          ends, you need to subscribe to a paid plan to keep using ScopeGov; if you don&rsquo;t, we may limit
-          or suspend access to your workspace, and your content is handled as described in our{' '}
-          <a href="/legal/privacy#retention">Privacy Policy</a>.
+          ends, you need to subscribe to a paid plan to keep making changes in ScopeGov. Until you do, your
+          workspace is read-only (see &ldquo;Read-only mode&rdquo; below).
         </p>
         <p>
           <strong>Failed payments.</strong> If a renewal payment fails, we start a 5-day grace period and
-          notify you. If the payment is still not resolved when the grace period ends, we may limit or suspend
-          access to your workspace until it is.
+          notify you. If the payment is still not resolved when the grace period ends, your workspace becomes
+          read-only until it is.
         </p>
         <p>
           <strong>Cancellation.</strong> You can cancel at any time from your workspace settings.
-          Cancellation takes effect at the end of the current billing period.
+          Cancellation takes effect at the end of the current billing period, after which your workspace
+          becomes read-only unless you subscribe again.
+        </p>
+        <p>
+          <strong>Read-only mode.</strong> A workspace with no active subscription &mdash; an ended trial, an
+          unresolved failed payment, or a cancelled subscription whose billing period has ended &mdash; is
+          read-only. You can still view your content, download your exports, manage billing and workspace
+          settings (including deleting the workspace), and your clients can still open and respond to documents
+          you have already sent. You can&rsquo;t create, edit, or send documents, invite members, approve
+          documents, change roles, or delete projects until you subscribe. Your content is kept as described
+          in our <a href="/legal/privacy#retention">Privacy Policy</a>.
         </p>
         <p>
           <strong>Refunds.</strong> We don&rsquo;t provide partial-period refunds; the free trial is there so

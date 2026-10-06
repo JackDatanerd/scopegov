@@ -50,6 +50,7 @@ export default function PrivacyPolicyPage() {
         <ul>
           <li><strong>Agency accounts.</strong> Name, work email, password (hashed via Supabase Auth), workspace and role, and optionally a TOTP factor if you enable two-factor authentication. If you choose to sign in with Google, we receive your name and email address from Google through our authentication provider.</li>
           <li><strong>Content you create.</strong> Statements of Work, change orders, invoices, client and project records, and any briefs, drafts, or comments you enter into the product.</li>
+          <li><strong>Files you upload.</strong> Your profile photo and your agency&rsquo;s logo are stored in a public bucket, so anyone with the image&rsquo;s URL can view it, and a logo appears on the documents and client portal pages you send. Other uploaded files, such as attachments and evidence, are stored privately and are available only to people with access to that workspace.</li>
           <li><strong>Client &amp; signer data.</strong> Names, emails, and signatures of the people your agency invites to review or sign a document through the portal — provided by you. When someone signs or responds through the portal, we also record the details needed as evidence of the signature: their signature, the time, and their IP address and browser details.</li>
           <li><strong>Forwarded correspondence.</strong> If you forward client emails to a project&rsquo;s Guardian inbox (via Postmark), we process the message content to check it against that project&rsquo;s signed scope.</li>
           <li><strong>Billing data.</strong> Handled by Paystack; we store the resulting subscription status and plan tier, not full card numbers.</li>
@@ -109,8 +110,9 @@ export default function PrivacyPolicyPage() {
         </p>
 
         <h2 id="retention">7. Retention &amp; deletion</h2>
-        <p>We keep workspace content for as long as your workspace is active. When something is deleted, this is what happens:</p>
+        <p>We keep workspace content for as long as your workspace exists. When something ends or is deleted, this is what happens:</p>
         <ul>
+          <li><strong>Lapsed workspaces.</strong> If a workspace&rsquo;s trial or subscription ends, the workspace becomes read-only and its content is kept until a workspace owner deletes the workspace or you ask us to delete it. We don&rsquo;t currently delete lapsed workspaces automatically.</li>
           <li><strong>Deleted workspaces.</strong> A workspace owner can restore a deleted workspace for 30 days. After that it is no longer accessible to you, but we keep the data for 7 years from the deletion date and then permanently delete it. We keep it that long because a workspace holds contracts, change orders, and invoices that may be needed for tax, accounting, and legal-claim purposes.</li>
           <li><strong>Deleted Draft or Intake projects.</strong> Permanently deleted 30 days after deletion.</li>
           <li><strong>Deleted accounts.</strong> When you delete your account, we erase your profile and sign-in details 30 days later. Records you created inside a workspace, such as documents and audit-log entries, stay with that workspace.</li>

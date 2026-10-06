@@ -1,0 +1,13 @@
+Legal pages — independent pass 3 (Oct 2026, base 8d610f7)
+
+1. Terms §7 now matches the read-only lapse shipped in d90707a: trial end, unresolved failed payment (after the 5-day grace) and
+   a cancelled subscription whose period ended all make the workspace READ-ONLY; new "Read-only mode" paragraph says what stays
+   (view, exports, billing, workspace settings incl. deleting the workspace, client portal) and what stops (create/edit/send,
+   invites, approvals, roles, project deletion). Removed the vaguer, overstated "limit or suspend access".
+2. Privacy §7 + DPA §10: lapsed workspaces are kept read-only until an owner deletes them or you ask us to; nothing purges them
+   automatically (stated plainly). A purge-after-N-months policy is a product decision, not built here.
+3. Privacy §2: new "Files you upload" bullet — avatars/logos live in the PUBLIC `logos` bucket (anyone with the URL can view;
+   logos appear on documents and portal pages); attachments/evidence/executed PDFs are private (signed URLs).
+4. Cookies: sign-in verification cookie is "removed as soon as sign-in completes" (an abandoned sign-in can leave it up to 400 days),
+   not "short-lived".
+Tests: tests/legal-pages-accuracy.test.ts now pins the lapse keep-list, the no-purge claim, bucket visibility and the cookie wording.

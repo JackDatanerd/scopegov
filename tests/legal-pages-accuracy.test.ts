@@ -109,4 +109,38 @@ describe('legal pages — publish-ready and consistent with the code', () => {
     expect(dpa).toContain('instruct us in writing')
     expect(read('app/api/clients/[id]/contacts/[contactId]/route.ts')).toContain('export async function DELETE')
   })
+  it('terms describe the real read-only lapse (not "limit or suspend" / free Solo), and the code still keeps what the terms promise', () => {
+    const terms = read('app/legal/terms/page.tsx')
+    expect(terms).toContain('Read-only mode')
+    expect(terms).not.toMatch(/limit\s+or suspend/)
+    const keep = /LAPSED_KEEP_PERMISSIONS[^=]*=\s*new Set\(\[([\s\S]*?)\]\)/.exec(read('lib/billing/plans.ts'))
+    expect(keep).toBeTruthy()
+    // "manage billing and workspace settings (including deleting the workspace)" and "view your content / exports"
+    for (const perm of ['MANAGE_BILLING', 'MANAGE_WORKSPACE_SETTINGS', 'VIEW_ALL_PROJECTS', 'VIEW_AUDIT_LOG']) expect(keep![1]).toContain(perm)
+    // ...and nothing that would let a lapsed workspace create/send/approve/invite/change roles/delete projects
+    for (const perm of ['SEND_SOW', 'SEND_INVOICES', 'APPROVE_DOCUMENTS', 'MANAGE_ROLES', 'DELETE_PROJECTS', 'INVITE_MEMBERS']) expect(keep![1]).not.toContain(perm)
+    expect(read('app/api/workspace/delete/route.ts')).toContain("'MANAGE_WORKSPACE_SETTINGS'")
+  })
+
+  it('privacy/DPA state that lapsed workspaces are kept until deleted — and no cron purges them', () => {
+    expect(read('app/legal/privacy/page.tsx')).toContain('Lapsed workspaces.')
+    expect(read('app/legal/dpa/page.tsx')).toContain('whose subscription has ended is kept read-only')
+    for (const cron of ['workspace-purge', 'project-purge', 'invite-cleanup', 'notification-cleanup']) {
+      expect(read(`app/api/cron/${cron}/route.ts`), cron).not.toMatch(/lapsed_at/)
+    }
+  })
+
+  it('uploaded-file disclosure matches bucket visibility (logos/avatars public, evidence private)', () => {
+    const privacy = read('app/legal/privacy/page.tsx')
+    expect(privacy).toContain('Files you upload.')
+    expect(read('lib/utils/avatar-storage.ts')).toContain("AVATAR_BUCKET = 'logos'")
+    const mig = read('supabase/migrations/068_auth_rls_audit_round2.sql')
+    expect(mig).toMatch(/VALUES \('logos', 'logos', true/)
+    expect(mig).toMatch(/VALUES \('flag-evidence', 'flag-evidence', false/)
+  })
+
+  it('cookie page does not call the sign-in verification cookie short-lived', () => {
+    expect(read('app/legal/cookies/page.tsx')).not.toContain('Short-lived')
+    expect(read('app/legal/cookies/page.tsx')).toContain('Removed as soon as sign-in completes')
+  })
 })

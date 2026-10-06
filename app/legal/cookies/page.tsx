@@ -25,7 +25,7 @@ export default function CookiesPage() {
           <thead><tr><th>Cookie</th><th>Purpose</th><th>Duration</th><th>Type</th></tr></thead>
           <tbody>
             <tr><td>Supabase session cookies</td><td>Keep you signed in and identify your active workspace session</td><td>Up to 400 days; removed when you sign out</td><td>Strictly necessary</td></tr>
-            <tr><td>Sign-in verification cookie (name ends in <code>-code-verifier</code>)</td><td>Lets a sign-in or password-reset link finish correctly, including when it returns on a different <code>scopegov.app</code> address than the one you started on</td><td>Short-lived; used only while sign-in completes</td><td>Strictly necessary</td></tr>
+            <tr><td>Sign-in verification cookie (name ends in <code>-code-verifier</code>)</td><td>Lets a sign-in or password-reset link finish correctly, including when it returns on a different <code>scopegov.app</code> address than the one you started on</td><td>Removed as soon as sign-in completes (an abandoned sign-in can leave it in your browser for up to 400 days)</td><td>Strictly necessary</td></tr>
             <tr><td><code>ss_ref</code></td><td>Remembers which referral link brought a first-time visitor to the site, so we can attribute signups correctly</td><td>30 days</td><td>Functional (first-party; no cross-site tracking)</td></tr>
           </tbody>
         </table>

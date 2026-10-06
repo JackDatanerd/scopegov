@@ -109,8 +109,9 @@ export default function DpaPage() {
 
         <h2 id="deletion">10. Return &amp; deletion</h2>
         <p>
-          On termination, you can download the documents and reports you need from the product before your
-          workspace is deleted on the schedule described in our{' '}
+          On termination, you can download the documents and reports you need from the product. A workspace
+          whose subscription has ended is kept read-only, with its data, until it is deleted by an owner or on
+          your written instruction, and a deleted workspace is then removed on the schedule described in our{' '}
           <a href="/legal/privacy#retention">Privacy Policy</a>. You can also instruct us in writing (at{' '}
           <a href="mailto:privacy@scopegov.app">privacy@scopegov.app</a>) to delete your workspace&rsquo;s data
           earlier, and we will do so unless we&rsquo;re required by law to retain a copy.
