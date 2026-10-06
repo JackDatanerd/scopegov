@@ -63,8 +63,9 @@ export async function POST(request: NextRequest) {
       // Most internal mail (flag alerts, approvals, stall notices) is sent without an email_log row, and Resend still
       // reports on it. Retrying those for two minutes only produced failed deliveries in the Resend dashboard, so a
       // success event is retried only when the email was sent with the `tracked` tag (sendEmail adds it whenever it
-      // writes a log row) — see isTrackedSend. Failure events are always retried while fresh: losing one loses the alert.
-      const mightBeLogged = failureKindForEvent(type) !== null || isTrackedSend(event)
+      // writes a log row) — see isTrackedSend. That holds for failure events too: only a tracked send can have a row to
+      // alert from, so retrying a bounce of untracked mail (503s, failed deliveries in the Resend dashboard) bought nothing.
+      const mightBeLogged = isTrackedSend(event)
       // The log row is written right AFTER the send returns, so an event can beat it. Fail (Resend retries after a
       // few seconds) while the event is fresh; an old event for an email we never logged is simply not ours.
       if (mightBeLogged && eventAgeMs(event) < UNLOGGED_RETRY_WINDOW_MS) return NextResponse.json({ error: 'Email not logged yet' }, { status: 503 })
@@ -198,9 +199,13 @@ async function alertSender(
   }
   const type = doc ? `${doc.prefix}_email_${status}` : `email_${status}`
 
-  // Already alerted for this address on this email (a redelivered event)? The title names the address, and only an
-  // alert raised after the email was logged can belong to it — an older one is about an earlier email.
-  if (opts.dedupe) {
+  // One alert per (failure kind, address) PER EMAIL. The claim lives on the email_log row (migration 149), so an alert
+  // raised for a different email to the same address can never be mistaken for this one. If the migration is not
+  // applied yet the RPC is missing: fall back to looking for an alert raised after this email was logged.
+  const key = `${status}:${address}`
+  const claim = await claimAlert(service, row.id, key)
+  if (claim === 'already') return true
+  if (claim === 'unavailable' && opts.dedupe) {
     let q = service.from('notifications').select('id')
       .eq('workspace_id', row.workspace_id).eq('type', type).eq('title', title)
     if (row.created_at) q = q.gte('created_at', row.created_at)
@@ -211,13 +216,34 @@ async function alertSender(
 
   // The person who triggered the send is the one who can fix it; fall back to whoever manages that
   // kind of document (e.g. an automatic send after approval has no single actor).
+  let written = false
   if (row.actor_id) {
     const r = await notifyUsers(service, { ...shared, type, recipientIds: [row.actor_id] })
-    if (r.recipients.length > 0) return r.inserted
+    if (r.recipients.length > 0) written = r.inserted
+    else written = await notifyMembersWithPermission(service, {
+      ...shared, type, permission: doc?.permission || 'MANAGE_WORKSPACE_SETTINGS', eventType: '',
+    })
+  } else {
+    written = await notifyMembersWithPermission(service, {
+      ...shared, type, permission: doc?.permission || 'MANAGE_WORKSPACE_SETTINGS', eventType: '',
+    })
   }
-  return notifyMembersWithPermission(service, {
-    ...shared, type, permission: doc?.permission || 'MANAGE_WORKSPACE_SETTINGS', eventType: '',
-  })
+  // Not written: give the claim back so the retry raises it.
+  if (!written && claim === 'claimed') await releaseAlert(service, row.id, key)
+  return written
+}
+
+async function claimAlert(service: any, emailLogId: string, key: string): Promise<'claimed' | 'already' | 'unavailable'> {
+  try {
+    const { data, error } = await service.rpc('claim_email_alert', { p_email_log_id: emailLogId, p_key: key })
+    if (error) { console.error('[resend-webhook] alert claim unavailable:', error.message); return 'unavailable' }
+    return data === true ? 'claimed' : 'already'
+  } catch (e) { console.error('[resend-webhook] alert claim threw:', e); return 'unavailable' }
+}
+
+async function releaseAlert(service: any, emailLogId: string, key: string) {
+  try { await service.rpc('release_email_alert', { p_email_log_id: emailLogId, p_key: key }) }
+  catch (e) { console.error('[resend-webhook] could not release alert claim:', e) }
 }
 
 // FEATURE (independent pass, section 14): the bounce alert above reaches only the sender, once. Nothing
@@ -239,7 +265,7 @@ async function trackClientEmailHealth(service: any, row: any, status: string, ad
     // bounce. Every other ilike lookup on this address (contacts, project creation, Guardian inbound) was already
     // followed by an exact sameEmail() check (pass 13); this one was missed. The candidates are now read, filtered to
     // the exact case-insensitive address, and written by id.
-    const { data: hits, error: selErr } = await service.from('clients').select('id, email, email_bounce_kind')
+    const { data: hits, error: selErr } = await service.from('clients').select('id, email, email_bounce_kind, email_bounced_at')
       .eq('workspace_id', row.workspace_id).ilike('email', escapeLike(to)).limit(25)
     if (selErr) { console.error('[resend-webhook] could not look up client for email health:', selErr.message); return }
     const matched = (hits || []).filter((c: any) => sameEmail(c.email, to))
@@ -262,7 +288,12 @@ async function trackClientEmailHealth(service: any, row: any, status: string, ad
       }
     } else if (status === 'delivered') {
       // Only a plain bounce clears on delivery — a spam complaint stays until the address is changed.
-      const ids = matched.filter((c: any) => c.email_bounce_kind === 'bounce').map((c: any) => c.id)
+      // Webhooks arrive out of order: a late "delivered" for an OLDER email must not wipe a bounce recorded for a newer
+      // one. Only a delivery of an email sent after the marker was set proves the address works again.
+      const sentAt = Date.parse(row.created_at || '')
+      const ids = matched.filter((c: any) => c.email_bounce_kind === 'bounce' && (
+        !Number.isFinite(sentAt) || !c.email_bounced_at || Date.parse(c.email_bounced_at) <= sentAt
+      )).map((c: any) => c.id)
       if (ids.length) {
         const { error } = await service.from('clients')
           .update({ email_bounced_at: null, email_bounce_kind: null }).in('id', ids)

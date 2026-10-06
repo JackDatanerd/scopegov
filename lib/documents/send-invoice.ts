@@ -265,24 +265,30 @@ export async function sendInvoiceDocument(service: any, params: {
     },
   })
 
-  await notifyMembersWithPermission(service, {
-    workspaceId, permission: 'VIEW_FINANCIALS',
-    eventType: 'invoice_sent',
-    type: 'invoice_sent',
-    title: `Invoice sent — ${project.name}`,
-    body: `${client.name} was sent an invoice for ${formatMoney(invoice.amount, invoice.currency)} on "${invoice.title}".`,
-    entityType: 'project', entityId: project.id, excludeUserId: actorId, projectId: project.id,
-  })
-  try {
-    const emails = await getMemberEmailsWithPermission(service, workspaceId, 'VIEW_FINANCIALS', 10, 'invoice_sent', project.id, actorId)
-    if (emails.length) {
-      await sendInvoiceSentInternalEmail({
-        to: emails, clientName: client.name, projectName: project.name,
-        invoiceNumber, amount: invoice.amount, currency: invoice.currency,
-        projectUrl: `${process.env.NEXT_PUBLIC_APP_URL}/projects/${project.id}?tab=billing`,
-      })
-    }
-  } catch (e) { console.error('Invoice sent internal email failed:', e) }
+  // The team notice says the client WAS sent the invoice. When the provider rejected the email the invoice is still
+  // 'sent' (its portal link is live) but the client received nothing, so announcing it to teammates — bell and email —
+  // was false. The sender is told through `emailError`; teammates hear nothing until it is actually delivered.
+  if (delivery.ok) {
+    await notifyMembersWithPermission(service, {
+      workspaceId, permission: 'VIEW_FINANCIALS',
+      eventType: 'invoice_sent',
+      type: 'invoice_sent',
+      title: `Invoice sent — ${project.name}`,
+      body: `${client.name} was sent an invoice for ${formatMoney(invoice.amount, invoice.currency)} on "${invoice.title}".`,
+      entityType: 'project', entityId: project.id, excludeUserId: actorId, projectId: project.id,
+    })
+    try {
+      const emails = await getMemberEmailsWithPermission(service, workspaceId, 'VIEW_FINANCIALS', 10, 'invoice_sent', project.id, actorId)
+      if (emails.length) {
+        await sendInvoiceSentInternalEmail({
+          to: emails, clientName: client.name, projectName: project.name,
+          invoiceNumber, amount: invoice.amount, currency: invoice.currency,
+          projectUrl: `${process.env.NEXT_PUBLIC_APP_URL}/projects/${project.id}?tab=billing`,
+        })
+      }
+    } catch (e) { console.error('Invoice sent internal email failed:', e) }
+
+  }
 
   return {
     ok: true, token, portalUrl, invoiceNumber, projectId: project.id, projectName: project.name,

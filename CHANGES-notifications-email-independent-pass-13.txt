@@ -1,0 +1,14 @@
+Notifications & email — independent pass 13
+
+1. lib/documents/send-invoice.ts: the team "invoice sent" bell + email only fire when the client email was actually
+   delivered (the invoice stays 'sent' either way; the sender still gets emailError).
+2. app/api/webhooks/resend/route.ts: failure events for untracked mail are no longer answered 503 (only tracked sends
+   can have an email_log row).
+3. Bounce alerts are claimed per email on email_log (migration 149: alerted_keys, claim_email_alert,
+   release_email_alert) instead of a time-window lookup that could match another email's alert. Falls back to the old
+   lookup if the migration is not applied yet. APPLY supabase/migrations/149_email_log_alert_claims.sql.
+4. app/api/invoices/[id]/payments/route.ts + lib/email/templates.ts: a failed post-write re-read no longer prints
+   "Remaining balance: $0"; balanceRemaining is null and the line is omitted.
+5. trackClientEmailHealth: a delivery only clears a bounce marker if that email was sent after the marker was set.
+
+Tests: tests/notifications-email-pass-13.test.ts (new); two older tests updated for fix 2.

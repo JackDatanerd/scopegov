@@ -1561,7 +1561,7 @@ export async function sendInvoiceReminderEmail(params: {
 export async function sendInvoicePaymentRecordedEmail(params: {
   to: string[]; agencyName: string; clientName: string; projectName: string
   invoiceNumber?: string | null; amount: number; currency: string
-  isFullyPaid: boolean; balanceRemaining: number; projectUrl: string
+  isFullyPaid: boolean; balanceRemaining: number | null; projectUrl: string
 }) {
   const { to, clientName: clientNameRaw, projectName: projectNameRaw, invoiceNumber, amount, currency,
     isFullyPaid, balanceRemaining, projectUrl } = params
@@ -1579,7 +1579,7 @@ export async function sendInvoicePaymentRecordedEmail(params: {
         A payment of <strong>${money(amount, currency)}</strong> from <strong>${clientName}</strong>
         was recorded on <strong>${projectName}</strong>.
       </p>
-      ${!isFullyPaid ? `<p style="font-size:13px;color:${C.text2};">Remaining balance: <strong>${money(balanceRemaining, currency)}</strong></p>` : ''}
+      ${!isFullyPaid && balanceRemaining != null ? `<p style="font-size:13px;color:${C.text2};">Remaining balance: <strong>${money(balanceRemaining as number, currency)}</strong></p>` : ''}
     `,
     cta: 'View project →',
     ctaUrl: projectUrl,

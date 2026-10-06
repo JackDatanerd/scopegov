@@ -151,8 +151,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     // trg_invoice_payments_recalc (003_...sql / 004_...sql) already updated
     // invoices.amount_paid + status — re-read for the accurate post-write state.
-    const { data: refreshed } = await (service as any)
+    const { data: refreshed, error: refreshErr } = await (service as any)
       .from('invoices').select('amount, amount_paid, status').eq('id', id).single()
+    if (refreshErr) console.error('Payment recorded: could not re-read the invoice (balance omitted from the email):', refreshErr.message)
 
     // FEATURE (cron/portal audit round 3): a recorded payment answers the client's "I've paid" notice (see
     // api/portal/invoice/[token]/paid) — clear it so the portal stops showing it as pending and automatic
@@ -163,7 +164,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (claimClearErr) console.error('Payment recorded: could not clear the client payment claim (non-fatal):', claimClearErr.message)
 
     const isFullyPaid = refreshed?.status === 'paid'
-    const balanceRemaining = Math.max(0, Number(refreshed?.amount || 0) - Number(refreshed?.amount_paid || 0))
+    // null = unknown (the re-read failed): the email must not claim a $0 balance on what may be a partial payment.
+    const balanceRemaining: number | null = refreshed
+      ? Math.max(0, Number(refreshed.amount || 0) - Number(refreshed.amount_paid || 0))
+      : null
 
     await logAudit(service, {
       workspaceId: session.workspaceId, actorId: session.id,

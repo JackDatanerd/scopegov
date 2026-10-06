@@ -101,10 +101,14 @@ describe('B3 — success events for mail that was never logged are not retried',
     expect((await call(ev('email.delivery_delayed', 'x@y.test', { tags: [{ name: 'tracked', value: '1' }] }))).status).toBe(503)
   })
 
-  it('failure events are always retried while fresh, tag or no tag', async () => {
+  // Pass 13: only a tracked send can have an email_log row, so an untracked failure is not retried either.
+  it('failure events are retried while fresh only when the send carried the tracked tag', async () => {
     h.db = createFakeSupabase(noLog())
-    expect((await call(ev('email.bounced', 'x@y.test'))).status).toBe(503)
-    expect((await call(ev('email.suppressed', 'x@y.test'))).status).toBe(503)
+    const tracked = { tags: [{ name: 'tracked', value: '1' }] }
+    expect((await call(ev('email.bounced', 'x@y.test', tracked))).status).toBe(503)
+    expect((await call(ev('email.suppressed', 'x@y.test', tracked))).status).toBe(503)
+    const untracked = await call(ev('email.bounced', 'x@y.test'))
+    expect(untracked.status).toBe(200); expect(untracked.body.untracked).toBe(true)
   })
 })
 

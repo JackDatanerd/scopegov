@@ -17,7 +17,7 @@ function req(event: any) {
   return new Request('http://x/api/webhooks/resend', { method: 'POST', body, headers: { 'svix-id': id, 'svix-timestamp': ts, 'svix-signature': sig } }) as any
 }
 const call = async (event: any) => { const r = await POST(req(event)); return { status: r.status, body: await r.json() } }
-const bounce = (to: string) => ({ type: 'email.bounced', created_at: new Date().toISOString(), data: { email_id: 'prov_1', to: [to] } })
+const bounce = (to: string) => ({ type: 'email.bounced', created_at: new Date().toISOString(), data: { email_id: 'prov_1', to: [to], tags: [{ name: 'tracked', value: '1' }] } })
 
 const WS = 'ws1', USER = 'u1'
 const world = (): Record<string, any[]> => ({
