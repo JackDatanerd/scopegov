@@ -110,3 +110,24 @@ describe('pass 16 regressions', () => {
     expect(r).toContain('Monday is the deadline')
   })
 })
+
+describe('pass 17 regressions', () => {
+  it('B1: a reply typed BELOW the quote (bottom-posting) is kept', () => {
+    const r = extractUnquotedContent('On Mon, Sep 1, 2026 at 10:00 AM Bob <bob@x.com> wrote:\n> Can we do the logo?\n\nYes, and please add a mobile app too.')
+    expect(r).toBe('Yes, and please add a mobile app too.')
+  })
+  it('B1: a wrapped attribution + multi-line quote + signature', () => {
+    const t = 'On Mon, Sep 1, 2026 at 10:00 AM Bob <bob@x.com>\nwrote:\n> Can we do the logo?\n>\n> Thanks\n\nPlease add a mobile app.\n\n-- \nBob\nAcme'
+    expect(extractUnquotedContent(t)).toBe('Please add a mobile app.')
+  })
+  it('B1: interleaved answers between quoted lines are kept, quoted lines are not', () => {
+    const t = 'On Mon, Sep 1, 2026 at 10:00 AM Bob <bob@x.com> wrote:\n> Logo ok?\nYes.\n> Anything else?\nAdd a blog.'
+    const r = extractUnquotedContent(t)
+    expect(r).toContain('Add a blog.')
+    expect(r).not.toContain('Logo ok?')
+  })
+  it('B1: top-posted replies are unchanged and an UNquoted older thread below the attribution stays cut', () => {
+    expect(extractUnquotedContent('Add dark mode\n\nOn Mon, Sep 1, 2026 at 10:00 AM Bob <bob@x.com> wrote:\n> old\n\nmore old')).toBe('Add dark mode')
+    expect(extractUnquotedContent('On Mon, Sep 1, 2026 at 10:00 AM Bob <bob@x.com> wrote:\nold text with no quote marks')).toBe('')
+  })
+})

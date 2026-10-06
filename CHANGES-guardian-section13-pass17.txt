@@ -1,0 +1,13 @@
+Guardian section 13 - pass 17
+
+B1 (lib/ai/guardian-email.ts) - bottom-posted replies lost the client's request.
+  extractUnquotedContent always ended the scan at the "On ... wrote:" attribution line. A client who replies
+  BELOW the quote (bottom-posting / interleaved answers) left nothing above it, so the extracted text was empty:
+  only the subject was classified, or - for a subject under 8 characters - the mail was skipped with nothing stored.
+  Now, when nothing precedes the attribution (and it is not a forward) and a ">"-quoted block follows it, the
+  unquoted lines after the quote are kept (quoted lines dropped; stops at a signature delimiter, an Outlook marker
+  or another attribution). Top-posted replies and an unquoted older thread below an attribution behave as before.
+
+Already fixed upstream by pass 16 (re-verified, no change): prose "From:/Sent:|Date:" lines cut as an Outlook header block.
+
+Tests: tests/guardian-email.test.ts ("pass 17 regressions").

@@ -152,10 +152,19 @@ export function extractUnquotedContent(text: string, opts: { isForward?: boolean
     // client's actual new request - was dropped (classified as just the greeting -> in_scope, no flag).
     // A genuine attribution carries a date/address, or (abbreviated forms like "On Sun, Jane wrote:") is followed by the
     // quoted text itself, so a hint-less line only cuts when the next line is ">"-quoted.
-    if (ON_WROTE_ONE.test(t) && (ATTRIBUTION_HINT.test(t) || (lines[i + 1] || '').trim().startsWith('>'))) break
-    if (ON_WROTE_I18N.test(t) && ATTRIBUTION_HINT.test(t)) break
-    if (ON_WROTE_START.test(t) && ATTRIBUTION_HINT.test(t) && !t.endsWith('wrote:') && WROTE_ONLY.test(next)) break
-    if (ON_WROTE_START.test(t) && ATTRIBUTION_HINT.test(t) && /wrote:\s*$/i.test(next) && next.length < 120) break
+    const isAttribution =
+      (ON_WROTE_ONE.test(t) && (ATTRIBUTION_HINT.test(t) || (lines[i + 1] || '').trim().startsWith('>'))) ||
+      (ON_WROTE_I18N.test(t) && ATTRIBUTION_HINT.test(t)) ||
+      (ON_WROTE_START.test(t) && ATTRIBUTION_HINT.test(t) && !t.endsWith('wrote:') && WROTE_ONLY.test(next)) ||
+      (ON_WROTE_START.test(t) && ATTRIBUTION_HINT.test(t) && /wrote:\s*$/i.test(next) && next.length < 120)
+    if (isAttribution) {
+      // FIX (Guardian section 13, pass 17 - B1): the scan always ENDED at the attribution line, so a client who replies BELOW the
+      // quote (bottom-posting - common in Outlook / corporate mail) lost the whole reply: nothing sat above the attribution, the
+      // result was empty and only the subject was classified (or, under 8 characters, the mail was skipped with nothing stored).
+      // When nothing precedes the attribution and a ">"-quoted block follows it, the unquoted lines after that block are the reply.
+      if (!forwarded && !out.some(l => l.trim())) out.push(...bottomPostedReply(i))
+      break
+    }
 
     if (FORWARD_BANNER.test(t)) { forwarded = true; inForwardedBody = true; skipHeaderBlock(); continue }
 
@@ -170,6 +179,24 @@ export function extractUnquotedContent(text: string, opts: { isForward?: boolean
     out.push(body)
   }
   return out.join('\n').replace(/\n{3,}/g, '\n\n').trim()
+
+  // Text a client typed BELOW a quoted block (bottom-posting / interleaved), from the attribution at `at` on. Only when a ">"-quoted
+  // block really follows (otherwise what follows is an unquoted older thread, which must stay cut); stops at a signature delimiter,
+  // an Outlook marker or another attribution.
+  function bottomPostedReply(at: number): string[] {
+    let j = at + 1
+    while (j < lines.length && (lines[j].trim() === '' || (!lines[j].trim().startsWith('>') && /wrote:\s*$/i.test(lines[j].trim())))) j++
+    if (j >= lines.length || !lines[j].trim().startsWith('>')) return []
+    const rec: string[] = []
+    for (; j < lines.length; j++) {
+      const lt = lines[j].trim()
+      if (lt.startsWith('>')) continue
+      if (SIGNATURE_DELIM.test(lines[j].trimEnd()) || ORIGINAL_MSG.test(lt) || OUTLOOK_RULE.test(lt)) break
+      if (ON_WROTE_ONE.test(lt) && ATTRIBUTION_HINT.test(lt)) break
+      rec.push(lines[j])
+    }
+    return rec
+  }
 
   // Advance past the run of header lines (From:/Sent:/To:/Subject: …) + blank lines that follows.
   function skipHeaderBlock() {
