@@ -34,7 +34,7 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
   }
 
   const { data: workspace, error: wsErr } = await (service as any)
-    .from('workspaces').select('id, name, agency_name, plan_tier, deleted_at').eq('id', params.id).maybeSingle()
+    .from('workspaces').select('id, name, agency_name, plan_tier, lapsed_at, deleted_at').eq('id', params.id).maybeSingle()
   if (wsErr) {
     console.error('[admin] change plan: workspace read failed:', wsErr.message)
     return NextResponse.json({ error: 'Could not load this workspace' }, { status: 500 })
@@ -45,8 +45,27 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
   if (workspace.deleted_at) {
     return NextResponse.json({ error: 'This workspace is suspended or deleted — restore it before changing its plan.' }, { status: 409 })
   }
-  if (workspace.plan_tier === plan) {
+  // A lapsed workspace (no subscription, read-only — migration 150) is stored on 'solo' with lapsed_at set. Choosing that
+  // same plan is how staff comp it back to writable, so "already on" only applies to a workspace that is not lapsed.
+  const unlockingSamePlan = workspace.plan_tier === plan && !!workspace.lapsed_at
+  if (workspace.plan_tier === plan && !unlockingSamePlan) {
     return NextResponse.json({ error: `Already on ${plan}` }, { status: 409 })
+  }
+  // Moving a workspace that still has a live Paystack subscription onto the TRIAL plan leaves the subscription charging while
+  // the trial-expiry cron skips the workspace for having one — so when the trial date passes it reads as read-only while the
+  // customer is still paying. Refuse it at the source; cancel the subscription from the Billing tab first.
+  if (plan === 'trial') {
+    const { data: liveBilling, error: liveBillingErr } = await (service as any)
+      .from('billing').select('paystack_subscription_code').eq('workspace_id', params.id).maybeSingle()
+    if (liveBillingErr) {
+      console.error('[admin] change plan: billing read failed:', liveBillingErr.message)
+      return NextResponse.json({ error: 'Could not check this workspace\u2019s subscription' }, { status: 500 })
+    }
+    if (liveBilling?.paystack_subscription_code) {
+      return NextResponse.json({
+        error: 'This workspace still has a live Paystack subscription. Cancel it first (Billing tab), otherwise it keeps charging a trial workspace.',
+      }, { status: 409 })
+    }
   }
 
   // This changes the app's own entitlement flag only — it does NOT touch
@@ -103,7 +122,7 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     targetType: 'workspace',
     targetId: workspace.id,
     targetLabel: workspace.agency_name || workspace.name,
-    metadata: { previousPlan: workspace.plan_tier, newPlan: plan, reason: reason || null, ...(plan === 'trial' ? { trialDays } : {}), ...(graceCleared ? { graceCleared: true } : {}), ...(graceErr ? { graceClearFailed: true } : {}) },
+    metadata: { previousPlan: workspace.plan_tier, newPlan: plan, ...(unlockingSamePlan ? { unlockedLapsed: true } : {}), reason: reason || null, ...(plan === 'trial' ? { trialDays } : {}), ...(graceCleared ? { graceCleared: true } : {}), ...(graceErr ? { graceClearFailed: true } : {}) },
   })
 
   // FIX (deep audit, Reports & Audit / Billing re-pass — independent redo):

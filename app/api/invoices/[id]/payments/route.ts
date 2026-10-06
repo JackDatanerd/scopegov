@@ -4,7 +4,7 @@ import { isUuidString } from '@/lib/utils/uuid'
 import { createServiceClient } from '@/lib/supabase/server'
 import { formatMoney } from '@/lib/utils/money'
 import { NextResponse, type NextRequest } from 'next/server'
-import { getSession, hasPermission } from '@/lib/auth/session'
+import { getSession, hasPermission, hasSettlementPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
 import { sendInvoicePaymentRecordedEmail } from '@/lib/email/templates'
@@ -52,7 +52,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     if (!isUuidString(id)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
-    if (!hasPermission(session, 'SEND_INVOICES'))
+    if (!hasSettlementPermission(session, 'SEND_INVOICES'))
       return NextResponse.json({ error: 'Missing permission: SEND_INVOICES' }, { status: 403 })
 
     const body = await request.json().catch(() => null)

@@ -8,7 +8,7 @@
 // Rules the model keeps (they are what makes the number credible, so they are tested):
 //   1. Leakage is the LARGER of the user's creep estimate and the value they measurably granted for free
 //      (exceptions). Granted-free work is a subset of creep, so adding the two would count it twice.
-//   2. Recoverable = leakage × recovery rate. The rate defaults to 25% (DEFAULT_RECOVERY_RATE) and is always editable.
+//   2. Recoverable = leakage × recovery rate. The rate defaults to 68% (DEFAULT_RECOVERY_RATE) and is always editable.
 //   3. A plan is recommended on FIT first (seats, simultaneously active projects, features), price second: the cheapest
 //      plan that fits wins, whatever the money says. If even that plan loses money, the verdict says so.
 //   4. Plan prices are USD (LIST_PRICES_USD). A workspace in another currency must supply an exchange rate; without it
@@ -19,7 +19,8 @@ import { LIST_PRICES_USD } from '@/lib/billing/list-prices'
 import { PLAN_LIMITS } from '@/lib/utils/format'
 import { PAID_PLAN_KEYS, type PaidPlanKey, type BillingInterval } from '@/lib/billing/plans'
 
-export const DEFAULT_RECOVERY_RATE = 0.25
+/** Starting point only — a placeholder the user is expected to adjust, never presented as a benchmark or a promise. */
+export const DEFAULT_RECOVERY_RATE = 0.68
 /** A workspace's own flag→change-order rate is only offered as an alternative with at least this many counted flags. */
 export const MIN_FLAGS_FOR_OWN_RATE = 5
 
@@ -69,7 +70,7 @@ export const BLANK_INPUTS: RoiInputs = {
   activeProjectsNeeded: 2,
   needsCustomRoles: false,
   needsFullHistory: false,
-  interval: 'monthly',
+  interval: 'annual',
   currency: 'USD',
   fxToUsd: null,
 }
@@ -95,7 +96,7 @@ export function normalizeInputs(raw: Partial<RoiInputs> | null | undefined): Roi
     activeProjectsNeeded: Math.floor(num(r.activeProjectsNeeded, 0, 100_000, 0)),
     needsCustomRoles: !!r.needsCustomRoles,
     needsFullHistory: !!r.needsFullHistory,
-    interval: r.interval === 'annual' ? 'annual' : 'monthly',
+    interval: r.interval === 'monthly' ? 'monthly' : 'annual',
     currency,
     fxToUsd: currency === 'USD' ? null : (fx && fx > 0 ? fx : null),
   }
@@ -185,4 +186,56 @@ export function ownRecoveryRate(totalFlags: number, convertedToCo: number): numb
   if (!Number.isFinite(totalFlags) || totalFlags < MIN_FLAGS_FOR_OWN_RATE) return null
   const r = convertedToCo / totalFlags
   return Number.isFinite(r) ? Math.min(1, Math.max(0, r)) : null
+}
+
+/** Fewest days of records worth projecting a year from. Below this the projection is refused rather than shown. */
+export const MIN_DAYS_TO_EXTRAPOLATE = 7
+/** Below this many days the projection is still offered, but the UI must call it rough. */
+export const ROUGH_EXTRAPOLATION_DAYS = 30
+
+export interface Extrapolation {
+  /** 365 / days of records — how many times the observed window is repeated to fill a year. */
+  factor: number
+  /** Observed projects scaled to a year, never below what was actually observed; null when none were observed. */
+  projectsPerYear: number | null
+  /** Observed granted-free value scaled to a year. */
+  grantedFreeValue: number
+  /** True when the window is short enough that the projection is only a rough guide. */
+  rough: boolean
+}
+
+/**
+ * Projects a young workspace's records to a 12-month period (the loader never annualises on its own). Only for a
+ * workspace with fewer than 365 days of records; null when there is nothing to project (already a full year) or too little
+ * history to project from. A straight-line projection: it assumes the recent pace continues, and the UI says so.
+ * Average project value and the recovery rate are rates, not totals, so they are not scaled.
+ */
+export function extrapolateToYear(b: { windowDays: number; projectsStarted: number; grantedFreeValue: number }): Extrapolation | null {
+  const days = Number(b.windowDays)
+  if (!Number.isFinite(days) || days >= 365 || days < MIN_DAYS_TO_EXTRAPOLATE) return null
+  const factor = 365 / days
+  const projects = Number(b.projectsStarted)
+  const granted = Number(b.grantedFreeValue)
+  return {
+    factor,
+    projectsPerYear: Number.isFinite(projects) && projects > 0 ? Math.max(Math.floor(projects), Math.round(projects * factor)) : null,
+    grantedFreeValue: Number.isFinite(granted) && granted > 0 ? Math.round(granted * factor) : 0,
+    rough: days < ROUGH_EXTRAPOLATION_DAYS,
+  }
+}
+
+/**
+ * The two form values the Extrapolate toggle controls. `on` projects the measured totals to a year (null when they cannot
+ * be projected — a full year or too little history); off returns the recorded figures. Kept pure so the toggle can be
+ * tested without a DOM.
+ */
+export function extrapolationFields(
+  m: { windowDays: number; projectsStarted: number; grantedFreeValue: number },
+  recorded: { projectsPerYear: number; grantedFreeValue: number },
+  on: boolean,
+): { projectsPerYear: number; grantedFreeValue: number } | null {
+  if (!on) return { projectsPerYear: recorded.projectsPerYear, grantedFreeValue: recorded.grantedFreeValue }
+  const e = extrapolateToYear(m)
+  if (!e) return null
+  return { projectsPerYear: e.projectsPerYear ?? recorded.projectsPerYear, grantedFreeValue: e.grantedFreeValue }
 }

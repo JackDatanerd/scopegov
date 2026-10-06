@@ -123,6 +123,7 @@ const h = vi.hoisted(() => ({
 vi.mock('@/lib/auth/session', () => ({
   getSession: async () => ({ id: 'u1', email: 'a@b.co', name: 'A', workspaceId: 'w1', emailVerifiedAt: '2026-01-01', permissions: ['SEND_SOW'] }),
   hasPermission: (s: any, p: string) => (s?.permissions || []).includes(p),
+  hasSettlementPermission: (s: any, p: string) => (s?.permissions || []).includes(p),
 }))
 vi.mock('@/lib/utils/project-access', () => ({ canReadProject: async () => true }))
 vi.mock('@/lib/utils/audit', () => ({ logAudit: async () => true }))

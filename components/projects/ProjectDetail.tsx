@@ -71,6 +71,9 @@ function flagPill(status: string): string {
 
 interface Permissions {
   editSow: boolean; sendSow: boolean; createCo: boolean; sendCo: boolean
+  // Settlement actions on documents that already exist (withdraw / close / accept a counter / void / record a payment).
+  // True for send-permission holders AND, on a read-only (lapsed) workspace, for those who held it before the lapse.
+  settleSow?: boolean; settleCo?: boolean; settleInvoices?: boolean
   approveFlags: boolean; grantExceptions: boolean; markComplete: boolean
   submitGuardian: boolean
   viewGuardianHistory: boolean; assignTeam: boolean; viewFinancials: boolean
@@ -1063,12 +1066,16 @@ function SowTab({ project, sows, amendments, permissions, router, pendingApprova
                       open the tab, but POST /api/sow/[id]/remind and .../withdraw both require SEND_SOW — an
                       EDIT_SOW-only member saw two live-looking buttons that just 403'd. Copy signing link and
                       Send were already gated; the whole awaiting-signature action group now is too. */}
-                  {currentSow.status === 'awaiting_signature' && permissions.sendSow && (
+                  {currentSow.status === 'awaiting_signature' && (permissions.sendSow || permissions.settleSow) && (
                     <>
-                      <button className="btn btn-ghost btn-sm" onClick={handleRemind} disabled={reminding}>
-                        {reminding ? <span className="spin" /> : <><i className="ti ti-refresh" style={{ fontSize: 12 }} /> Remind</>}
-                      </button>
-                      <button className="btn btn-ghost btn-sm" onClick={handleCopyLink}><i className="ti ti-link" style={{ fontSize: 12 }} /> Copy signing link</button>
+                      {permissions.sendSow && (
+                        <button className="btn btn-ghost btn-sm" onClick={handleRemind} disabled={reminding}>
+                          {reminding ? <span className="spin" /> : <><i className="ti ti-refresh" style={{ fontSize: 12 }} /> Remind</>}
+                        </button>
+                      )}
+                      {permissions.sendSow && (
+                        <button className="btn btn-ghost btn-sm" onClick={handleCopyLink}><i className="ti ti-link" style={{ fontSize: 12 }} /> Copy signing link</button>
+                      )}
                       <button className="btn btn-ghost btn-sm" onClick={() => handleWithdraw()}><i className="ti ti-x" style={{ fontSize: 12 }} /> Withdraw</button>
                     </>
                   )}
@@ -2608,7 +2615,7 @@ function CoCard({ co, currency, permissions, projectId, pendingApproval, team }:
               back, Remind, Close, Escalate); this one and the awaiting_countersignature Withdraw
               below weren't, so a member without SEND_CHANGE_ORDERS saw a live Withdraw button that
               did nothing but 403 on click. Same class of gap already found and fixed for Close. */}
-          {(co.status === 'awaiting_response' || co.status === 'stalled') && permissions.sendCo && (
+          {(co.status === 'awaiting_response' || co.status === 'stalled') && permissions.settleCo && (
             <button className="btn btn-ghost btn-xs" onClick={() => doAction('withdraw')} disabled={acting}>Withdraw</button>
           )}
           {['awaiting_response', 'stalled', 'awaiting_countersignature'].includes(co.status) && permissions.sendCo && (
@@ -2619,7 +2626,7 @@ function CoCard({ co, currency, permissions, projectId, pendingApproval, team }:
           {/* FIX (doc-completeness audit, migration 014): CO is waiting on
               the client's countersignature at the negotiated total — the
               agency can still withdraw it, same as awaiting_response. */}
-          {co.status === 'awaiting_countersignature' && permissions.sendCo && (
+          {co.status === 'awaiting_countersignature' && permissions.settleCo && (
             <button className="btn btn-ghost btn-xs" onClick={() => doAction('withdraw')} disabled={acting}>Withdraw</button>
           )}
           {/* FIX (section-10 audit, 10-G3): "Negotiate" linked straight to
@@ -2644,7 +2651,7 @@ function CoCard({ co, currency, permissions, projectId, pendingApproval, team }:
               again just silently re-confirmed the existing pending
               request. Mirrors the co.status === 'draft' pattern above:
               swap to a disabled "Awaiting approval" link once pending. */}
-          {co.status === 'countered' && permissions.sendCo && !pendingApproval && (
+          {co.status === 'countered' && permissions.settleCo && !pendingApproval && (
             <button className="btn btn-primary btn-xs" onClick={() => doAction('accept-counter')} disabled={acting}>Accept counter</button>
           )}
           {co.status === 'countered' && pendingApproval && !pendingApproval.sendFailed && (
@@ -2683,7 +2690,7 @@ function CoCard({ co, currency, permissions, projectId, pendingApproval, team }:
               SEND_CHANGE_ORDERS saw a Close button that did nothing but 403
               on click. The close route itself has always required this
               permission — the UI just never matched it. */}
-          {['countered','stalled','declined','expired','draft'].includes(co.status) && permissions.sendCo && (
+          {['countered','stalled','declined','expired','draft'].includes(co.status) && permissions.settleCo && (
             <button className="btn btn-ghost btn-xs" onClick={() => doAction('close')} disabled={acting}>Close</button>
           )}
           {/* FEATURE (section-10 audit, closing pass): same source set the exception route's own

@@ -549,6 +549,8 @@ export interface SessionUser {
   planTier: Plan
   /** True when the workspace has no subscription and is not comped (see lib/billing/plans.ts isWorkspaceLapsed): read-only. */
   lapsed?: boolean
+  /** Permissions a lapsed workspace withheld; only hasSettlementPermission reads it. */
+  lapsedWithheld?: Permission[]
   trialEndsAt: string | null
   onboardingCompletedAt: string | null
   permissions: Permission[]

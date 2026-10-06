@@ -132,6 +132,7 @@ export default function MarketingHome() {
             </p>
             <div className={styles.heroCtas}>
               <Link href="/signup" className={`${styles.btn} ${styles.btnPrimary} ${styles.btnLg}`}>Start free trial</Link>
+              <Link href="/calculator" className={`${styles.btn} ${styles.btnGhost} ${styles.btnLg}`}>Estimate your scope loss</Link>
               <a href="#guardian" className={styles.heroLink}>See Guardian in action &rarr;</a>
             </div>
             <p className={styles.trustLine}>
@@ -421,7 +422,10 @@ export default function MarketingHome() {
         <div className={`${styles.wrap} ${styles.finalCtaInner}`}>
           <h2 className={styles.h2}>File your first Statement of Work.</h2>
           <p className={styles.finalCtaP}>14 days free. No card required. Your first SOW is drafted before the trial even asks for one.</p>
-          <Link href="/signup" className={`${styles.btn} ${styles.btnPrimary} ${styles.btnLg}`}>Start free trial</Link>
+          <div className={styles.finalCtaButtons}>
+            <Link href="/signup" className={`${styles.btn} ${styles.btnPrimary} ${styles.btnLg}`}>Start free trial</Link>
+            <Link href="/calculator" className={`${styles.btn} ${styles.btnOnDark} ${styles.btnLg}`}>Estimate your scope loss</Link>
+          </div>
         </div>
       </section>
 

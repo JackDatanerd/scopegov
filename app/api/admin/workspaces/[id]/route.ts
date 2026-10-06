@@ -9,7 +9,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 // that customer's Paystack subscription) and the customer code — and the whole workspaces row. The old
 // `delete workspace.jwt_secret` was dead code (that column no longer exists), which is exactly how a new secret
 // column would have leaked. Explicit allowlists now; a column added later is not exposed until someone chooses to.
-const WORKSPACE_COLS = 'id, name, agency_name, slug, plan_tier, trial_ends_at, onboarding_completed_at, first_sow_signed_at, created_at, deleted_at, suspended_by_admin, currency, timezone, industry'
+const WORKSPACE_COLS = 'id, name, agency_name, slug, plan_tier, lapsed_at, trial_ends_at, onboarding_completed_at, first_sow_signed_at, created_at, deleted_at, suspended_by_admin, currency, timezone, industry'
 const BILLING_COLS = 'plan_interval, cancels_at_period_end, current_period_end, payment_method_last4, payment_method_type, grace_period_started_at, paystack_subscription_code, needs_paystack_cancel, cancelled_by_workspace_delete_at'
 
 export async function GET(request: NextRequest, { params }: { params: { id: string } }) {

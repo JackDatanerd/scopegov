@@ -329,6 +329,9 @@
 .finalCtaInner { position: relative; z-index: 2; max-width: 600px; margin: 0 auto; }
 .finalCta .h2 { color: #fff; font-size: 42px; }
 .finalCtaP { color: rgba(239, 239, 233, .65); font-size: 15.5px; margin: 18px 0 36px; }
+.finalCtaButtons { display: flex; justify-content: center; align-items: center; gap: 14px; flex-wrap: wrap; }
+.btnOnDark { background: transparent; color: #fff; border-color: rgba(255, 255, 255, .4); }
+.btnOnDark:hover { border-color: #fff; background: rgba(255, 255, 255, .08); }
 .finalCta .btnPrimary { background: #fff; color: var(--green-dark); }
 .finalCta .btnPrimary:hover { background: #EFEFE9; box-shadow: 0 8px 24px -6px rgba(0, 0, 0, .4); }
 

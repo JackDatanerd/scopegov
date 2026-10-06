@@ -5,6 +5,7 @@ const state: { updates: any[]; invoice: any } = { updates: [], invoice: null }
 vi.mock('@/lib/auth/session', () => ({
   getSession: vi.fn(async () => ({ id: 'u1', email: 'a@b.c', name: 'A', workspaceId: 'w1' })),
   hasPermission: vi.fn(() => true),
+  hasSettlementPermission: vi.fn(() => true),
 }))
 vi.mock('@/lib/utils/audit', () => ({ logAudit: vi.fn(async () => {}) }))
 vi.mock('@/lib/utils/project-access', () => ({ canReadProject: vi.fn(async () => true) }))

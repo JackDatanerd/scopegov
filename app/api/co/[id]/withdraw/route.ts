@@ -3,7 +3,7 @@ import { resolveReplyTo } from '@/lib/email/reply-to'
 import { createServiceClient } from '@/lib/supabase/server'
 import { lookupMissResponse } from '@/lib/documents/co-lookup'
 import { NextResponse, type NextRequest } from 'next/server'
-import { getSession, hasPermission } from '@/lib/auth/session'
+import { getSession, hasSettlementPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { approvalSendInFlight, SEND_IN_FLIGHT_MESSAGE } from '@/lib/approvals/engine'
 import { cancelCoApprovals } from '@/lib/documents/co-approval-cancel'
@@ -25,7 +25,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // (killing the client's portal link and cancelling an in-flight
     // approval chain) with none of the permissions every sibling action
     // requires.
-    if (!hasPermission(session, 'SEND_CHANGE_ORDERS'))
+    if (!hasSettlementPermission(session, 'SEND_CHANGE_ORDERS'))
       return NextResponse.json({ error: 'Missing permission: SEND_CHANGE_ORDERS' }, { status: 403 })
 
     const body = await request.json().catch(() => ({}))

@@ -9,6 +9,8 @@ import AdminHistory, { type HistoryRow } from '../../AdminHistory'
 interface Detail {
   workspace: {
     id: string; name: string; agency_name: string; slug: string; plan_tier: string
+    /** Set while the workspace is read-only (no subscription, not comped) — migration 150. */
+    lapsed_at?: string | null
     trial_ends_at: string | null; onboarding_completed_at: string | null
     first_sow_signed_at: string | null; created_at: string; deleted_at: string | null
     // suspended_by_admin (migration 091) distinguishes an admin suspension
@@ -149,6 +151,7 @@ export default function AdminWorkspaceDetailPage() {
         <div className={styles.statCard}>
           <div className={styles.statLabel}>Plan</div>
           <div className={styles.statValue} style={{ fontSize: 18, textTransform: 'capitalize' }}>{workspace.plan_tier}</div>
+          {workspace.lapsed_at && <div className={styles.muted} style={{ fontSize: 12 }}>Lapsed — read-only since {new Date(workspace.lapsed_at).toLocaleDateString()}</div>}
         </div>
         <div className={styles.statCard}>
           <div className={styles.statLabel}>Trial ends</div>
@@ -286,7 +289,7 @@ export default function AdminWorkspaceDetailPage() {
             <span style={{ minWidth: 140 }}>Change plan to</span>
             <select className={styles.select} value={newPlan} onChange={e => setNewPlan(e.target.value)}>
               <option value="">Select…</option>
-              {PLANS.filter(p => p !== workspace.plan_tier).map(p => <option key={p} value={p}>{p}</option>)}
+              {PLANS.filter(p => p !== workspace.plan_tier || !!workspace.lapsed_at).map(p => <option key={p} value={p}>{p === workspace.plan_tier ? `${p} (comp — unlock read-only)` : p}</option>)}
             </select>
             <input
               className={styles.input} placeholder="Reason (recorded in admin audit log)"

@@ -8,7 +8,7 @@ import { readFileSync } from 'fs'
 import { join } from 'path'
 import {
   computeRoi, normalizeInputs, ownRecoveryRate, PLAN_FEATURES, BLANK_INPUTS,
-  DEFAULT_RECOVERY_RATE, MIN_FLAGS_FOR_OWN_RATE, type RoiInputs,
+  DEFAULT_RECOVERY_RATE, MIN_FLAGS_FOR_OWN_RATE, extrapolateToYear, extrapolationFields, MIN_DAYS_TO_EXTRAPOLATE, ROUGH_EXTRAPOLATION_DAYS, type RoiInputs,
 } from '@/lib/billing/roi-model'
 import { LIST_PRICES_USD } from '@/lib/billing/list-prices'
 import { PLAN_LIMITS } from '@/lib/utils/format'
@@ -22,10 +22,21 @@ const base = (over: Partial<RoiInputs> = {}): Partial<RoiInputs> => ({
 })
 
 describe('model — the number', () => {
-  it('starts at a 25% recovery rate', () => {
-    expect(DEFAULT_RECOVERY_RATE).toBe(0.25)
-    expect(BLANK_INPUTS.recoveryRate).toBe(0.25)
-    expect(normalizeInputs({}).recoveryRate).toBe(0.25)
+  it('starts at a 68% recovery rate — a placeholder the user adjusts, still clamped to 0–100%', () => {
+    expect(DEFAULT_RECOVERY_RATE).toBe(0.68)
+    expect(BLANK_INPUTS.recoveryRate).toBe(0.68)
+    expect(normalizeInputs({}).recoveryRate).toBe(0.68)
+    expect(normalizeInputs({ recoveryRate: 0.1 }).recoveryRate).toBe(0.1)   // adjustable
+    expect(normalizeInputs({ recoveryRate: 2 }).recoveryRate).toBe(1)
+  })
+
+  it('billing defaults to ANNUAL; monthly only when asked for', () => {
+    expect(BLANK_INPUTS.interval).toBe('annual')
+    expect(normalizeInputs({}).interval).toBe('annual')
+    expect(normalizeInputs({ interval: 'monthly' }).interval).toBe('monthly')
+    expect(normalizeInputs({ interval: 'whatever' as any }).interval).toBe('annual')
+    const solo = computeRoi({ ...base(), interval: undefined }).plans[0]
+    expect(solo.annualCostUsd).toBe(390)       // the annual price, not 12 x monthly
   })
 
   it('estimate path: projects × value × creep%, then × recovery rate', () => {
@@ -151,6 +162,68 @@ describe('model — hostile / sloppy input never yields NaN, Infinity or a negat
   it('null / undefined input is the blank calculator', () => {
     expect(computeRoi(null).inputs).toEqual(normalizeInputs({}))
     expect(computeRoi(undefined).recommended!.plan).toBe('solo')
+  })
+})
+
+describe('extrapolateToYear', () => {
+  it('scales a young workspace\'s totals across 365 days', () => {
+    const e = extrapolateToYear({ windowDays: 73, projectsStarted: 4, grantedFreeValue: 2_000 })!
+    expect(e.factor).toBeCloseTo(5)
+    expect(e.projectsPerYear).toBe(20)
+    expect(e.grantedFreeValue).toBe(10_000)
+    expect(e.rough).toBe(false)
+  })
+
+  it('refuses a full year or more (nothing to project) and a window too short to mean anything', () => {
+    expect(extrapolateToYear({ windowDays: 365, projectsStarted: 4, grantedFreeValue: 1 })).toBeNull()
+    expect(extrapolateToYear({ windowDays: 900, projectsStarted: 4, grantedFreeValue: 1 })).toBeNull()
+    expect(extrapolateToYear({ windowDays: MIN_DAYS_TO_EXTRAPOLATE - 1, projectsStarted: 4, grantedFreeValue: 1 })).toBeNull()
+    expect(extrapolateToYear({ windowDays: 0, projectsStarted: 4, grantedFreeValue: 1 })).toBeNull()
+    expect(extrapolateToYear({ windowDays: NaN, projectsStarted: 4, grantedFreeValue: 1 })).toBeNull()
+  })
+
+  it('a short window is offered but flagged rough', () => {
+    expect(extrapolateToYear({ windowDays: ROUGH_EXTRAPOLATION_DAYS - 1, projectsStarted: 1, grantedFreeValue: 0 })!.rough).toBe(true)
+    expect(extrapolateToYear({ windowDays: ROUGH_EXTRAPOLATION_DAYS, projectsStarted: 1, grantedFreeValue: 0 })!.rough).toBe(false)
+  })
+
+  it('never invents data: zero projects stays null, zero granted-free stays zero, and projects never drop below what was observed', () => {
+    const none = extrapolateToYear({ windowDays: 30, projectsStarted: 0, grantedFreeValue: 0 })!
+    expect(none.projectsPerYear).toBeNull()
+    expect(none.grantedFreeValue).toBe(0)
+    expect(extrapolateToYear({ windowDays: 364, projectsStarted: 9, grantedFreeValue: 0 })!.projectsPerYear).toBeGreaterThanOrEqual(9)
+  })
+
+  it('garbage input yields null or finite numbers, never NaN', () => {
+    const e = extrapolateToYear({ windowDays: 30, projectsStarted: 'x' as any, grantedFreeValue: undefined as any })!
+    expect(e.projectsPerYear).toBeNull()
+    expect(Number.isFinite(e.grantedFreeValue)).toBe(true)
+  })
+})
+
+describe('extrapolationFields (the toggle)', () => {
+  const m = { windowDays: 73, projectsStarted: 4, grantedFreeValue: 2_000 }
+  const recorded = { projectsPerYear: 4, grantedFreeValue: 2_000 }
+
+  it('on projects to a year; off restores exactly the recorded figures (a clean round trip)', () => {
+    expect(extrapolationFields(m, recorded, true)).toEqual({ projectsPerYear: 20, grantedFreeValue: 10_000 })
+    expect(extrapolationFields(m, recorded, false)).toEqual(recorded)
+  })
+
+  it('cannot be switched on when there is nothing to project', () => {
+    expect(extrapolationFields({ ...m, windowDays: 365 }, recorded, true)).toBeNull()
+    expect(extrapolationFields({ ...m, windowDays: 3 }, recorded, true)).toBeNull()
+  })
+
+  it('with no projects recorded the project count is left as it was', () => {
+    expect(extrapolationFields({ ...m, projectsStarted: 0 }, { projectsPerYear: 12, grantedFreeValue: 2_000 }, true)!.projectsPerYear).toBe(12)
+  })
+
+  it('feeds the model: extrapolated granted-free value becomes the leakage when it beats the estimate', () => {
+    const f = extrapolationFields({ windowDays: 30, projectsStarted: 2, grantedFreeValue: 3_000 }, { projectsPerYear: 2, grantedFreeValue: 3_000 }, true)!
+    const r = computeRoi({ ...base(), projectsPerYear: f.projectsPerYear, grantedFreeValue: f.grantedFreeValue })
+    expect(r.leakedFrom).toBe('measured')
+    expect(r.leaked).toBe(Math.round(3_000 * (365 / 30)))
   })
 })
 

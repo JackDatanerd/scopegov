@@ -70,11 +70,14 @@ export async function POST(request: NextRequest) {
     // indefinitely, with nobody able (or expected) to act on a workspace nobody can open.
     const stale = await fetchAll<any>('approval-stall pending select', (from, to) =>
       (service as any).from('approval_requests')
-        .select('id, workspace_id, project_id, document_type, context, reminder_count, escalated_at, workspaces!inner(deleted_at)')
+        .select('id, workspace_id, project_id, document_type, context, reminder_count, escalated_at, workspaces!inner(deleted_at, lapsed_at)')
         .eq('status', 'pending')
         .is('sending_started_at', null)
         .lt('updated_at', cutoff)
         .is('workspaces.deleted_at', null)
+        // A read-only (lapsed) workspace cannot approve anything (APPROVE_DOCUMENTS is withheld), so nagging its approvers is noise;
+        // reminders resume the moment the workspace has a plan again.
+        .is('workspaces.lapsed_at', null)
         .order('id')
         .range(from, to))
 
@@ -182,12 +185,15 @@ export async function POST(request: NextRequest) {
   await run.step('escalate stale send failures', async () => {
     const staleSendFailures = await fetchAll<any>('approval-stall send-failure select', (from, to) =>
       (service as any).from('approval_requests')
-        .select('id, workspace_id, project_id, requested_by, document_type, send_failed_reason, updated_at, send_failure_alerts, workspaces!inner(deleted_at)')
+        .select('id, workspace_id, project_id, requested_by, document_type, send_failed_reason, updated_at, send_failure_alerts, workspaces!inner(deleted_at, lapsed_at)')
         .eq('status', 'approved')
         .not('send_failed_at', 'is', null)
         .lt('send_failure_alerts', MAX_SEND_FAILURE_ALERTS)
         .lt('updated_at', cutoff)
         .is('workspaces.deleted_at', null)
+        // A read-only (lapsed) workspace cannot approve anything (APPROVE_DOCUMENTS is withheld), so nagging its approvers is noise;
+        // reminders resume the moment the workspace has a plan again.
+        .is('workspaces.lapsed_at', null)
         .order('id')
         .range(from, to))
 

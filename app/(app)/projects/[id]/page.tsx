@@ -3,7 +3,7 @@ import { loadProjectActivity } from '@/lib/utils/project-activity'
 import { canReadProject } from '@/lib/utils/project-access'
 import { amendmentImpact, baseContractValue } from '@/lib/utils/contract-value'
 import { computeContractPosition } from '@/lib/reports/contract-position'
-import { getSessionStrict, hasPermission } from '@/lib/auth/session'
+import { getSessionStrict, hasPermission, hasSettlementPermission } from '@/lib/auth/session'
 import { createServiceClient } from '@/lib/supabase/server'
 import { redirect, notFound } from 'next/navigation'
 import ProjectDetail from '@/components/projects/ProjectDetail'
@@ -396,8 +396,10 @@ export default async function ProjectPage({ params, searchParams }: Props) {
       permissions={{
         editSow: hasPermission(session, 'EDIT_SOW'),
         sendSow: hasPermission(session, 'SEND_SOW'),
+        settleSow: hasSettlementPermission(session, 'SEND_SOW'),
         createCo: hasPermission(session, 'CREATE_CHANGE_ORDERS'),
         sendCo: hasPermission(session, 'SEND_CHANGE_ORDERS'),
+        settleCo: hasSettlementPermission(session, 'SEND_CHANGE_ORDERS'),
         approveFlags: hasPermission(session, 'APPROVE_FLAGS'),
         grantExceptions: hasPermission(session, 'GRANT_EXCEPTIONS'),
         markComplete: hasPermission(session, 'MARK_PROJECT_COMPLETE'),
@@ -409,6 +411,7 @@ export default async function ProjectPage({ params, searchParams }: Props) {
         viewFinancials: hasPermission(session, 'VIEW_FINANCIALS'),
         deleteProject: hasPermission(session, 'DELETE_PROJECTS'),
         sendInvoices: hasPermission(session, 'SEND_INVOICES'),
+        settleInvoices: hasSettlementPermission(session, 'SEND_INVOICES'),
         // FIX (deep audit, section 7): DELETE /api/projects/[id]/messages/
         // [messageId] already lets an admin (MANAGE_WORKSPACE_SETTINGS)
         // delete anyone's message — moderation of a stray/inappropriate

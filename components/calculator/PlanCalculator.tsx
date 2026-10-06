@@ -3,7 +3,7 @@ import { useMemo, useState } from 'react'
 import Link from 'next/link'
 import styles from '@/styles/calculator.module.css'
 import { formatCurrency, PLAN_LABELS } from '@/lib/utils/format'
-import { computeRoi, BLANK_INPUTS, DEFAULT_RECOVERY_RATE, type RoiInputs } from '@/lib/billing/roi-model'
+import { computeRoi, BLANK_INPUTS, DEFAULT_RECOVERY_RATE, extrapolateToYear, extrapolationFields, MIN_DAYS_TO_EXTRAPOLATE, type RoiInputs } from '@/lib/billing/roi-model'
 import type { MeasuredNumbers } from '@/lib/billing/roi-inputs'
 
 interface Props {
@@ -32,6 +32,23 @@ export default function PlanCalculator({ mode, measured, defaults, canManageBill
   const [interval, setIntervalVal] = useState<'monthly' | 'annual'>(start.interval)
   const [currency, setCurrency] = useState(start.currency)
   const [fx, setFx] = useState('')
+  // Extrapolation (app mode, workspace younger than a year): scales the measured project count and granted-free value up to
+  // 12 months. Toggling back restores the measured figures. Edits the user makes by hand afterwards are theirs.
+  const [extrapolated, setExtrapolated] = useState(false)
+  const projection = measured ? extrapolateToYear(measured) : null
+  const young = !!measured && measured.windowDays < 365
+  const toggleExtrapolation = () => {
+    if (!measured) return
+    const recorded = {
+      projectsPerYear: defaults.projectsPerYear ?? BLANK_INPUTS.projectsPerYear,
+      grantedFreeValue: Math.round(measured.grantedFreeValue),
+    }
+    const f = extrapolationFields(measured, recorded, !extrapolated)
+    if (!f) return
+    setProjectsPerYear(String(f.projectsPerYear))
+    setGrantedFree(String(f.grantedFreeValue))
+    setExtrapolated(!extrapolated)
+  }
 
   const result = useMemo(() => computeRoi({
     projectsPerYear: toNum(projectsPerYear), avgProjectValue: toNum(avgProjectValue), creepPct: toNum(creepPct),
@@ -70,7 +87,21 @@ export default function PlanCalculator({ mode, measured, defaults, canManageBill
               </ul>
               {measured.mixedCurrencies && <div className={styles.warn}>Your projects use more than one currency; these figures cover {measured.currency} only.</div>}
               {measured.truncated && <div className={styles.warn}>Your workspace has more records than one summary reads, so these figures may be slightly low.</div>}
-              {measured.windowDays < 90 && <div className={styles.warn}>Your workspace is only {measured.windowDays} days old. These figures are what you have actually done so far, not a yearly projection — adjust them to what a normal year looks like.</div>}
+              {young && !extrapolated && <div className={styles.warn}>Your workspace is only {measured.windowDays} days old, so these are the figures you have actually recorded so far, not a year. {projection ? 'Use the button below to project them across 12 months, or adjust them yourself.' : `Projecting a year needs at least ${MIN_DAYS_TO_EXTRAPOLATE} days of records — until then, adjust the figures to what a normal year looks like.`}</div>}
+              {young && (
+                <div style={{ marginTop: 10 }}>
+                  <button type="button" className={styles.link} onClick={toggleExtrapolation} disabled={!projection && !extrapolated}
+                    style={!projection && !extrapolated ? { opacity: .5, cursor: 'not-allowed' } : undefined}>
+                    {extrapolated ? 'Use my actual figures instead' : 'Extrapolate to 12 months'}
+                  </button>
+                </div>
+              )}
+              {extrapolated && projection && (
+                <div className={styles.warn}>
+                  Projected: your last {measured.windowDays} days scaled by &times;{projection.factor.toFixed(1)} to fill a year, assuming your recent pace continues.
+                  {projection.rough && ' That window is short, so treat this as a rough guide.'} Projects per year and work granted free are scaled; average project value and your recovery rate are not.
+                </div>
+              )}
             </div>
           )}
 
@@ -253,6 +284,7 @@ export default function PlanCalculator({ mode, measured, defaults, canManageBill
               <li>This is an estimate based on the numbers you entered. It is not a forecast or a guarantee of any result.</li>
               <li>Granted-free work is treated as part of scope creep, so the two are never added together.</li>
               <li>The recovery rate is yours to set; {Math.round(DEFAULT_RECOVERY_RATE * 100)}% is only a starting point.</li>
+              {extrapolated && <li>Projects per year and work granted free are projected from a shorter history by repeating your recent pace; they are not recorded figures.</li>}
               <li>Prices are ScopeGov list prices in USD; taxes and payment fees are not included.</li>
               {mode === 'app' && <li>Measured figures cover the last 12 months, or since your workspace started if that is shorter; nothing is extrapolated.</li>}
             </ul>

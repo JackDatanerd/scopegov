@@ -19,6 +19,7 @@ export default function MarketingFooter() {
             <a href="#product">SOW generation</a>
             <a href="#guardian">Guardian</a>
             <a href="#pricing">Pricing</a>
+            <Link href="/calculator">Scope-loss calculator</Link>
             <a href="#portfolio">Portfolio</a>
           </div>
           <div className={styles.footerCol}>

@@ -22,7 +22,8 @@ describe('PlanCalculator render', () => {
     expect(out).toContain('What is scope creep costing you?')
     expect(out).toContain('href="/signup?plan=solo"')
     expect(out).not.toContain('From your workspace')
-    expect(out).toContain('25')                                   // default recovery rate shown
+    expect(out).toContain('value="68"')                           // default recovery rate shown
+    expect(out).toMatch(/aria-pressed="true"[^>]*>Annual/)       // annual billing is the default
     expect(out).toContain('not a forecast or a guarantee')
   })
 
@@ -56,5 +57,22 @@ describe('PlanCalculator render', () => {
     const out = html({ mode: 'app', measured: { ...measured, windowDays: 12, truncated: true }, defaults: {}, canManageBilling: true })
     expect(out).toContain('only 12 days old')
     expect(out).toContain('may be slightly low')
+  })
+
+  it('a workspace under a year old gets an Extrapolate button; a full year does not', () => {
+    const young = html({ mode: 'app', measured: { ...measured, windowDays: 60 }, defaults: {}, canManageBilling: true })
+    expect(young).toContain('Extrapolate to 12 months')
+    expect(young).not.toMatch(/disabled=""[^>]*>Extrapolate to 12 months/)
+    const full = html({ mode: 'app', measured: { ...measured, windowDays: 365 }, defaults: {}, canManageBilling: true })
+    expect(full).not.toContain('Extrapolate to 12 months')
+    const publicMode = html({ mode: 'public', measured: null, defaults: {} })
+    expect(publicMode).not.toContain('Extrapolate to 12 months')
+  })
+
+  it('too little history disables the button and says why (no projection from a couple of days)', () => {
+    const out = html({ mode: 'app', measured: { ...measured, windowDays: 3 }, defaults: {}, canManageBilling: true })
+    expect(out).toContain('Extrapolate to 12 months')
+    expect(out).toMatch(/disabled=""[^>]*>Extrapolate to 12 months/)
+    expect(out).toContain('needs at least 7 days of records')
   })
 })

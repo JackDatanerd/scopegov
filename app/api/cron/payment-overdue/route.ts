@@ -298,7 +298,7 @@ export async function POST(request: NextRequest) {
     const graceCutoff    = new Date(now.getTime() - GRACE_DAYS * 86400000).toISOString()
     const graceReminderDue = await fetchAll<any>('grace reminder select', (from, to) =>
       (service as any).from('billing')
-        .select(`workspace_id, grace_period_started_at, ${WS_EMBED}`)
+        .select(`workspace_id, grace_period_started_at, paystack_subscription_code, cancels_at_period_end, current_period_end, ${WS_EMBED}`)
         .not('grace_period_started_at', 'is', null)
         .lte('grace_period_started_at', reminderPoint)
         .gte('grace_period_started_at', graceCutoff)
@@ -309,6 +309,11 @@ export async function POST(request: NextRequest) {
       try {
         const ws = b.workspaces
         if (!ws || ws.deleted_at) continue
+        // FIX (trial/subscription-end re-pass): "update your card or you will be downgraded" is wrong for a subscription that is
+        // cancelled with its period already over — step 5 ends that one in this very run, and the customer would get the warning
+        // and the ending notice together. (Billing rows left with a stuck grace clock by the pre-B1 sweep are cleared by
+        // migration 151.)
+        if (b.cancels_at_period_end && b.current_period_end && new Date(b.current_period_end).getTime() <= now.getTime()) continue
         // An error here used to be ignored (`data` only), which reads as "not sent yet" and re-sent the
         // email on every run for as long as the lookup kept failing.
         const { data: alreadySent, error: sentErr } = await (service as any)

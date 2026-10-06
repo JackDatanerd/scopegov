@@ -132,6 +132,13 @@ export const LAPSED_KEEP_PERMISSIONS: ReadonlySet<string> = new Set([
   'VIEW_AUDIT_LOG', 'VIEW_PORTFOLIO', 'MANAGE_BILLING', 'MANAGE_WORKSPACE_SETTINGS',
 ])
 
+/**
+ * The send-permissions a lapsed workspace may still use to settle documents that already exist (see
+ * hasSettlementPermission in lib/auth/session.ts). Creating or sending anything new is NOT covered: those routes keep
+ * calling hasPermission.
+ */
+export const SETTLEMENT_PERMISSIONS: ReadonlySet<string> = new Set(['SEND_SOW', 'SEND_CHANGE_ORDERS', 'SEND_INVOICES'])
+
 export function isWorkspaceLapsed(
   planTier: Plan | null | undefined,
   trialEndsAt: string | null | undefined,

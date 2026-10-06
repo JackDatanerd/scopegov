@@ -23,7 +23,7 @@ interface Props {
   milestones: any[]
   invoices: any[]
   reconciliation: any[]
-  permissions: { viewFinancials: boolean; sendInvoices: boolean }
+  permissions: { viewFinancials: boolean; sendInvoices: boolean; settleInvoices?: boolean }
   currency: string
   router: any
   defaultPaymentInstructions?: string
@@ -414,7 +414,7 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
                         {formatCurrencyExact(inv.amount_paid, inv.currency || currency)} paid · {formatCurrencyExact(balance, inv.currency || currency)} due
                       </div>
                     )}
-                    {inv.amount_paid > 0 && permissions.sendInvoices && (
+                    {inv.amount_paid > 0 && permissions.settleInvoices && (
                       <button
                         style={{ fontSize: 11, marginTop: 2, background: 'none', border: 'none', padding: 0, color: 'var(--text-3)', textDecoration: 'underline', cursor: 'pointer' }}
                         onClick={() => setPaymentsOpenId(paymentsOpenId === inv.id ? null : inv.id)}>
@@ -469,7 +469,7 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
                   )}
                   {['sent', 'partially_paid', 'overdue'].includes(inv.status) && (
                     <>
-                      {permissions.sendInvoices && (
+                      {permissions.settleInvoices && (
                         <button className="btn btn-ghost btn-sm" onClick={() => setPayingId(inv.id)}>
                           <i className="ti ti-cash" style={{ fontSize: 11 }} /> Record payment
                         </button>
@@ -499,7 +499,7 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
                           <i className="ti ti-link" style={{ fontSize: 11 }} /> Copy link
                         </button>
                       )}
-                      {permissions.sendInvoices && (
+                      {permissions.settleInvoices && (
                         <button className="btn btn-ghost btn-sm" style={{ color: 'var(--red)' }} onClick={() => setVoidingId(inv.id)}>
                           <i className="ti ti-ban" style={{ fontSize: 11 }} /> Void
                         </button>
@@ -509,7 +509,7 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
                   {/* A client can dispute an invoice in any live or paid state, and the usual path is
                       dispute -> payment recorded -> paid. The button used to live only in the
                       sent/partially_paid/overdue block, so a paid invoice's dispute could never be closed. */}
-                  {inv.status !== 'draft' && inv.status !== 'void' && permissions.sendInvoices && inv.disputed_at && !inv.dispute_resolved_at && (
+                  {inv.status !== 'draft' && inv.status !== 'void' && permissions.settleInvoices && inv.disputed_at && !inv.dispute_resolved_at && (
                     <button className="btn btn-ghost btn-sm" disabled={busyId === inv.id} onClick={() => resolveDispute(inv.id)}>
                       {busyId === inv.id ? <span className="spin spin-dark" /> : <><i className="ti ti-circle-check" style={{ fontSize: 11 }} /> Resolve dispute</>}
                     </button>

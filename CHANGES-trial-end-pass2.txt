@@ -1,0 +1,34 @@
+Trial / subscription end — independent pass 2 (Oct 7). One new migration: 151 (run it).
+
+B2  A read-only (lapsed) workspace could not wind itself down. The lapse withheld SEND_SOW / SEND_CHANGE_ORDERS / SEND_INVOICES,
+    which are also what withdraw / close / accept-a-counter / void / record-a-payment / resolve-a-dispute need — so a client's
+    counter-offer could not be answered, a received payment could not be recorded, and workspace delete (which refuses until
+    SOWs are withdrawn, COs closed and invoices voided) was a dead end.
+    FIX: hasSettlementPermission() (lib/auth/session.ts). The session now remembers what the lapse withheld (lapsedWithheld) and ONLY
+    those three permissions, for settlement actions on documents that already exist, are honoured. Routes: sow withdraw; co withdraw,
+    close, accept-counter; invoices void, dispute-resolve, payments (record / edit / delete). UI: the matching buttons now follow
+    permissions.settleSow / settleCo / settleInvoices. Creating or sending anything new (send, draft, remind, link, revise,
+    escalate) still uses hasPermission and stays blocked. A non-lapsed workspace behaves exactly as before.
+B3  Staff could not unlock a lapsed Solo workspace ("Already on solo"; the admin dropdown also hid the current plan).
+    FIX: change-plan allows the same plan when the workspace is lapsed (clears lapsed_at; audit metadata unlockedLapsed), the admin
+    page shows "Lapsed — read-only since <date>" and offers "<plan> (comp — unlock read-only)".
+Lows
+    - change-plan refuses the TRIAL plan while a live Paystack subscription exists (the trial-expiry cron skips such a workspace
+      forever, so it would turn read-only while still paying).
+    - payment-overdue step 3 no longer sends the "payment failed, N days left" reminder for a cancelled subscription whose period is
+      already over (step 5 ends it in the same run).
+    - approval-stall skips lapsed workspaces (nobody can approve there; reminders resume when a plan returns).
+MIGRATION 151 clears grace_period_started_at on billing rows with no subscription (heals rows the pre-B1 sweep left stuck).
+
+Calculator
+    - default recovery rate is now 68% (still clamped 0-100% and editable; copy still calls it a starting point, not a benchmark).
+    - billing defaults to ANNUAL (monthly on request).
+    - "Extrapolate to 12 months" (signed-in, workspace < 1 year old): scales projects started and work granted free by 365/days of
+      records; toggles back to the recorded figures. Needs >= 7 days of records; under 30 days it is flagged "rough". Average project
+      value and the recovery rate are not scaled. Pure + tested (extrapolateToYear / extrapolationFields).
+    - homepage: "Estimate your scope loss" in the hero, the closing call to action, the nav and the footer.
+
+TESTS: tests/trial-subscription-end-pass2.test.ts (15, incl. real void/send/change-plan/cron handlers), calculator tests extended
+  (42 + 7). Four mutations (void back to hasPermission, settlement widened to all withheld permissions, no step-3 skip, admin cannot
+  unlock) are each caught. Three older test files' session mocks gained hasSettlementPermission. Full suite 311 files / 3094 tests
+  pass; tsc clean; next build succeeds. Not run against a live Supabase/Paystack.

@@ -5,7 +5,7 @@ import type { SessionUser, Permission } from '@/lib/supabase/types'
 import { permissionsRequireMfa } from '@/lib/auth/mfa-policy'
 import { registerSessionSeen } from '@/lib/auth/session-seen'
 import { headers as nextHeaders } from 'next/headers'
-import { effectivePlanTier, isWorkspaceLapsed, LAPSED_KEEP_PERMISSIONS } from '@/lib/billing/plans'
+import { effectivePlanTier, isWorkspaceLapsed, LAPSED_KEEP_PERMISSIONS, SETTLEMENT_PERMISSIONS } from '@/lib/billing/plans'
 import { isAuthRetryableFetchError } from '@supabase/supabase-js'
 
 // FIX (deep audit, Workspace lifecycle + Onboarding re-pass — flagship
@@ -193,6 +193,9 @@ async function loadSession(strict: boolean): Promise<SessionUser | null> {
       // A lapsed workspace (no subscription, not comped) is read-only: every permission that writes is dropped
       // here, once, so every route and UI that already gates on hasPermission follows without being edited.
       permissions:          Object.keys(perms || {}).filter(k => perms[k] === true && (!lapsed || LAPSED_KEEP_PERMISSIONS.has(k))) as Permission[],
+      // What the lapse took away, kept ONLY so settlement actions on documents that already exist (hasSettlementPermission)
+      // can still be authorised. Nothing else reads this; hasPermission never sees it.
+      lapsedWithheld:       (lapsed ? Object.keys(perms || {}).filter(k => perms[k] === true && !LAPSED_KEEP_PERMISSIONS.has(k)) : []) as Permission[],
       // C2: fall back to Supabase auth email_confirmed_at so existing sessions
       // aren't blocked by a stale null in public.users
       emailVerifiedAt:      u?.email_verified_at || user.email_confirmed_at || null,
@@ -337,6 +340,19 @@ export async function resolveActiveWorkspaceId(service: any, userId: string): Pr
 export async function resolveActorName(service: any, userId: string, fallback: string): Promise<string> {
   const { data } = await service.from('users').select('name').eq('id', userId).maybeSingle()
   return data?.name || fallback
+}
+
+/**
+ * Settlement actions — winding down something that ALREADY exists: withdraw a SOW or change order, close one, accept a
+ * client's counter-offer, void an invoice, record/edit/delete a payment, resolve a dispute. A read-only (lapsed)
+ * workspace must still be able to do these: the client can answer through the portal at any time, money can arrive,
+ * and the workspace cannot even be deleted while a SOW is awaiting signature, a change order is open or an invoice is
+ * unpaid (api/workspace/delete refuses until they are resolved). Anything that CREATES or SENDS new work keeps using
+ * hasPermission and stays blocked. A workspace that is not lapsed behaves exactly as before.
+ */
+export function hasSettlementPermission(session: SessionUser, permission: Permission): boolean {
+  if (hasPermission(session, permission)) return true
+  return !!session.lapsed && SETTLEMENT_PERMISSIONS.has(permission) && (session.lapsedWithheld || []).includes(permission)
 }
 
 export function hasPermission(session: SessionUser, permission: Permission): boolean {

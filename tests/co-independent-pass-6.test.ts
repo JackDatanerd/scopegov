@@ -87,6 +87,7 @@ vi.mock('@/lib/supabase/server', () => ({ createServiceClient: () => ({ from: (t
 vi.mock('@/lib/auth/session', () => ({
   getSession: async () => ({ id: 'u1', email: 'a@x.co', name: 'Ann', workspaceId: 'w1', emailVerifiedAt: 'yes' }),
   hasPermission: () => true,
+  hasSettlementPermission: () => true,
 }))
 vi.mock('@/lib/utils/audit', () => ({ logAudit: async (_s: any, e: any) => { state.calls.push('audit:' + e.eventType); return true } }))
 vi.mock('@/lib/utils/project-access', () => ({ canReadProject: async () => true }))
