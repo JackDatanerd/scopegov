@@ -1,0 +1,12 @@
+Settings independent pass 17 (audit at 35a1956, fixed on fresh clone edeba02)
+
+B1  Workspace name, agency name (Settings -> Workspace) and the personal full name (Settings -> Account) were run through
+    sanitizeDisplayName, which cuts at 120 characters. A longer value was stored shortened behind a 200 "Changes saved." /
+    "Name updated."; the inputs had no maxLength (onboarding's does), so the field kept showing text that was not saved and
+    the agency name printed on every SOW / change order / invoice could be cut mid-word with no warning.
+    - lib/utils/sanitize.ts: DISPLAY_NAME_MAX and displayNameTooLong() (length of the cleaned name, after whitespace collapse).
+    - app/api/workspace/settings/route.ts: name / agencyName over 120 -> 400 "... must be 120 characters or fewer".
+    - app/api/workspace/profile/route.ts: same for the full name.
+    - components/settings/SettingsClient.tsx: maxLength={120} on the three inputs.
+
+Tests: tests/settings-independent-pass-17.test.ts. tsc clean. No migration.

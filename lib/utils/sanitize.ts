@@ -238,3 +238,15 @@ export function sanitizeDisplayName(text: string | null | undefined, maxLength =
     .replace(/[\uD800-\uDBFF]$/, '')   // don't leave half an emoji at the cut
     .trimEnd()
 }
+
+/** Longest display name (person / workspace / agency) sanitizeDisplayName keeps. */
+export const DISPLAY_NAME_MAX = 120
+
+/**
+ * True when the name, once cleaned (whitespace collapsed, control characters removed), is longer than
+ * DISPLAY_NAME_MAX — i.e. sanitizeDisplayName would silently cut it. Routes use this to answer 400 instead of
+ * storing a shortened name behind a success message.
+ */
+export function displayNameTooLong(text: string | null | undefined): boolean {
+  return sanitizeDisplayName(text, Infinity).length > DISPLAY_NAME_MAX
+}

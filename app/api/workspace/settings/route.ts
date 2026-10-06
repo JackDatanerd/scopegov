@@ -6,7 +6,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { generateSlug } from '@/lib/utils/workspace-slug'
-import { sanitizeDisplayName } from '@/lib/utils/sanitize'
+import { sanitizeDisplayName, displayNameTooLong, DISPLAY_NAME_MAX } from '@/lib/utils/sanitize'
 import { INDUSTRIES, CURRENCIES } from '@/lib/constants/workspace-options'
 import { isValidTimeZone, formatDateInZone } from '@/lib/utils/timezone'
 import { diffFields, sameValue } from '@/lib/utils/audit-diff'
@@ -106,7 +106,10 @@ function requireString(value: unknown, label: string): string {
 function parseField(key: string, value: unknown): unknown {
   switch (key) {
     case 'name': {
-      const v = sanitizeDisplayName(requireString(value, 'Workspace name'))
+      const rawName = requireString(value, 'Workspace name')
+      // Settings pass 17: sanitizeDisplayName cuts at 120 characters; a longer name used to be stored shortened behind a 200.
+      if (displayNameTooLong(rawName)) throw new FieldError(`Workspace name must be ${DISPLAY_NAME_MAX} characters or fewer`)
+      const v = sanitizeDisplayName(rawName)
       if (!v.trim()) throw new FieldError('Workspace name is required')
       return v
     }
@@ -117,7 +120,10 @@ function parseField(key: string, value: unknown): unknown {
       return v
     }
     case 'agencyName': {
-      const v = sanitizeDisplayName(requireString(value, 'Agency name'))
+      const rawAgency = requireString(value, 'Agency name')
+      // Settings pass 17: same silent cut as the workspace name — the agency name is printed on every document.
+      if (displayNameTooLong(rawAgency)) throw new FieldError(`Agency name must be ${DISPLAY_NAME_MAX} characters or fewer`)
+      const v = sanitizeDisplayName(rawAgency)
       if (!v.trim()) throw new FieldError('Agency name is required')
       return v
     }

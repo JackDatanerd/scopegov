@@ -737,7 +737,7 @@ function AccountTab({ session, supabase, router, mfaMandatory }: any) {
           <div className="f2" style={{ marginBottom: 14 }}>
             <div className="fgrp">
               <label className="flbl">Full name</label>
-              <input className="finp" value={name} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setName(e.target.value)} />
+              <input className="finp" maxLength={120} value={name} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setName(e.target.value)} />
             </div>
             <div className="fgrp">
               <label className="flbl">Email address</label>
@@ -888,11 +888,11 @@ function WorkspaceTab({ form, setForm, permissions, onSave, saving, slugChangedA
         <div className="f2">
           <div className="fgrp">
             <label className="flbl">Workspace name <span className="fhint">(internal only — not shown to clients or in the sidebar)</span></label>
-            <input className="finp" value={form.name} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set('name', e.target.value)} />
+            <input className="finp" maxLength={120} value={form.name} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set('name', e.target.value)} />
           </div>
           <div className="fgrp">
             <label className="flbl">Agency name <span className="fhint">(on documents)</span></label>
-            <input className="finp" value={form.agencyName} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set('agencyName', e.target.value)} />
+            <input className="finp" maxLength={120} value={form.agencyName} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set('agencyName', e.target.value)} />
           </div>
         </div>
         <div className="f2">

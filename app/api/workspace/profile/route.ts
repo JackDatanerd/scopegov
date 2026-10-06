@@ -1,7 +1,7 @@
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession } from '@/lib/auth/session'
-import { sanitizeDisplayName } from '@/lib/utils/sanitize'
+import { sanitizeDisplayName, displayNameTooLong, DISPLAY_NAME_MAX } from '@/lib/utils/sanitize'
 import { logSecurityAudit } from '@/lib/auth/security-audit'
 
 export async function PATCH(request: NextRequest) {
@@ -22,6 +22,8 @@ export async function PATCH(request: NextRequest) {
     // (session.name) flows into audit_log actorName on nearly every
     // mutating route, notification titles, and email greetings across
     // the app, unescaped and unbounded until now.
+    // Settings pass 17: a name over the cap used to be stored cut short behind a success message.
+    if (displayNameTooLong(nameRaw)) return NextResponse.json({ error: `Name must be ${DISPLAY_NAME_MAX} characters or fewer` }, { status: 400 })
     const name = sanitizeDisplayName(nameRaw)
     if (!name) return NextResponse.json({ error: 'Name required' }, { status: 400 })
 
