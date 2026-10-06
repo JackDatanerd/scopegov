@@ -5,7 +5,7 @@ import type { SessionUser, Permission } from '@/lib/supabase/types'
 import { permissionsRequireMfa } from '@/lib/auth/mfa-policy'
 import { registerSessionSeen } from '@/lib/auth/session-seen'
 import { headers as nextHeaders } from 'next/headers'
-import { effectivePlanTier } from '@/lib/billing/plans'
+import { effectivePlanTier, isWorkspaceLapsed, LAPSED_KEEP_PERMISSIONS } from '@/lib/billing/plans'
 import { isAuthRetryableFetchError } from '@supabase/supabase-js'
 
 // FIX (deep audit, Workspace lifecycle + Onboarding re-pass — flagship
@@ -112,7 +112,7 @@ async function loadSession(strict: boolean): Promise<SessionUser | null> {
           effective_permissions,
           workspace_id,
           workspaces (
-            id, name, slug, agency_name, plan_tier, trial_ends_at, onboarding_completed_at,
+            id, name, slug, agency_name, plan_tier, trial_ends_at, lapsed_at, onboarding_completed_at,
             brand_colour, logo_storage_path, deleted_at
           ),
           users!workspace_members_user_id_fkey (
@@ -140,7 +140,7 @@ async function loadSession(strict: boolean): Promise<SessionUser | null> {
           effective_permissions,
           workspace_id,
           workspaces (
-            id, name, slug, agency_name, plan_tier, trial_ends_at, onboarding_completed_at,
+            id, name, slug, agency_name, plan_tier, trial_ends_at, lapsed_at, onboarding_completed_at,
             brand_colour, logo_storage_path, deleted_at
           ),
           users!workspace_members_user_id_fkey (
@@ -160,6 +160,7 @@ async function loadSession(strict: boolean): Promise<SessionUser | null> {
     const ws    = memberRow.workspaces
     const u     = memberRow.users
     const perms = memberRow.effective_permissions as Record<string, boolean>
+    const lapsed = isWorkspaceLapsed(ws?.plan_tier, ws?.trial_ends_at, ws?.lapsed_at)
 
     // New-device sign-in alert (best-effort; see lib/auth/session-seen.ts).
     try {
@@ -181,6 +182,7 @@ async function loadSession(strict: boolean): Promise<SessionUser | null> {
       // An expired trial is Solo from the moment it expires, not from the next
       // cron run — see effectivePlanTier.
       planTier:             effectivePlanTier(ws?.plan_tier, ws?.trial_ends_at),
+      lapsed,
       trialEndsAt:          ws?.trial_ends_at || null,
       onboardingCompletedAt: ws?.onboarding_completed_at || null,
       // FIX (build — RLS + permissions independent audit, HIGH): was a plain
@@ -188,7 +190,9 @@ async function loadSession(strict: boolean): Promise<SessionUser | null> {
       // permission while the ceiling and the MFA policy (`=== true`) ignored
       // it. Only a real JSON `true` grants anything now, matching every other
       // reader of this column.
-      permissions:          Object.keys(perms || {}).filter(k => perms[k] === true) as Permission[],
+      // A lapsed workspace (no subscription, not comped) is read-only: every permission that writes is dropped
+      // here, once, so every route and UI that already gates on hasPermission follows without being edited.
+      permissions:          Object.keys(perms || {}).filter(k => perms[k] === true && (!lapsed || LAPSED_KEEP_PERMISSIONS.has(k))) as Permission[],
       // C2: fall back to Supabase auth email_confirmed_at so existing sessions
       // aren't blocked by a stale null in public.users
       emailVerifiedAt:      u?.email_verified_at || user.email_confirmed_at || null,

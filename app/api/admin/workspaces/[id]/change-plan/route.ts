@@ -62,6 +62,8 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     .from('workspaces')
     .update({
       plan_tier: plan,
+      // A staff plan change is a decision, not a lapse (see migration 150): the workspace is writable again.
+      lapsed_at: null,
       // Off the trial plan the end date is meaningless (the webhook nulls it the same way on a paid upgrade).
       trial_ends_at: plan === 'trial' ? new Date(Date.now() + trialDays * 86400_000).toISOString() : null,
       updated_at: new Date().toISOString(),

@@ -547,6 +547,8 @@ export interface SessionUser {
   workspaceSlug: string
   agencyName: string
   planTier: Plan
+  /** True when the workspace has no subscription and is not comped (see lib/billing/plans.ts isWorkspaceLapsed): read-only. */
+  lapsed?: boolean
   trialEndsAt: string | null
   onboardingCompletedAt: string | null
   permissions: Permission[]

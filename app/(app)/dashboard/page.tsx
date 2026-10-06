@@ -1,4 +1,4 @@
-import { getSessionStrict, hasPermission, trialExpired } from '@/lib/auth/session'
+import { getSessionStrict, hasPermission } from '@/lib/auth/session'
 import { createServiceClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
@@ -469,20 +469,9 @@ export default async function DashboardPage() {
 // expired trial is reported as 'solo' the instant it expires — so its "Trial expired" branch could never show, and a
 // workspace silently dropped to Solo's project cap with nothing on the dashboard saying why.
 function TrialBanner({ session, daysLeft }: { session: SessionUser; daysLeft: number | null }) {
-  if (trialExpired(session)) {
-    const cap = PLAN_LIMITS.solo.projects
-    return (
-      <div className="banner banner-danger">
-        <span>
-          <strong>Your trial has ended.</strong>
-          {' '}This workspace is now on the Solo plan{cap != null ? ` (limited to ${cap} active projects)` : ''}. Your projects and data are untouched — upgrade to restore full access.
-        </span>
-        <Link href="/settings?tab=billing">
-          <button className="btn btn-primary btn-sm">Upgrade now</button>
-        </Link>
-      </div>
-    )
-  }
+  // A lapsed workspace (expired trial, ended subscription) is read-only; the app-wide banner in (app)/layout.tsx says
+  // so on every page, so the dashboard adds nothing of its own.
+  if (session.lapsed) return null
   if (session.planTier === 'trial' && daysLeft !== null && daysLeft <= 5) {
     return (
       <div className={`banner ${daysLeft <= 1 ? 'banner-danger' : 'banner-warn'}`}>

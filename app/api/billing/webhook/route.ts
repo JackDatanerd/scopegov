@@ -350,7 +350,7 @@ async function handleEvent(service: any, event: any): Promise<void> {
 
       // BUG-054: planTier ONLY updated on webhook — never browser callback
       must(await service.from('workspaces').update({
-        plan_tier: newTier, trial_ends_at: null, updated_at: new Date().toISOString(),
+        plan_tier: newTier, trial_ends_at: null, lapsed_at: null, updated_at: new Date().toISOString(),
       }).eq('id', workspaceId), 'update workspace plan')
 
       const paymentMethod = extractPaymentMethod(data)

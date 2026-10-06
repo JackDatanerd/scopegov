@@ -71,7 +71,9 @@ describe('dashboard expired-trial banner is reachable (B1)', () => {
   })
   it('both the dashboard and its empty state render the shared banner', () => {
     expect(dash.match(/<TrialBanner /g)?.length).toBe(2)
-    expect(dash).toMatch(/if \(trialExpired\(session\)\)/)
+    // A lapsed workspace is announced by the app-wide read-only banner in (app)/layout.tsx; the dashboard adds none.
+    expect(dash).toMatch(/if \(session\.lapsed\) return null/)
+    expect(read('app/(app)/layout.tsx')).toMatch(/session\.lapsed &&/)
   })
 })
 

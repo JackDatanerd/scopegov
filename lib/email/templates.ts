@@ -609,11 +609,11 @@ export async function sendTrialWarningEmail(params: {
       <p style="font-size:14px;color:${C.text};line-height:1.7;margin:0 0 16px;">Hi ${name},</p>
       <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
         ${daysLeft === 0
-          ? `The trial period for <strong>${agencyName}</strong>'s ScopeGov workspace has ended. Upgrade to continue protecting your scope.`
+          ? `The trial period for <strong>${agencyName}</strong>'s ScopeGov workspace has ended. The workspace is now <strong>read-only</strong>: you and your team can still view and export everything, and your clients can still open and sign documents you already sent, but creating or sending anything new needs a plan.`
           : `The trial for <strong>${agencyName}</strong>'s ScopeGov workspace ends in <strong>${daysLeft} day${daysLeft !== 1 ? 's' : ''}</strong>. Upgrade now to keep access to all your projects, SOWs, and Guardian history.`}
       </p>
       <p style="font-size:13px;color:${C.text2};">
-        Your data is safe — nothing is deleted. Choose a plan to continue.
+        Your data is safe — nothing is deleted. Choose a plan to unlock editing again.
       </p>
     `,
     cta: 'Upgrade your plan →',
@@ -625,7 +625,7 @@ export async function sendTrialWarningEmail(params: {
     from:    systemFrom(),
     to,
     subject: daysLeft === 0
-      ? `Your ScopeGov trial has ended — upgrade to continue`
+      ? `Your ScopeGov trial has ended — workspace is now read-only`
       : `${daysLeft} day${daysLeft !== 1 ? 's' : ''} left on your ScopeGov trial`,
     html,
   })
@@ -1229,9 +1229,9 @@ export async function sendSubscriptionEndedEmail(params: {
 
   const intro = reason === 'nonpayment'
     ? `We were not able to collect payment for <strong>${agencyName}</strong>&apos;s ScopeGov subscription during the
-        grace period, so the paid subscription has ended and your workspace has moved to the Solo plan.`
-    : `As requested, <strong>${agencyName}</strong>&apos;s paid subscription period has now ended and
-        your workspace has moved to the Solo plan.`
+        grace period, so the paid subscription has ended and your workspace is now read-only.`
+    : `The paid subscription period for <strong>${agencyName}</strong>&apos;s ScopeGov workspace has now ended and
+        your workspace is now read-only.`
 
   const html = baseTemplate({
     agencyName: 'ScopeGov',
@@ -1244,7 +1244,7 @@ export async function sendSubscriptionEndedEmail(params: {
         ${intro}
       </p>
       <p style="font-size:13px;color:${C.text2};">
-        Your data hasn't gone anywhere — resubscribe any time to get your full plan's limits back.
+        Your data hasn't gone anywhere, and you and your team can still view and export it (your clients can still open documents you already sent). Resubscribe any time to unlock editing again.
       </p>
     `,
     cta: 'Resubscribe →',
@@ -1254,7 +1254,7 @@ export async function sendSubscriptionEndedEmail(params: {
   return deliver({
     from:    systemFrom(),
     to,
-    subject: `Your ScopeGov subscription has ended — ${agencyNameRaw} moved to Solo`,
+    subject: `Your ScopeGov subscription has ended — ${agencyNameRaw} is now read-only`,
     html,
   })
 }

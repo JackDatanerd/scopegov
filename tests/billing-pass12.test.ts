@@ -49,16 +49,19 @@ beforeEach(() => {
 
 describe('B1 — subscription-ended email wording', () => {
   const base = { to: 'a@agency.test', name: 'Ann', agencyName: 'Acme', upgradeUrl: 'https://app.test/settings?tab=billing' }
-  it('a cancellation keeps the "As requested" wording', async () => {
+  it('a cancellation-driven end no longer claims "As requested" (Paystack can end a subscription too) and says read-only', async () => {
     await sendSubscriptionEndedEmail(base)
-    expect(h.sent.at(-1).html).toContain('As requested')
+    const html: string = h.sent.at(-1).html
+    expect(html).not.toContain('As requested')
+    expect(html).toContain('paid subscription period')
+    expect(html).toContain('read-only')
   })
   it('a non-payment downgrade never claims the customer asked for it', async () => {
     await sendSubscriptionEndedEmail({ ...base, reason: 'nonpayment' })
     const html: string = h.sent.at(-1).html
     expect(html).not.toContain('As requested')
     expect(html).toContain('not able to collect payment')
-    expect(html).toContain('Solo plan')
+    expect(html).toContain('read-only')
   })
 })
 

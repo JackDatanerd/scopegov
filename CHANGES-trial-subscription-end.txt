@@ -1,0 +1,31 @@
+Trial / subscription end pass (Oct 6)
+
+DECISION: no free Solo tier. A workspace with no subscription that nobody comped is LAPSED = read-only.
+  Applies to: expired trial, non-payment downgrade (grace enforced), cancelled subscription whose paid period ended.
+  Read-only keeps: viewing, exports, Billing, settings, the client portal (clients mid-signature/payment are unaffected).
+  Read-only drops: every writing permission (create/edit/send SOW, CO, invoices, projects, invites, approvals, roles, delete).
+  Known consequence: SEND_INVOICES also covers recording payments, so a lapsed workspace cannot record one by hand.
+
+MIGRATION 150 (run it): workspaces.lapsed_at. Backfill only unambiguous ex-trials (Solo + past trial_ends_at + no live
+  subscription). Earlier non-payment/cancelled Solo workspaces are grandfathered (indistinguishable from staff comps).
+
+FILES
+  lib/billing/plans.ts            isWorkspaceLapsed(), LAPSED_KEEP_PERMISSIONS
+  lib/auth/session.ts             reads lapsed_at; session.lapsed; write permissions stripped when lapsed (single choke point)
+  lib/supabase/types.ts           SessionUser.lapsed
+  app/api/cron/payment-overdue    steps 2/4/5 set lapsed_at; B1 (see below)
+  app/api/billing/webhook         subscription.create clears lapsed_at
+  app/api/admin/.../change-plan   a staff plan change clears lapsed_at (a comp is not a lapse)
+  app/(app)/layout.tsx            app-wide read-only banner (Choose a plan for MANAGE_BILLING holders)
+  app/(app)/dashboard/page.tsx    trial banner defers to the app-wide banner when lapsed
+  lib/email/templates.ts          day-0 trial + subscription-ended copy now says read-only; dropped "As requested"/"moved to Solo"
+
+BUG B1 (medium): ENDED_SUBSCRIPTION_FIELDS did not clear grace_period_started_at, so a subscription ended by step 5 while a
+  payment failure was in grace later got a "payment failed, N days left" reminder and, at day 5, a second downgrade, a
+  second billing.downgraded_for_nonpayment history row and a "could not collect payment" email. Fixed; step 5's restore path
+  restores the clock too.
+L2: "As requested" wording was wrong when Paystack, not the customer, ended the subscription. Removed.
+L3 (step 5 wipes billing before its plan CAS) re-examined and WITHDRAWN: the subscription is already dead, wiping is correct.
+
+TESTS: tests/trial-subscription-end-lapse.test.ts (9, B1 test fails without the fix); billing-pass12 and
+  projects-dashboard-pass2 updated for the new copy/banner. Full suite: 301 files / 2988 tests pass; tsc clean.

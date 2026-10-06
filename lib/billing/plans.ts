@@ -118,3 +118,26 @@ export function effectivePlanTier(
   const ends = Date.parse(trialEndsAt)
   return !isNaN(ends) && ends < now ? 'solo' : tier
 }
+
+/**
+ * Read-only lapse (no free tier). A workspace that has no subscription and is not comped — an expired trial, a
+ * non-payment downgrade, a subscription whose paid period ended — keeps its data, exports, billing and the client
+ * portal, but its members lose every permission that writes. `workspaces.lapsed_at` (migration 150) is the explicit
+ * marker (set by the payment-overdue cron, cleared by a new subscription or a staff plan change), because "Solo with
+ * no subscription" alone cannot tell a lapsed workspace from one staff comped. A stored trial that is past
+ * trial_ends_at is lapsed the moment it expires, not at the next cron run (same rule as effectivePlanTier).
+ */
+export const LAPSED_KEEP_PERMISSIONS: ReadonlySet<string> = new Set([
+  'VIEW_OWN_PROJECTS', 'VIEW_ALL_PROJECTS', 'VIEW_FINANCIALS', 'VIEW_CLIENT_DATA', 'ACCESS_GUARDIAN_HISTORY',
+  'VIEW_AUDIT_LOG', 'VIEW_PORTFOLIO', 'MANAGE_BILLING', 'MANAGE_WORKSPACE_SETTINGS',
+])
+
+export function isWorkspaceLapsed(
+  planTier: Plan | null | undefined,
+  trialEndsAt: string | null | undefined,
+  lapsedAt: string | null | undefined,
+  now: number = Date.now(),
+): boolean {
+  if (lapsedAt) return true
+  return (planTier || 'trial') === 'trial' && effectivePlanTier(planTier, trialEndsAt, now) !== 'trial'
+}

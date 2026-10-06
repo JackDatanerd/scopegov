@@ -36,6 +36,12 @@ const ENDED_SUBSCRIPTION_FIELDS = {
   paystack_email_token: null,
   needs_paystack_cancel: false,
   cancels_at_period_end: false,
+  // FIX (trial/subscription-end pass — B1): the subscription this clock was running for is gone. Step 5 (a cancelled
+  // subscription whose period had already lapsed while a payment failure was in grace) spread these fields without
+  // clearing it, so the workspace — already ended and lapsed — later got a "payment failed, N days left" reminder (step 3)
+  // and, at day 5, a second downgrade, a second `billing.downgraded_for_nonpayment` history row and a "could not collect
+  // payment" email (step 4), even when the customer had cancelled themselves.
+  grace_period_started_at: null,
   current_period_end: null,
   plan_interval: null,
   payment_method_last4: null,
@@ -237,7 +243,7 @@ export async function POST(request: NextRequest) {
         if (ws.billing?.paystack_subscription_code) continue
 
         const { data: updatedWs, error: updErr } = await (service as any).from('workspaces')
-          .update({ plan_tier: 'solo', updated_at: now.toISOString() })
+          .update({ plan_tier: 'solo', lapsed_at: now.toISOString(), updated_at: now.toISOString() })
           .eq('id', ws.id).eq('plan_tier', 'trial')
           .select('id')
         if (updErr) throw new Error(updErr.message)
@@ -477,7 +483,7 @@ export async function POST(request: NextRequest) {
           // row was read with. It used to run first and be reverted to that stale value when a plan switch
           // was detected, which overwrote the new plan the webhook had written in between.
           const { data: downgraded, error: downgradeErr } = await (service as any).from('workspaces')
-            .update({ plan_tier: 'solo', updated_at: now.toISOString() })
+            .update({ plan_tier: 'solo', lapsed_at: now.toISOString(), updated_at: now.toISOString() })
             .eq('id', ws.id).eq('plan_tier', ws.plan_tier)
             .select('id')
           if (downgradeErr) {
@@ -615,7 +621,7 @@ export async function POST(request: NextRequest) {
     const cancelledExpired = await fetchAll<any>('cancelled subscriptions select', (from, to) =>
       (service as any).from('billing')
         .select(`workspace_id, current_period_end, paystack_subscription_code, paystack_customer_code,
-          paystack_email_token, plan_interval, payment_method_last4, payment_method_type, ${WS_EMBED}`)
+          paystack_email_token, plan_interval, payment_method_last4, payment_method_type, grace_period_started_at, ${WS_EMBED}`)
         .eq('cancels_at_period_end', true)
         .not('current_period_end', 'is', null)
         .lt('current_period_end', now.toISOString())
@@ -656,7 +662,7 @@ export async function POST(request: NextRequest) {
         // claim above had already wiped cancels_at_period_end, so nothing would ever select this workspace
         // again and it kept its paid plan for free indefinitely. (Section 4 had the same fix.)
         const { data: downgraded, error: downgradeErr } = await (service as any).from('workspaces')
-          .update({ plan_tier: 'solo', updated_at: now.toISOString() })
+          .update({ plan_tier: 'solo', lapsed_at: now.toISOString(), updated_at: now.toISOString() })
           .eq('id', ws.id).eq('plan_tier', ws.plan_tier)
           .select('id')
         if (downgradeErr) {
@@ -674,6 +680,7 @@ export async function POST(request: NextRequest) {
             plan_interval: b.plan_interval ?? null,
             payment_method_last4: b.payment_method_last4 ?? null,
             payment_method_type: b.payment_method_type ?? null,
+            grace_period_started_at: b.grace_period_started_at ?? null,
           }).eq('workspace_id', b.workspace_id).is('paystack_subscription_code', null)
           cancelledSubscriptionsEndedCount--
           if (restoreErr) {
