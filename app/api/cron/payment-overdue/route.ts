@@ -130,7 +130,7 @@ export async function POST(request: NextRequest) {
         if (!msNotified) run.rowError(`milestone ${m.id}`, new Error('marked overdue but the team bell notification failed to write'))
 
         try {
-          const emails = await getMemberEmailsWithPermission(service, project.workspace_id, 'VIEW_FINANCIALS', 10, 'payment_milestone_overdue', project.id)
+          const emails = await getMemberEmailsWithPermission(service, project.workspace_id, 'VIEW_FINANCIALS', 25, 'payment_milestone_overdue', project.id)
           if (emails.length) {
             // FIX (re-audit, section 17): raw try/catch, not checkedSend — a Resend-level rejection
             // resolved normally instead of throwing, so this silently "succeeded." Same fix applied
@@ -202,7 +202,7 @@ export async function POST(request: NextRequest) {
         if (!invNotified) run.rowError(`invoice ${inv.id}`, new Error('marked overdue but the team bell notification failed to write'))
 
         try {
-          const emails = await getMemberEmailsWithPermission(service, inv.workspace_id, 'VIEW_FINANCIALS', 10, 'invoice_overdue', inv.projects?.id)
+          const emails = await getMemberEmailsWithPermission(service, inv.workspace_id, 'VIEW_FINANCIALS', 25, 'invoice_overdue', inv.projects?.id)
           if (emails.length) {
             // FIX (re-audit, section 17): raw try/catch, not checkedSend — same missing-check class
             // of bug as the rest of this file.

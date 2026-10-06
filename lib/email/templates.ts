@@ -13,6 +13,8 @@ const money = formatMoney
 // `{ data, error }` to callers that wrapped it in a try/catch that could not
 // fire. lib/email/delivery.ts#checkedSend understands this result shape.
 export type { SendResult, EmailLogContext }
+// An empty recipient list is a no-op, reported like every other send (never `undefined`).
+const EMPTY_RECIPIENTS: SendResult = { ok: true, id: null, skipped: true }
 const deliver = (payload: EmailPayload, log?: EmailLogContext): Promise<SendResult> => sendEmail(payload, log)
 
 // FIX (deep audit round 2, notifications section — feature gap): the app has
@@ -417,7 +419,7 @@ export async function sendSowExpiredEmail(params: {
   to: string[]; clientName: string; projectName: string; projectUrl: string
 }) {
   const { to, clientName: clientNameRaw, projectName: projectNameRaw, projectUrl } = params
-  if (to.length === 0) return
+  if (to.length === 0) return EMPTY_RECIPIENTS
   const clientName  = escapeHtml(clientNameRaw)
   const projectName = escapeHtml(projectNameRaw)
 
@@ -460,7 +462,7 @@ export async function sendCoExpiredEmail(params: {
   to: string[]; clientName: string; projectName: string; projectUrl: string
 }) {
   const { to, clientName: clientNameRaw, projectName: projectNameRaw, projectUrl } = params
-  if (to.length === 0) return
+  if (to.length === 0) return EMPTY_RECIPIENTS
   const clientName  = escapeHtml(clientNameRaw)
   const projectName = escapeHtml(projectNameRaw)
 
@@ -1565,7 +1567,7 @@ export async function sendInvoicePaymentRecordedEmail(params: {
 }) {
   const { to, clientName: clientNameRaw, projectName: projectNameRaw, invoiceNumber, amount, currency,
     isFullyPaid, balanceRemaining, projectUrl } = params
-  if (to.length === 0) return
+  if (to.length === 0) return EMPTY_RECIPIENTS
   const clientName  = escapeHtml(clientNameRaw)
   const projectName = escapeHtml(projectNameRaw)
 
@@ -1608,7 +1610,7 @@ export async function sendInvoiceSentInternalEmail(params: {
   invoiceNumber?: string | null; amount: number; currency: string; projectUrl: string
 }) {
   const { to, clientName: clientNameRaw, projectName: projectNameRaw, invoiceNumber, amount, currency, projectUrl } = params
-  if (to.length === 0) return
+  if (to.length === 0) return EMPTY_RECIPIENTS
   const clientName  = escapeHtml(clientNameRaw)
   const projectName = escapeHtml(projectNameRaw)
 
@@ -1642,7 +1644,7 @@ export async function sendInvoiceOverdueInternalEmail(params: {
   invoiceNumber?: string | null; balanceDue: number; currency: string; projectUrl: string
 }) {
   const { to, clientName: clientNameRaw, projectName: projectNameRaw, invoiceNumber, balanceDue, currency, projectUrl } = params
-  if (to.length === 0) return
+  if (to.length === 0) return EMPTY_RECIPIENTS
   const clientName  = escapeHtml(clientNameRaw)
   const projectName = escapeHtml(projectNameRaw)
 
@@ -1680,7 +1682,7 @@ export async function sendPaymentMilestoneOverdueEmail(params: {
   milestoneTitle: string; amount: number; currency: string; projectUrl: string
 }) {
   const { to, clientName: clientNameRaw, projectName: projectNameRaw, milestoneTitle: milestoneTitleRaw, amount, currency, projectUrl } = params
-  if (to.length === 0) return
+  if (to.length === 0) return EMPTY_RECIPIENTS
   const clientName     = escapeHtml(clientNameRaw)
   const projectName    = escapeHtml(projectNameRaw)
   const milestoneTitle = escapeHtml(milestoneTitleRaw)
@@ -1721,7 +1723,7 @@ export async function sendRetainerEndingEmail(params: {
   durationMonths: number; projectUrl: string
 }) {
   const { to, clientName: clientNameRaw, projectName: projectNameRaw, durationMonths, projectUrl } = params
-  if (to.length === 0) return
+  if (to.length === 0) return EMPTY_RECIPIENTS
   const clientName  = escapeHtml(clientNameRaw)
   const projectName = escapeHtml(projectNameRaw)
 
@@ -1774,7 +1776,7 @@ export async function sendGuardianFlagStalledEmail(params: {
   isBorderline?: boolean
 }) {
   const { to, projectName: projectNameRaw, clientName: clientNameRaw, severity, description: descriptionRaw, daysOpen, projectUrl, isBorderline = false } = params
-  if (to.length === 0) return
+  if (to.length === 0) return EMPTY_RECIPIENTS
   const projectName = escapeHtml(projectNameRaw)
   const clientName  = escapeHtml(clientNameRaw)
   const description = escapeHtml(descriptionRaw)
@@ -1826,7 +1828,7 @@ export async function sendInvoiceDisputedEmail(params: {
   invoiceNumber?: string | null; note: string; projectUrl: string
 }) {
   const { to, clientName: clientNameRaw, projectName: projectNameRaw, invoiceNumber, note: noteRaw, projectUrl } = params
-  if (to.length === 0) return
+  if (to.length === 0) return EMPTY_RECIPIENTS
   const clientName  = escapeHtml(clientNameRaw)
   const projectName = escapeHtml(projectNameRaw)
   const note        = escapeHtml(noteRaw)
@@ -1868,7 +1870,7 @@ export async function sendInvoicePaymentClaimedEmail(params: {
 }) {
   const { to, clientName: clientNameRaw, projectName: projectNameRaw, invoiceNumber, balanceDue, currency,
     reference: referenceRaw, note: noteRaw, projectUrl } = params
-  if (to.length === 0) return
+  if (to.length === 0) return EMPTY_RECIPIENTS
   const clientName  = escapeHtml(clientNameRaw)
   const projectName = escapeHtml(projectNameRaw)
   const reference   = escapeHtml(referenceRaw)
@@ -2372,7 +2374,7 @@ export async function sendProjectAssignedEmail(params: {
   to: string[]; projectName: string; assignedByName: string; agencyName: string; projectUrl: string
 }) {
   const { to, projectName: projectRaw, assignedByName: byRaw, agencyName: agencyRaw, projectUrl } = params
-  if (to.length === 0) return { ok: true, id: null, skipped: true } as SendResult
+  if (to.length === 0) return EMPTY_RECIPIENTS
   const projectName = escapeHtml(projectRaw), by = escapeHtml(byRaw)
   const html = baseTemplate({
     agencyName: 'ScopeGov',

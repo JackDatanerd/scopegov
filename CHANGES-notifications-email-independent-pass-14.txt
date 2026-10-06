@@ -1,0 +1,15 @@
+Notifications & email — independent pass 14
+Base commit: a8d1824
+
+B1  Bell and email disagreed on who is told. The in-app fan-out caps at 25 recipients, but five finance email sends
+    (invoice payment received, invoice sent, invoice overdue, milestone overdue, retainer ending) capped at 10, so with
+    11-25 eligible members some got the bell and no email, always the same ones (ordered by user_id).
+    The five sends now use 25.
+B2  sendEmail passed Subject through untouched while titles reach it from text stored with only a trim (invoice title).
+    New cleanSubject() in lib/email/send.ts replaces CR/LF, control chars and Unicode line separators, collapses
+    whitespace, never empty; the cleaned subject is also what email_log records.
+B4  Ten template senders returned undefined for an empty recipient list; they now resolve a SendResult
+    ({ ok: true, id: null, skipped: true }) like every other send.
+
+Test: tests/notifications-email-pass-14.test.ts. Full suite 3001 passed; tsc clean.
+Not changed: webhook per-recipient assumption (B3) - unverified against a real Resend payload.

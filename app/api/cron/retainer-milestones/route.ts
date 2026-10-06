@@ -175,7 +175,7 @@ export async function POST(request: NextRequest) {
           if (!notified) run.rowError(`retainer ${p.id}`, new Error('retainer.ended recorded but the team bell notification failed to write'))
 
           try {
-            const emails = await getMemberEmailsWithPermission(service, p.workspace_id, 'VIEW_FINANCIALS', 10, 'retainer_ending', p.id)
+            const emails = await getMemberEmailsWithPermission(service, p.workspace_id, 'VIEW_FINANCIALS', 25, 'retainer_ending', p.id)
             if (emails.length) {
               // FIX (re-audit, section 17): raw try/catch, not checkedSend — same missing-check
               // class of bug as the rest of this cron section; see co-stall's identical fix for the

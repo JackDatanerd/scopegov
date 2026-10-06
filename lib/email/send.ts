@@ -90,6 +90,20 @@ function uniqueLower(list: string[]): string[] {
   return out
 }
 
+/**
+ * A Subject is a single header line. Titles and names reach it from user-entered text (an invoice title is stored with
+ * only a trim), so CR/LF, other control characters and Unicode line separators are replaced with a space and runs of
+ * whitespace collapsed; the provider would otherwise reject or fold the message.
+ */
+export function cleanSubject(subject: string | null | undefined): string {
+  const s = String(subject ?? '')
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return s || 'Notification from ScopeGov'
+}
+
 export async function sendEmail(payload: EmailPayload, log?: EmailLogContext): Promise<SendResult> {
   const toList = uniqueLower((Array.isArray(payload.to) ? payload.to : [payload.to]).filter(Boolean))
   const deliverableTo = toList.filter(isSendableAddress)
@@ -109,10 +123,11 @@ export async function sendEmail(payload: EmailPayload, log?: EmailLogContext): P
     .filter(isSendableAddress)
     .filter(e => !toKeys.has(e.toLowerCase()))
 
+  const subject = cleanSubject(payload.subject)
   const body: Record<string, unknown> = {
     from: payload.from,
     to: deliverableTo,
-    subject: payload.subject,
+    subject,
     html: payload.html,
   }
   if (cc.length) body.cc = cc
@@ -138,10 +153,10 @@ export async function sendEmail(payload: EmailPayload, log?: EmailLogContext): P
 
   if (!result.ok) {
     console.error('[email] send failed', {
-      kind: log?.kind, to: deliverableTo.length, subject: payload.subject, error: result.error,
+      kind: log?.kind, to: deliverableTo.length, subject, error: result.error,
     })
   }
-  if (log) await recordEmailLog(log, deliverableTo, cc, payload.subject, result)
+  if (log) await recordEmailLog(log, deliverableTo, cc, subject, result)
   return result
 }
 

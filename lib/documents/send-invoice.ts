@@ -278,7 +278,7 @@ export async function sendInvoiceDocument(service: any, params: {
       entityType: 'project', entityId: project.id, excludeUserId: actorId, projectId: project.id,
     })
     try {
-      const emails = await getMemberEmailsWithPermission(service, workspaceId, 'VIEW_FINANCIALS', 10, 'invoice_sent', project.id, actorId)
+      const emails = await getMemberEmailsWithPermission(service, workspaceId, 'VIEW_FINANCIALS', 25, 'invoice_sent', project.id, actorId)
       if (emails.length) {
         await sendInvoiceSentInternalEmail({
           to: emails, clientName: client.name, projectName: project.name,
