@@ -1,0 +1,13 @@
+Projects & Dashboard (c7) independent pass - Oct 6
+Scope read end to end: dashboard, projects list/wizard/detail, api/projects/*, helper libs. 18 existing test files pass.
+
+B1 (low-medium): lapsed (read-only) workspace showed "Solo / Active" in the dashboard Subscription tile and "Solo" + trial
+  text in the Sidebar plan tag, contradicting the app-wide read-only banner. Both now follow session.lapsed
+  ("No plan" / "Read-only - choose a plan").
+  NOT changed: the Sidebar workspace-switcher list (ws.planTier) - that list carries no lapsed flag; needs an API change.
+
+FILES
+  app/(app)/dashboard/page.tsx
+  components/layout/Sidebar.tsx
+  tests/dashboard-lapsed-plan-tile.test.ts (new)
+tsc clean; c7 + lapse tests pass.

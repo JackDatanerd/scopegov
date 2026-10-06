@@ -421,8 +421,8 @@ export default function Sidebar({ session }: { session: SessionUser }) {
         <div className="sb-plan-tag">
           <div>
             <div className="sb-plan-name">
-              {PLAN_LABELS[session.planTier] ?? session.planTier}
-              {session.planTier === 'trial' && daysLeft !== null && ` · ${daysLeft}d left`}
+              {session.lapsed ? 'No plan · read-only' : (PLAN_LABELS[session.planTier] ?? session.planTier)}
+              {!session.lapsed && session.planTier === 'trial' && daysLeft !== null && ` · ${daysLeft}d left`}
             </div>
             {session.planTier === 'trial' && daysLeft !== null && (
               <>

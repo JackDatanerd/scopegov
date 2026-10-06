@@ -309,10 +309,10 @@ export default async function DashboardPage() {
         <div className="mc">
           <div className="mc-lbl">Subscription</div>
           <div className="mc-val" style={{ fontSize: 20, paddingTop: 3 }}>
-            {PLAN_LABELS[session.planTier] || session.planTier}
+            {session.lapsed ? 'No plan' : (PLAN_LABELS[session.planTier] || session.planTier)}
           </div>
           <div className="mc-sub">
-            {daysLeft !== null ? `${daysLeft} days remaining` : 'Active'}
+            {session.lapsed ? 'Read-only — choose a plan' : daysLeft !== null ? `${daysLeft} days remaining` : 'Active'}
           </div>
         </div>
       </div>
