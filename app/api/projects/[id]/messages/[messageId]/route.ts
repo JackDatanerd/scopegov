@@ -14,7 +14,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
-import { MESSAGE_MAX_LENGTH, resolveMentions, notifyMentionedUsers } from '@/lib/utils/project-messages'
+import { MESSAGE_MAX_LENGTH, LAPSED_DISCUSSION_ERROR, resolveMentions, notifyMentionedUsers } from '@/lib/utils/project-messages'
 
 async function loadMessage(service: any, workspaceId: string, projectId: string, messageId: string) {
   // FIX (Projects & Dashboard pass 10, B1): .single() + ignored `error` made a failed read answer 404 "Not found" for a message that exists.
@@ -43,6 +43,7 @@ export async function PATCH(
     const { id: projectId, messageId } = await params
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    if (session.lapsed) return NextResponse.json({ error: LAPSED_DISCUSSION_ERROR }, { status: 403 })
     if (!isUuidString(projectId) || !isUuidString(messageId)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
     const body = await request.json().catch(() => null)
@@ -141,6 +142,7 @@ export async function DELETE(
     const { id: projectId, messageId } = await params
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    if (session.lapsed) return NextResponse.json({ error: LAPSED_DISCUSSION_ERROR }, { status: 403 })
     if (!isUuidString(projectId) || !isUuidString(messageId)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
     const service = createServiceClient()

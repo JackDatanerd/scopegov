@@ -82,7 +82,7 @@ function MessageBody({ body, currentUserId }: { body: string; currentUserId: str
 }
 
 export default function ProjectDiscussion({
-  projectId, team, currentUserId, canModerate, onRead,
+  projectId, team, currentUserId, canModerate, onRead, readOnly = false,
 }: {
   projectId: string
   team: TeamMember[]
@@ -94,6 +94,8 @@ export default function ProjectDiscussion({
   // page.tsx's `moderateMessages` permission.
   canModerate?: boolean
   onRead?: () => void
+  // Lapsed workspace: the server refuses writes, so don't offer them.
+  readOnly?: boolean
 }) {
   const [messages, setMessages] = useState<Message[]>([])
   const [loaded, setLoaded] = useState(false)
@@ -383,7 +385,7 @@ export default function ProjectDiscussion({
                 )}
               </div>
 
-              {!m.deleted && (m.isMine || canModerate) && editingId !== m.id && (
+              {!readOnly && !m.deleted && (m.isMine || canModerate) && editingId !== m.id && (
                 <div className="pm-actions" style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
                   {m.isMine && (
                     <button className="btn-icon" title="Edit" onClick={() => startEdit(m)}
@@ -405,7 +407,10 @@ export default function ProjectDiscussion({
 
       {error && <p style={{ fontSize: 11.5, color: 'var(--red)', marginBottom: 8 }}>{error}</p>}
 
-      <div style={{ position: 'relative' }}>
+      {readOnly && (
+        <p style={{ fontSize: 12, color: 'var(--text-3)' }}>This workspace has no active plan, so the discussion is read-only.</p>
+      )}
+      <div style={{ position: 'relative', display: readOnly ? 'none' : undefined }}>
         {mentionActive && (
           <div style={{
             position: 'absolute', bottom: '100%', left: 0, marginBottom: 6, width: 240, zIndex: 20,

@@ -487,6 +487,7 @@ export default function ProjectDetail({
             projectId={project.id}
             currentUserId={session.id}
             canModerate={permissions.moderateMessages}
+            readOnly={!!session.lapsed}
             onRead={() => setUnreadMessages(0)}
             team={team
               .map((t: any) => t.workspace_members?.users)

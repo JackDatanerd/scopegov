@@ -16,6 +16,10 @@ const MENTION_TOKEN = /@\[([^\]]+)\]\(([0-9a-f-]{36})\)/gi
 // Shared message-length ceiling — used by both the create and edit routes.
 export const MESSAGE_MAX_LENGTH = 4000
 
+// A lapsed workspace (no subscription, not comped) is read-only: session.ts drops every writing permission, but the
+// Discussion routes deliberately have no permission of their own, so they must refuse on the lapse flag directly.
+export const LAPSED_DISCUSSION_ERROR = 'This workspace has no active plan, so the discussion is read-only. Choose a plan to post, edit or delete messages.'
+
 
 export interface ParsedMention {
   userId: string

@@ -14,7 +14,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
-import { MESSAGE_MAX_LENGTH, resolveMentions, notifyMentionedUsers } from '@/lib/utils/project-messages'
+import { MESSAGE_MAX_LENGTH, LAPSED_DISCUSSION_ERROR, resolveMentions, notifyMentionedUsers } from '@/lib/utils/project-messages'
 
 // Recent-history cap for the feed. This is a live discussion thread, not
 // an archive — a "load older" affordance can be added later if agencies
@@ -156,6 +156,7 @@ export async function POST(
     const { id: projectId } = await params
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    if (session.lapsed) return NextResponse.json({ error: LAPSED_DISCUSSION_ERROR }, { status: 403 })
     if (!isUuidString(projectId)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
     const body = await request.json().catch(() => null)

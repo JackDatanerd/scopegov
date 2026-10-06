@@ -1,0 +1,11 @@
+Projects & Dashboard (cc7) pass 14 (Oct 7, base 40e06ef)
+
+BUG (low): a lapsed (read-only) workspace could still post, edit and delete project Discussion messages.
+  The lapse is enforced only by stripping write permissions in getSession(); the Discussion routes have no permission of
+  their own, so nothing stopped them (and a post with @mentions fired in-app notifications).
+FIX: POST /messages, PATCH and DELETE /messages/[messageId] answer 403 when session.lapsed (GET and messages/read stay
+  open). ProjectDiscussion takes readOnly: hides the composer and edit/delete, shows a read-only note.
+TRACED: scope-governance comments route gates on canWriteGovernance (permissions), so it already follows the lapse.
+FILES: lib/utils/project-messages.ts, app/api/projects/[id]/messages/route.ts, .../[messageId]/route.ts,
+  components/projects/ProjectDiscussion.tsx, components/projects/ProjectDetail.tsx, tests/projects-dashboard-pass-14.test.ts
+Full suite 308 files / 3056 tests pass; tsc clean.
