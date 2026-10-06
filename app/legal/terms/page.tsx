@@ -10,14 +10,8 @@ export default function TermsPage() {
     <article>
       <span className={styles.docBadge}>Legal &middot; Terms</span>
       <h1 className={styles.title}>Terms of Service</h1>
-      <p className={styles.meta}>Last updated: <span className={styles.placeholder}>[DATE OF PUBLICATION]</span> &middot; Effective on publication</p>
+      <p className={styles.meta}>Last updated: October 2026 &middot; Effective October 2026</p>
 
-      <div className={styles.reviewNote}>
-        <strong>Draft for internal review.</strong> Written to match the product as built — trial terms, plan
-        names, and the change-order/e-signature flow all reflect what&rsquo;s actually in the app. It is not
-        legal advice. The liability cap, governing-law, and dispute-resolution sections in particular should
-        be reviewed by a lawyer familiar with Kenyan and cross-border SaaS contracts before this is published.
-      </div>
 
       <nav className={styles.toc}>
         <div className={styles.tocTitle}>On this page</div>
@@ -34,7 +28,7 @@ export default function TermsPage() {
           <li><a href="#warranty">10. Disclaimer of warranty</a></li>
           <li><a href="#liability">11. Limitation of liability</a></li>
           <li><a href="#indemnity">12. Indemnity</a></li>
-          <li><a href="#governing-law">13. Governing law</a></li>
+          <li><a href="#governing-law">13. Governing law &amp; disputes</a></li>
           <li><a href="#changes">14. Changes to these terms</a></li>
           <li><a href="#contact">15. Contact</a></li>
         </ul>
@@ -44,8 +38,8 @@ export default function TermsPage() {
         <h2 id="acceptance">1. Acceptance</h2>
         <p>
           These Terms are an agreement between you (or the agency you represent, &ldquo;you&rdquo;) and Saltern
-          Studio Ltd., operating as ScopeGov (&ldquo;we,&rdquo; &ldquo;us&rdquo;), a company registered in{' '}
-          <span className={styles.placeholder}>[Kenya / registration number]</span>. By creating an account
+          Studio Ltd., operating as ScopeGov (&ldquo;we,&rdquo; &ldquo;us&rdquo;), a company registered in
+          Kenya. By creating an account
           or using scopegov.app or sign.scopegov.app, you agree to these Terms. If you&rsquo;re accepting on
           behalf of an organization, you&rsquo;re confirming you have authority to bind it.
         </p>
@@ -100,12 +94,29 @@ export default function TermsPage() {
 
         <h2 id="plans-billing">7. Plans &amp; billing</h2>
         <p>
-          Current plans and pricing are shown at checkout and on our <a href="/#pricing">pricing page</a>.
-          Subscriptions renew automatically and are billed in advance through Paystack. New trials do not
-          require a card up front; if you add a payment method during trial, we&rsquo;ll only start billing
-          when the trial ends or you upgrade, whichever you&rsquo;ve chosen. You can cancel at any time from
-          your workspace settings — cancellation takes effect at the end of the current billing period, and
-          we don&rsquo;t provide partial-period refunds except where required by law.
+          Current plans and pricing are shown on our <a href="/#pricing">pricing page</a> and at checkout.
+          Plans are billed monthly or annually in advance through Paystack and renew automatically until
+          cancelled.
+        </p>
+        <p>
+          <strong>Free trial.</strong> New workspaces start with a 14-day free trial. No card is required to
+          start one. Billing begins when you upgrade to a paid plan, and upgrading ends the trial.
+        </p>
+        <p>
+          <strong>Failed payments.</strong> If a renewal payment fails, we start a 5-day grace period and
+          notify you. If the payment is still not resolved when the grace period ends, your workspace moves to
+          the Solo plan and that plan&rsquo;s limits apply.
+        </p>
+        <p>
+          <strong>Cancellation.</strong> You can cancel at any time from your workspace settings.
+          Cancellation takes effect at the end of the current billing period.
+        </p>
+        <p>
+          <strong>Refunds.</strong> We don&rsquo;t provide partial-period refunds; the free trial is there so
+          you can evaluate the service first. We will refund (a) charges made in error, including duplicate
+          charges; (b) an annual renewal, if you ask us within 7 days of the renewal charge; and (c) any
+          amount we are required by law to refund. To request a refund, email{' '}
+          <a href="mailto:support@scopegov.app">support@scopegov.app</a>.
         </p>
 
         <h2 id="acceptable-use">8. Acceptable use</h2>
@@ -138,8 +149,8 @@ export default function TermsPage() {
         <p>
           To the extent permitted by law, neither party is liable for indirect, incidental, consequential, or
           punitive damages arising from these Terms or the service. Our total liability for any claim is
-          capped at the amount you paid us in the{' '}
-          <span className={styles.placeholder}>[12 months]</span> preceding the claim. Nothing here limits
+          capped at the greater of (a) the amount you paid us in the 12 months preceding the claim and (b) USD 100.
+          Nothing here limits
           liability where the law doesn&rsquo;t allow it to be limited (for example, gross negligence, where
           applicable under Kenyan law).
         </p>
@@ -151,11 +162,25 @@ export default function TermsPage() {
           data-protection rights in content you submit about them).
         </p>
 
-        <h2 id="governing-law">13. Governing law</h2>
+        <h2 id="governing-law">13. Governing law &amp; disputes</h2>
         <p>
-          These Terms are governed by the laws of{' '}
-          <span className={styles.placeholder}>[Kenya, or chosen jurisdiction]</span>, without regard to
-          conflict-of-law principles. <span className={styles.placeholder}>[Add dispute-resolution / venue clause here]</span>.
+          These Terms are governed by the laws of Kenya, without regard to conflict-of-law principles.
+        </p>
+        <p>
+          <strong>Negotiation first.</strong> If a dispute arises, either party may send written notice to the
+          other (to <a href="mailto:legal@scopegov.app">legal@scopegov.app</a> in our case), and the parties
+          will try in good faith to resolve it within 30 days.
+        </p>
+        <p>
+          <strong>Arbitration.</strong> A dispute not resolved in that time will be finally resolved by
+          arbitration under the Arbitration Rules of the Nairobi Centre for International Arbitration
+          (NCIA), before a sole arbitrator. The seat of arbitration is Nairobi, Kenya, and the language is
+          English.
+        </p>
+        <p>
+          <strong>Courts.</strong> Either party may ask the courts of Nairobi, Kenya, for urgent injunctive
+          relief (for example to protect confidential information or intellectual property) or to support the
+          arbitration, and those courts have jurisdiction over any matter that cannot be arbitrated.
         </p>
 
         <h2 id="changes">14. Changes to these terms</h2>

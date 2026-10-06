@@ -10,15 +10,8 @@ export default function DpaPage() {
     <article>
       <span className={styles.docBadge}>Legal &middot; DPA</span>
       <h1 className={styles.title}>Data Processing Addendum</h1>
-      <p className={styles.meta}>Last updated: <span className={styles.placeholder}>[DATE OF PUBLICATION]</span> &middot; Effective on publication</p>
+      <p className={styles.meta}>Last updated: October 2026 &middot; Effective October 2026</p>
 
-      <div className={styles.reviewNote}>
-        <strong>Draft for internal review.</strong> This follows the standard controller/processor shape
-        (roughly GDPR Art. 28-style) that most agency customers with EU or UK clients will expect to see. It
-        is not legal advice, and the audit-rights, breach-notification-window, and SCC-annex sections need a
-        lawyer&rsquo;s pass — particularly if you plan to sign this bilaterally with enterprise customers
-        rather than publishing it as a standard addendum.
-      </div>
 
       <nav className={styles.toc}>
         <div className={styles.tocTitle}>On this page</div>
@@ -93,8 +86,8 @@ export default function DpaPage() {
         <p>
           You authorize the subprocessors listed in our <a href="/legal/privacy#subprocessors">Privacy
           Policy</a>. We&rsquo;ll give notice before adding a new subprocessor that will handle personal data
-          in scope of this DPA, so you can object on reasonable data-protection grounds. Notice method:{' '}
-          <span className={styles.placeholder}>[email list / changelog page]</span>.
+          in scope of this DPA, so you can object on reasonable data-protection grounds. We give notice by email
+          to workspace owners, at least 14 days before the new subprocessor starts handling that data.
         </p>
 
         <h2 id="data-subject-requests">8. Data subject requests</h2>
@@ -107,8 +100,7 @@ export default function DpaPage() {
 
         <h2 id="breach">9. Breach notification</h2>
         <p>
-          We&rsquo;ll notify you without undue delay, and in any case within{' '}
-          <span className={styles.placeholder}>[72 hours]</span> of becoming aware, of any confirmed breach
+          We&rsquo;ll notify you without undue delay, and in any case within 72 hours of becoming aware, of any confirmed breach
           affecting personal data we process on your behalf, with the information reasonably available to us
           at that time.
         </p>
@@ -124,15 +116,25 @@ export default function DpaPage() {
         <p>
           On reasonable written notice, and no more than once per 12 months absent a specific security
           concern, we&rsquo;ll provide the information reasonably necessary to demonstrate compliance with
-          this DPA — <span className={styles.placeholder}>[specify: questionnaire response, summary
-          report, or on-site/remote audit terms]</span>.
+          this DPA. We do that by answering a written security questionnaire and by pointing you to our{' '}
+          <a href="/legal/security">Security page</a> as the summary of our controls. We don&rsquo;t offer
+          on-site or remote audits of our infrastructure; our subprocessors&rsquo; own audit reports are
+          available through those providers where they make them available.
         </p>
 
         <h2 id="transfers">12. International transfers</h2>
         <p>
           Where personal data is transferred outside your jurisdiction to a subprocessor listed above, we
           rely on that provider&rsquo;s Standard Contractual Clauses or an equivalent recognized transfer
-          mechanism. <span className={styles.placeholder}>[Attach SCC annex / transfer impact assessment reference if required]</span>.
+          mechanism.
+        </p>
+        <p>
+          For customers whose personal data is subject to EU or UK GDPR, the EU Standard Contractual Clauses
+          (Module Two, controller to processor) and the UK International Data Transfer Addendum are
+          incorporated into this DPA by reference. Annex I is completed by section 3 above, Annex II by
+          section 6 and our <a href="/legal/security">Security page</a>, and Annex III by the subprocessor
+          list in our <a href="/legal/privacy#subprocessors">Privacy Policy</a>. Where those clauses require a
+          choice of governing law or forum, the law and courts of Ireland apply.
         </p>
 
         <h2 id="precedence">13. Precedence</h2>

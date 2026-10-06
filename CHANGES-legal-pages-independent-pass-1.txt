@@ -1,0 +1,21 @@
+Legal pages — independent pass 1 (Oct 2026)
+
+Filled every placeholder and corrected claims that did not match the code. No migration.
+
+Fixes
+- terms: entity/registration wording; trial (14 days, no card, billing starts on upgrade), 5-day failed-payment grace then Solo,
+  cancellation, refund policy; liability cap = greater of 12 months' fees or USD 100; Kenyan law, 30-day negotiation, NCIA
+  arbitration (seat Nairobi), Nairobi courts for injunctive relief.
+- privacy: concrete retention (30-day workspace restore, 7-year retention of deleted workspaces, 30-day Draft/Intake project purge,
+  30-day account erasure, 90/180-day notifications, append-only audit log); US hosting and transfer wording; subprocessor table now
+  lists Google sign-in, Cloudflare/GitHub (scheduler), jsDelivr and the Paystack checkout script; "never queryable" RLS claim softened
+  (server routes use the service client, so app-layer checks are the primary gate).
+- dpa: 72h breach window, 14-day email subprocessor notice, questionnaire-based audit rights, EU SCCs (Module 2) + UK Addendum by
+  reference (Ireland for governing law/forum where required).
+- security: removed the false "HTTP-only cookies" claim (session cookie is written via document.cookie); RLS wording corrected;
+  MFA-required permission list now matches lib/auth/mfa-policy.ts.
+- cookies: added the PKCE -code-verifier cookie, onboarding localStorage, and third-party scripts (Paystack, jsDelivr).
+- All five pages: dated October 2026; "Draft for internal review" banners removed.
+- lib/auth/terms.ts: TERMS_VERSION 2026-09 -> 2026-10.
+- .env.local.example: stale bastionhq.com domains -> scopegov.app (guardian inbound domain, portal and app URLs).
+- tests/legal-pages-accuracy.test.ts: guards placeholders, version label, retention/grace/trial figures against the code.

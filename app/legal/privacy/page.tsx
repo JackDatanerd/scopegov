@@ -10,15 +10,8 @@ export default function PrivacyPolicyPage() {
     <article>
       <span className={styles.docBadge}>Legal &middot; Privacy</span>
       <h1 className={styles.title}>Privacy Policy</h1>
-      <p className={styles.meta}>Last updated: <span className={styles.placeholder}>[DATE OF PUBLICATION]</span> &middot; Effective on publication</p>
+      <p className={styles.meta}>Last updated: October 2026 &middot; Effective October 2026</p>
 
-      <div className={styles.reviewNote}>
-        <strong>Draft for internal review.</strong> This is a first pass, written to match how ScopeGov&rsquo;s
-        codebase actually handles data (see subprocessors below) — it is not legal advice and hasn&rsquo;t been
-        reviewed by counsel. Fields in <span className={styles.placeholder}>amber</span> need real values
-        before this goes live, and the retention, jurisdiction, and cookie sections in particular should get
-        a lawyer&rsquo;s eyes given you&rsquo;re handling client contract and payment data across borders.
-      </div>
 
       <nav className={styles.toc}>
         <div className={styles.tocTitle}>On this page</div>
@@ -48,21 +41,19 @@ export default function PrivacyPolicyPage() {
           scopegov.app and sign.scopegov.app (our client-signing portal), and what we do with it.
         </p>
         <p>
-          ScopeGov is operated by Saltern Studio Ltd., a company registered in{' '}
-          <span className={styles.placeholder}>[Kenya / registration number]</span>, with a registered
-          address at <span className={styles.placeholder}>[registered address]</span>. See our{' '}
+          ScopeGov is operated by Saltern Studio Ltd., a company registered in Kenya. See our{' '}
           <a href="/legal/terms">Terms of Service</a> for the full contracting relationship.
         </p>
 
         <h2 id="what-we-collect">2. What we collect</h2>
         <p>We collect different data depending on who you are to us:</p>
         <ul>
-          <li><strong>Agency accounts.</strong> Name, work email, password (hashed via Supabase Auth), workspace and role, and optionally a TOTP factor if you enable two-factor authentication.</li>
+          <li><strong>Agency accounts.</strong> Name, work email, password (hashed via Supabase Auth), workspace and role, and optionally a TOTP factor if you enable two-factor authentication. If you choose to sign in with Google, we receive your name and email address from Google through our authentication provider.</li>
           <li><strong>Content you create.</strong> Statements of Work, change orders, invoices, client and project records, and any briefs, drafts, or comments you enter into the product.</li>
           <li><strong>Client &amp; signer data.</strong> Names, emails, and signatures of the people your agency invites to review or sign a document through the portal — provided by you, not collected directly from them beyond what&rsquo;s needed to complete a signature.</li>
           <li><strong>Forwarded correspondence.</strong> If you forward client emails to a project&rsquo;s Guardian inbox (via Postmark), we process the message content to check it against that project&rsquo;s signed scope.</li>
           <li><strong>Billing data.</strong> Handled by Paystack; we store the resulting subscription status and plan tier, not full card numbers.</li>
-          <li><strong>Usage &amp; device data.</strong> IP address, browser/device information, and in-app activity, used for security (e.g. session integrity, audit logging) rather than marketing analytics.</li>
+          <li><strong>Usage &amp; device data.</strong> IP address, browser/device information, and in-app activity, used for security (e.g. session integrity, audit logging) rather than marketing analytics. See our <a href="/legal/cookies">Cookie Policy</a> for the cookies we set.</li>
         </ul>
 
         <h2 id="how-we-use-it">3. How we use it</h2>
@@ -84,7 +75,7 @@ export default function PrivacyPolicyPage() {
         </ul>
         <p>
           Both are processed under those providers&rsquo; standard API terms, which — as of this policy&rsquo;s
-          drafting — do not use API-submitted content to train their models. We send only what&rsquo;s needed
+          publication — do not use API-submitted content to train their models. We send only what&rsquo;s needed
           for the specific request (e.g. one project&rsquo;s SOW and the message being checked), not your full
           workspace, and results are scoped back to the workspace that generated them.
         </p>
@@ -102,7 +93,10 @@ export default function PrivacyPolicyPage() {
             <tr><td>OpenAI</td><td>Document embeddings for search</td><td>SOW and document text</td></tr>
             <tr><td>Resend</td><td>Transactional email delivery</td><td>Recipient email, notification content</td></tr>
             <tr><td>Postmark</td><td>Inbound email parsing (Guardian)</td><td>Forwarded message content and headers</td></tr>
-            <tr><td>Paystack</td><td>Subscription billing</td><td>Billing contact details; payment handled by Paystack directly</td></tr>
+            <tr><td>Paystack</td><td>Subscription billing (its checkout script loads from js.paystack.co when you open checkout)</td><td>Billing contact details; payment handled by Paystack directly</td></tr>
+            <tr><td>Google</td><td>Optional &ldquo;Sign in with Google&rdquo;</td><td>Name, email address, and Google account identifier, only if you choose Google sign-in</td></tr>
+            <tr><td>Cloudflare and GitHub</td><td>Triggering our scheduled background jobs</td><td>No customer content; scheduled requests to our own endpoints</td></tr>
+            <tr><td>jsDelivr</td><td>Delivering the icon stylesheet used across the app</td><td>Visitor IP address and browser details, as in any standard web request</td></tr>
           </tbody>
         </table>
 
@@ -116,13 +110,18 @@ export default function PrivacyPolicyPage() {
         </p>
 
         <h2 id="retention">7. Retention &amp; deletion</h2>
+        <p>We keep workspace content for as long as your workspace is active. When something is deleted, this is what happens:</p>
+        <ul>
+          <li><strong>Deleted workspaces.</strong> A workspace owner can restore a deleted workspace for 30 days. After that it is no longer accessible to you, but we keep the data for 7 years from the deletion date and then permanently delete it. We keep it that long because a workspace holds contracts, change orders, and invoices that may be needed for tax, accounting, and legal-claim purposes.</li>
+          <li><strong>Deleted Draft or Intake projects.</strong> Permanently deleted 30 days after deletion.</li>
+          <li><strong>Deleted accounts.</strong> When you delete your account, we erase your profile and sign-in details 30 days later. Records you created inside a workspace, such as documents and audit-log entries, stay with that workspace.</li>
+          <li><strong>Audit log.</strong> The audit log is append-only and is kept for the life of the workspace.</li>
+          <li><strong>In-app notifications.</strong> Read notifications are deleted after 90 days and unread ones after 180 days.</li>
+          <li><strong>Billing records.</strong> Kept for as long as tax and accounting law requires.</li>
+        </ul>
         <p>
-          We keep workspace content for as long as your account is active, plus a limited grace period after
-          cancellation so you can export or reactivate. As implemented today: cancelled-workspace data is
-          purged on a scheduled basis, and completed projects are retained for a period before automatic
-          purge unless your plan&rsquo;s document-history settings say otherwise. If you&rsquo;d like an
-          exact number of days for each of these, add it here: <span className={styles.placeholder}>[retention periods]</span>.
-          You can request earlier deletion at any time — see <a href="#contact">Contact</a>.
+          You can ask for earlier deletion at any time — see <a href="#contact">Contact</a>. We&rsquo;ll honor
+          the request unless we are legally required to keep the data.
         </p>
 
         <h2 id="your-rights">8. Your rights</h2>
@@ -130,8 +129,8 @@ export default function PrivacyPolicyPage() {
 
         <h2 id="security">9. Security</h2>
         <p>
-          Data is stored in Postgres with row-level security enforced per workspace, so one agency&rsquo;s data
-          is never queryable by another&rsquo;s session. Sensitive workspace secrets are isolated in a
+          Data is stored in Postgres with row-level security enabled on our tables, and workspace access is also
+          enforced in our application code for server-side operations. Sensitive workspace secrets are isolated in a
           separate, deny-all table reachable only by trusted server processes. We support and, for
           governance-level permissions, enforce two-factor authentication. No system is perfectly secure —
           see our <a href="/legal/security">Security page</a> for more detail and how to report a concern.
@@ -139,10 +138,16 @@ export default function PrivacyPolicyPage() {
 
         <h2 id="international">10. International transfers</h2>
         <p>
-          ScopeGov and its subprocessors operate infrastructure in multiple regions. Where personal data
-          moves across borders — for example to a subprocessor headquartered outside your country — we rely
-          on that provider&rsquo;s standard contractual clauses or equivalent safeguards. Specifics:{' '}
-          <span className={styles.placeholder}>[hosting region(s), SCC details]</span>.
+          ScopeGov is operated from Kenya, and our database and hosting infrastructure is located in the
+          United States. Personal data you or your clients submit is therefore transferred to and processed in
+          the United States and Kenya, and by our subprocessors in the countries where they operate.
+        </p>
+        <p>
+          For transfers to our subprocessors, we rely on each provider&rsquo;s data processing terms, which
+          incorporate Standard Contractual Clauses or an equivalent safeguard. For customers whose data is
+          subject to EU or UK GDPR, the EU Standard Contractual Clauses (controller to processor) and the UK
+          Addendum are incorporated by reference through our{' '}
+          <a href="/legal/dpa#transfers">Data Processing Addendum</a>.
         </p>
 
         <h2 id="children">11. Children</h2>

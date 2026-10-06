@@ -10,21 +10,17 @@ export default function SecurityPage() {
     <article>
       <span className={styles.docBadge}>Trust &middot; Security</span>
       <h1 className={styles.title}>Security</h1>
-      <p className={styles.meta}>Last updated: <span className={styles.placeholder}>[DATE OF PUBLICATION]</span></p>
+      <p className={styles.meta}>Last updated: October 2026</p>
 
-      <div className={styles.reviewNote}>
-        <strong>Draft for internal review.</strong> This describes controls that exist in the codebase today
-        (RLS, secret isolation, MFA enforcement, audit logging). Before publishing, confirm nothing here
-        overstates a control that&rsquo;s only partially rolled out, and add the incident-response and
-        subprocessor-security-review process once those are formalized.
-      </div>
 
       <div className={styles.prose}>
         <h2>Data isolation</h2>
         <p>
-          Every table in ScopeGov&rsquo;s database enforces row-level security scoped to workspace membership.
-          A session belonging to one agency&rsquo;s workspace cannot read or write another workspace&rsquo;s
-          data, regardless of application-layer code — the database itself enforces the boundary.
+          Row-level security is enabled on ScopeGov&rsquo;s database tables, scoped to workspace membership,
+          so a direct database session belonging to one agency&rsquo;s workspace cannot read or write
+          another workspace&rsquo;s data. Server-side operations that run with elevated credentials bypass
+          row-level security by design, so for those we also enforce workspace membership and permissions in
+          application code on every request.
         </p>
 
         <h2>Secret isolation</h2>
@@ -38,8 +34,8 @@ export default function SecurityPage() {
         <h2>Authentication &amp; access</h2>
         <ul>
           <li>Passwords are hashed and managed by Supabase Auth; we never see or store them in plain text.</li>
-          <li>Two-factor authentication (TOTP) is available to every account and enforced automatically for permissions we classify as governance-sensitive — approving change orders, managing billing, or configuring workspace-wide settings.</li>
-          <li>Sessions are managed via secure, HTTP-only cookies with configurable assurance levels; a stolen session cookie alone is not sufficient to act on a governance-level permission if MFA is enrolled.</li>
+          <li>Two-factor authentication (TOTP) is available to every account and is required for permissions we classify as governance-sensitive, such as approving documents, managing billing, roles and workspace settings, viewing the audit log, the portfolio, or all projects, and deleting projects.</li>
+          <li>Sessions are held in Secure, SameSite=Lax cookies. Actions tied to governance-level permissions require a session that has completed the second factor.</li>
         </ul>
 
         <h2>Audit trail</h2>

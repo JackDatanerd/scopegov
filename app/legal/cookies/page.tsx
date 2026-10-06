@@ -10,14 +10,8 @@ export default function CookiesPage() {
     <article>
       <span className={styles.docBadge}>Legal &middot; Cookies</span>
       <h1 className={styles.title}>Cookie Policy</h1>
-      <p className={styles.meta}>Last updated: <span className={styles.placeholder}>[DATE OF PUBLICATION]</span></p>
+      <p className={styles.meta}>Last updated: October 2026</p>
 
-      <div className={styles.reviewNote}>
-        <strong>Draft for internal review.</strong> This reflects the cookies actually set by the codebase
-        today — session cookies from Supabase Auth and a first-touch referral cookie in middleware. There is
-        no analytics or advertising cookie in the app as built. If that changes (adding product analytics,
-        for instance), this page and the consent banner it implies will both need updating.
-      </div>
 
       <div className={styles.prose}>
         <h2>What we use cookies for</h2>
@@ -30,6 +24,7 @@ export default function CookiesPage() {
           <thead><tr><th>Cookie</th><th>Purpose</th><th>Duration</th><th>Type</th></tr></thead>
           <tbody>
             <tr><td>Supabase session cookies</td><td>Keep you signed in and identify your active workspace session</td><td>Session / refresh-token lifetime</td><td>Strictly necessary</td></tr>
+            <tr><td>Sign-in verification cookie (name ends in <code>-code-verifier</code>)</td><td>Lets a sign-in or password-reset link finish correctly, including when it returns on a different <code>scopegov.app</code> address than the one you started on</td><td>Short-lived; used only while sign-in completes</td><td>Strictly necessary</td></tr>
             <tr><td><code>ss_ref</code></td><td>Remembers which referral link brought a first-time visitor to the site, so we can attribute signups correctly</td><td>30 days</td><td>Strictly necessary (first-party, no cross-site tracking)</td></tr>
           </tbody>
         </table>
@@ -40,6 +35,14 @@ export default function CookiesPage() {
           cross-site analytics tracker. If we add product analytics in the future that relies on
           non-essential cookies, we&rsquo;ll update this page and ask for consent where required before
           setting them.
+        </p>
+
+        <h2>Browser storage and third-party scripts</h2>
+        <p>
+          While you set up a workspace, the onboarding wizard saves your progress in your browser&rsquo;s local
+          storage so you can resume it; that data stays in your browser. Separately, when you open billing
+          checkout, Paystack&rsquo;s checkout script loads from js.paystack.co, and Paystack may set its own
+          cookies under its own policy. Our app also loads an icon stylesheet from jsDelivr.
         </p>
 
         <h2>Managing cookies</h2>
