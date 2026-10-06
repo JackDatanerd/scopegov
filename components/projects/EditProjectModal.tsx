@@ -141,7 +141,7 @@ export default function EditProjectModal({
     // structural edit like that is only reachable pre-SOW in the first
     // place — see !hasAnySow above), so this only ever actually blocks an
     // existing retainer's own duration.
-    if (type === 'retainer' && !valueLocked && retainerMonths !== (project.type === 'retainer' && project.retainer_duration_months ? String(project.retainer_duration_months) : '')) {
+    if (canViewFinancials && type === 'retainer' && !valueLocked && retainerMonths !== (project.type === 'retainer' && project.retainer_duration_months ? String(project.retainer_duration_months) : '')) {
       body.retainerDurationMonths = retainerMonths
     }
     if (Object.keys(body).length === 0) { onClose(); return }
@@ -284,7 +284,7 @@ export default function EditProjectModal({
           </div>
         </div>
 
-        {type === 'retainer' && (
+        {type === 'retainer' && canViewFinancials && (
           <div style={{ marginBottom: 12 }}>
             <label className="form-label">Retainer duration (months)</label>
             {/* FIX (Projects & Dashboard deep audit, flagship finding): disabled

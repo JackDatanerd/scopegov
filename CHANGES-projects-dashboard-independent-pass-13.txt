@@ -1,0 +1,5 @@
+Projects & Dashboard independent pass 13
+B1 PATCH /api/projects/[id]: contractValue and retainerDurationMonths changes now need VIEW_FINANCIALS (matches /api/co CO-5); unchanged echoes still pass. EditProjectModal hides/doesn't send the retainer term without it.
+B2 Overview tab: Payment milestones card hidden without VIEW_FINANCIALS (list is withheld server-side, so it read as "No milestones yet").
+B3 Activity tab: "Load older activity" uses a server offset ref so new events can't stall paging.
+Not changed (decision): POST /api/projects still accepts a contract value from the wizard for members without VIEW_FINANCIALS.

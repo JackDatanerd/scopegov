@@ -205,6 +205,10 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       if (!p.ok) return NextResponse.json({ error: p.error }, { status: 400 })
       const newValue = p.value
       if (newValue !== Number(project.contract_value)) {
+        // FIX (Projects & Dashboard independent pass — B1): same rule as POST/PATCH /api/co (CO-5): a member who cannot see
+        // financials cannot re-price either (an unchanged echo, as the wizard sends, is not a change and passes).
+        if (!hasPermission(session, 'VIEW_FINANCIALS'))
+          return NextResponse.json({ error: 'Missing permission: VIEW_FINANCIALS' }, { status: 403 })
         const lockError = await checkSowLock(service, sows, 'contract value', 'contract value', 'value')
         if (lockError) return NextResponse.json({ error: lockError }, { status: 409 })
         changes.contractValue = { from: Number(project.contract_value), to: newValue }
@@ -238,6 +242,9 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       const p = parseRetainerMonths(body.retainerDurationMonths)
       if (!p.ok) return NextResponse.json({ error: p.error }, { status: 400 })
       if (p.value !== project.retainer_duration_months) {
+        // FIX (independent pass — B1): the term multiplies the monthly rate, so it re-prices the project exactly like contractValue.
+        if (!hasPermission(session, 'VIEW_FINANCIALS'))
+          return NextResponse.json({ error: 'Missing permission: VIEW_FINANCIALS' }, { status: 403 })
         const lockError = await checkSowLock(service, sows, 'retainer duration', 'retainer term', 'duration')
         if (lockError) return NextResponse.json({ error: lockError }, { status: 409 })
         changes.retainerDurationMonths = { from: project.retainer_duration_months, to: p.value }

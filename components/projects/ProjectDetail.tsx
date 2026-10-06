@@ -4,7 +4,7 @@
 
 'use client'
 import { effectiveFormStructure } from '@/lib/sow/payment-structure'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import type { SessionUser } from '@/lib/supabase/types'
@@ -744,7 +744,8 @@ function OverviewTab({ project, milestones, amendments, permissions, currency, r
         )}
       </div>
       <div>
-        <div className="surface surface-p">
+        {/* FIX (independent pass — B2): milestones are only loaded for VIEW_FINANCIALS, so for anyone else the empty list read as "No milestones yet". */}
+        {permissions.viewFinancials && <div className="surface surface-p">
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}>
             <div className="sec-title">Payment milestones</div>
             {overdueAmount > 0 && <span className="pill pill-red pill-sm">{formatCurrency(overdueAmount, currency)} overdue</span>}
@@ -773,7 +774,7 @@ function OverviewTab({ project, milestones, amendments, permissions, currency, r
               <span style={{ color: 'var(--green)', fontWeight: 500, fontFamily: 'IBM Plex Mono, monospace' }}>{formatCurrency(paidAmount, currency)}</span>
             </div>
           )}
-        </div>
+        </div>}
       </div>
       {adjusting !== null && (
         <ScopeAdjustModal projectId={project.id} deliverable={adjusting.value} field={adjusting.field}
@@ -2782,16 +2783,20 @@ function ActivityTab({ projectId, initial, initialHasMore }: { projectId: string
   const [hasMore, setHasMore] = useState(initialHasMore)
   const [loading, setLoading] = useState(false)
   const [loadError, setLoadError] = useState('')
+  // FIX (independent pass — B3): the server offset, kept apart from rows.length (which is de-duplicated). Newer events shift
+  // the pages, so an offset taken from the de-duplicated count could re-request rows already shown and never advance.
+  const offsetRef = useRef(initial.length)
 
   // A router.refresh() hands down a fresh first page; keep it authoritative.
-  useEffect(() => { setRows(initial); setHasMore(initialHasMore) }, [initial, initialHasMore])
+  useEffect(() => { setRows(initial); setHasMore(initialHasMore); offsetRef.current = initial.length }, [initial, initialHasMore])
 
   async function loadMore() {
     setLoading(true); setLoadError('')
     try {
-      const res  = await fetch(`/api/projects/${projectId}/activity?offset=${rows.length}`)
+      const res  = await fetch(`/api/projects/${projectId}/activity?offset=${offsetRef.current}`)
       const json = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(json.error || 'Could not load more activity')
+      offsetRef.current += (json.rows || []).length
       const seen = new Set(rows.map(r => r.id))
       setRows([...rows, ...(json.rows || []).filter((r: ShapedActivity) => !seen.has(r.id))])
       setHasMore(!!json.hasMore)
