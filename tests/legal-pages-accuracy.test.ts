@@ -58,12 +58,55 @@ describe('legal pages — publish-ready and consistent with the code', () => {
 
   it('subprocessors for services the code actually calls are listed', () => {
     const privacy = read('app/legal/privacy/page.tsx')
-    for (const name of ['Supabase', 'Vercel', 'Anthropic', 'OpenAI', 'Resend', 'Postmark', 'Paystack', 'Google', 'Cloudflare', 'jsDelivr']) {
+    for (const name of ['Supabase', 'Vercel', 'Anthropic', 'OpenAI', 'Resend', 'Postmark', 'Paystack', 'Google', 'Cloudflare']) {
       expect(privacy, name).toContain(name)
     }
   })
 
   it('.env.local.example carries no stale brand domains', () => {
     expect(read('.env.local.example')).not.toMatch(/bastionhq/i)
+  })
+  it('fonts and icons are self-hosted: no Google Fonts / jsDelivr request, so none needs disclosing', () => {
+    for (const f of ['app/layout.tsx', 'styles/globals.css']) {
+      expect(read(f), f).not.toMatch(/fonts\.googleapis\.com|fonts\.gstatic\.com|cdn\.jsdelivr\.net/)
+    }
+    expect(read('app/layout.tsx')).toContain("@fontsource/ibm-plex-sans/400.css")
+    expect(read('app/layout.tsx')).toContain("@tabler/icons-webfont/dist/tabler-icons.min.css")
+    expect(read('app/legal/privacy/page.tsx')).not.toContain('jsDelivr')
+    expect(read('app/legal/cookies/page.tsx')).not.toContain('jsDelivr')
+  })
+
+  it('privacy states the real data location and the signing record', () => {
+    const privacy = read('app/legal/privacy/page.tsx')
+    expect(privacy).toContain('European Union (Ireland)')
+    expect(privacy).toContain('IP address and browser details')
+    expect(read('app/api/portal/sow/[token]/sign/route.ts')).toContain('signer_ip')
+  })
+
+  it('every signer-facing portal shell links the Privacy Policy and Terms', () => {
+    expect(read('components/portal/PortalLegalFooter.tsx')).toContain('/legal/privacy')
+    expect(read('components/portal/PortalLegalFooter.tsx')).toContain('/legal/terms')
+    expect(read('components/portal/PortalShell.tsx')).toContain('<PortalLegalFooter />')
+    expect(read('app/portal/sow/[token]/page.tsx')).toContain('<PortalLegalFooter />')
+  })
+
+  it('cookie page: ss_ref is not called strictly necessary; session cookie lifetime matches the library default', () => {
+    const cookies = read('app/legal/cookies/page.tsx')
+    expect(cookies).not.toMatch(/ss_ref<\/code><\/td>[\s\S]{0,400}Strictly necessary/)
+    expect(cookies).toContain('Up to 400 days')
+    expect(read('node_modules/@supabase/ssr/dist/main/utils/constants.js')).toMatch(/maxAge:\s*400 \* 24 \* 60 \* 60/)
+    expect(read('lib/supabase/cookie-options.ts')).not.toContain('maxAge')
+  })
+
+  it('terms/DPA wording matches the product: no owner-configurable MFA, no unconditional Solo fallback, no phantom export tool', () => {
+    const terms = read('app/legal/terms/page.tsx')
+    const dpa = read('app/legal/dpa/page.tsx')
+    expect(terms).not.toMatch(/whether\s+two-factor/)
+    expect(terms).not.toMatch(/moves to\s+the Solo plan/)
+    expect(dpa).not.toContain('listed above')
+    expect(dpa).not.toContain('export and deletion tools built into')
+    expect(dpa).not.toContain('row-level\n          database access control per workspace')
+    expect(dpa).toContain('instruct us in writing')
+    expect(read('app/api/clients/[id]/contacts/[contactId]/route.ts')).toContain('export async function DELETE')
   })
 })

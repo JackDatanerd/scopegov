@@ -55,9 +55,10 @@ export default function TermsPage() {
         <h2 id="accounts">3. Accounts &amp; workspaces</h2>
         <p>
           You&rsquo;re responsible for the accuracy of information you provide and for activity under your
-          account. Workspace owners control who has access and what permissions they hold, including whether
-          two-factor authentication is required for governance-level roles — we enforce that requirement
-          technically once it applies, but the underlying access decisions are yours to make.
+          account. Workspace owners control who has access and what permissions they hold. Two-factor authentication
+          is required automatically for any member who holds a governance-level permission (for example
+          approving documents, managing billing, or changing workspace settings); we enforce that
+          requirement technically, but the underlying access decisions are yours to make.
         </p>
 
         <h2 id="your-content">4. Your content</h2>
@@ -100,12 +101,15 @@ export default function TermsPage() {
         </p>
         <p>
           <strong>Free trial.</strong> New workspaces start with a 14-day free trial. No card is required to
-          start one. Billing begins when you upgrade to a paid plan, and upgrading ends the trial.
+          start one. Billing begins when you upgrade to a paid plan, and upgrading ends the trial. When the trial
+          ends, you need to subscribe to a paid plan to keep using ScopeGov; if you don&rsquo;t, we may limit
+          or suspend access to your workspace, and your content is handled as described in our{' '}
+          <a href="/legal/privacy#retention">Privacy Policy</a>.
         </p>
         <p>
           <strong>Failed payments.</strong> If a renewal payment fails, we start a 5-day grace period and
-          notify you. If the payment is still not resolved when the grace period ends, your workspace moves to
-          the Solo plan and that plan&rsquo;s limits apply.
+          notify you. If the payment is still not resolved when the grace period ends, we may limit or suspend
+          access to your workspace until it is.
         </p>
         <p>
           <strong>Cancellation.</strong> You can cancel at any time from your workspace settings.
@@ -133,8 +137,11 @@ export default function TermsPage() {
         <p>
           We may suspend or terminate access for material breach of these Terms, non-payment after notice, or
           conduct that puts the security or integrity of the service at risk. You may cancel at any time. On
-          termination, we retain your content for the period described in our{' '}
-          <a href="/legal/privacy">Privacy Policy</a> to allow export, then delete it on our standard schedule.
+          termination, we keep your content for the period described in our{' '}
+          <a href="/legal/privacy#retention">Privacy Policy</a> and then delete it on our standard schedule.
+          While you have access, you can download the documents and reports you need (SOW, change order, and
+          invoice PDFs, and CSV exports of reports, invoices, and the audit log), and you can ask us for
+          earlier deletion at any time.
         </p>
 
         <h2 id="warranty">10. Disclaimer of warranty</h2>

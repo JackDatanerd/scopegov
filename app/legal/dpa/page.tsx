@@ -76,8 +76,9 @@ export default function DpaPage() {
 
         <h2 id="security-measures">6. Security measures</h2>
         <p>
-          We maintain technical and organizational measures appropriate to the risk, including row-level
-          database access control per workspace, isolation of sensitive workspace secrets from
+          We maintain technical and organizational measures appropriate to the risk, including workspace-scoped
+          access control (database row-level security together with permission checks in our application
+          code), isolation of sensitive workspace secrets from
           general application access, encryption in transit, and two-factor authentication enforced for
           governance-level permissions. Full detail is on our <a href="/legal/security">Security page</a>.
         </p>
@@ -95,7 +96,8 @@ export default function DpaPage() {
           If we receive a request from one of your clients or their signers to exercise a data-subject right,
           we&rsquo;ll forward it to you promptly rather than responding directly, since you control the
           underlying relationship. We&rsquo;ll give you reasonable assistance to respond, including through
-          the export and deletion tools built into the product.
+          the product&rsquo;s document and report downloads (PDF and CSV) and its client, contact, project,
+          workspace, and account deletion tools.
         </p>
 
         <h2 id="breach">9. Breach notification</h2>
@@ -107,9 +109,11 @@ export default function DpaPage() {
 
         <h2 id="deletion">10. Return &amp; deletion</h2>
         <p>
-          On termination, you can export your workspace&rsquo;s content before it&rsquo;s deleted on the
-          schedule described in our <a href="/legal/privacy#retention">Privacy Policy</a>, unless we&rsquo;re
-          required to retain a copy by law.
+          On termination, you can download the documents and reports you need from the product before your
+          workspace is deleted on the schedule described in our{' '}
+          <a href="/legal/privacy#retention">Privacy Policy</a>. You can also instruct us in writing (at{' '}
+          <a href="mailto:privacy@scopegov.app">privacy@scopegov.app</a>) to delete your workspace&rsquo;s data
+          earlier, and we will do so unless we&rsquo;re required by law to retain a copy.
         </p>
 
         <h2 id="audit">11. Audit rights</h2>
@@ -124,7 +128,8 @@ export default function DpaPage() {
 
         <h2 id="transfers">12. International transfers</h2>
         <p>
-          Where personal data is transferred outside your jurisdiction to a subprocessor listed above, we
+          Where personal data is transferred outside your jurisdiction to a subprocessor listed in our{' '}
+          <a href="/legal/privacy#subprocessors">Privacy Policy</a>, we
           rely on that provider&rsquo;s Standard Contractual Clauses or an equivalent recognized transfer
           mechanism.
         </p>

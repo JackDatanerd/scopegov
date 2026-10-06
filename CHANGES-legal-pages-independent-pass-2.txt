@@ -1,0 +1,23 @@
+Legal pages — independent pass 2 (Oct 2026, base c8e127a)
+
+1. Third-party requests removed instead of disclosed: Google Fonts (@import in styles/globals.css) and the jsDelivr Tabler
+   icon stylesheet (<link> in app/layout.tsx) sent every visitor's IP to Google/jsDelivr on every page. Now bundled from npm
+   (@fontsource/cormorant-garamond, @fontsource/ibm-plex-sans, @fontsource/ibm-plex-mono, @tabler/icons-webfont, exact-pinned);
+   same families/weights. Privacy subprocessor table + Cookie page no longer list jsDelivr; Google row is accurate again
+   (optional sign-in only).
+2. Signing portal: new components/portal/PortalLegalFooter.tsx (Privacy + Terms, new tab so a mid-signature click loses
+   nothing) in the shared PortalShell (CO + invoice) and the SOW page's own shell. Privacy §2 now states the signing record
+   (signature, time, IP, browser) — the SOW and CO portals both capture signer IP/UA.
+3. Cookies: ss_ref relabelled Functional (it is referral attribution, not strictly necessary) and "Managing cookies" says
+   so; Supabase session cookie lifetime corrected to "up to 400 days" (@supabase/ssr default, no maxAge set here).
+4. Terms §3: removed the false claim that owners decide whether MFA is required (fixed policy by permission).
+5. Terms §7: trial-end outcome stated ("subscribe to keep using; otherwise we may limit or suspend access") and the failed-
+   payment outcome no longer says "moves to Solo" — worded to stay true before and after trial-expiry enforcement ships.
+6. Terms §9 / DPA §8 / DPA §10: export/deletion wording reduced to what exists (PDF/CSV downloads; client, contact, project,
+   workspace, account deletion); DPA §10 now commits to deletion on written instruction (Art. 28(3)(g)).
+7. DPA §6 RLS wording aligned with Security/Privacy; DPA §12 "listed above" -> points at the Privacy Policy list.
+8. Privacy §10: Supabase is in the EU (Ireland); app runs on Vercel in the US; processing in Ireland, US and Kenya.
+
+Not changed (billing section, in progress elsewhere): trial expiry and post-grace non-payment still set plan_tier 'solo'
+(payment-overdue cron, effectivePlanTier, PLAN_LIMITS.solo), i.e. free Solo limits instead of "subscribe or leave".
+Run `npm install` after extracting (package.json / package-lock.json changed).

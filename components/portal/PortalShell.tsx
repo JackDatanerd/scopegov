@@ -23,6 +23,7 @@
 // were byte-for-byte the same component; parameterized on the one thing
 // that differed (icon).
 import type { ReactNode } from 'react'
+import PortalLegalFooter from '@/components/portal/PortalLegalFooter'
 
 interface Props {
   children:   ReactNode
@@ -53,6 +54,7 @@ export default function PortalShell({ children, logoUrl, agencyName, accent, ico
         </div>
       </div>
       {children}
+      <PortalLegalFooter />
     </div>
   )
 }

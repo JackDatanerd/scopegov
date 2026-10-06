@@ -1,4 +1,20 @@
 import type { Metadata } from 'next'
+// Fonts and the icon font are self-hosted (bundled from npm) rather than loaded from Google Fonts / jsDelivr, so a
+// page view never sends the visitor's IP address to a third-party CDN. Same families and weights the old Google
+// Fonts URL requested; the families are referenced by name throughout the CSS.
+import '@fontsource/cormorant-garamond/300.css'
+import '@fontsource/cormorant-garamond/400.css'
+import '@fontsource/cormorant-garamond/500.css'
+import '@fontsource/cormorant-garamond/600.css'
+import '@fontsource/cormorant-garamond/300-italic.css'
+import '@fontsource/cormorant-garamond/400-italic.css'
+import '@fontsource/ibm-plex-sans/300.css'
+import '@fontsource/ibm-plex-sans/400.css'
+import '@fontsource/ibm-plex-sans/500.css'
+import '@fontsource/ibm-plex-sans/600.css'
+import '@fontsource/ibm-plex-mono/400.css'
+import '@fontsource/ibm-plex-mono/500.css'
+import '@tabler/icons-webfont/dist/tabler-icons.min.css'
 import '@/styles/globals.css'
 
 export const metadata: Metadata = {
@@ -43,10 +59,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en">
       <head>
-        <link
-          rel="stylesheet"
-          href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.30.0/dist/tabler-icons.min.css"
-        />
         {/* Windows tile config — no dedicated field in the Next.js metadata API */}
         <meta name="msapplication-TileColor" content="#1A5C3A" />
         <meta name="msapplication-config" content="/browserconfig.xml" />

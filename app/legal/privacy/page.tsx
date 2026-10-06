@@ -50,7 +50,7 @@ export default function PrivacyPolicyPage() {
         <ul>
           <li><strong>Agency accounts.</strong> Name, work email, password (hashed via Supabase Auth), workspace and role, and optionally a TOTP factor if you enable two-factor authentication. If you choose to sign in with Google, we receive your name and email address from Google through our authentication provider.</li>
           <li><strong>Content you create.</strong> Statements of Work, change orders, invoices, client and project records, and any briefs, drafts, or comments you enter into the product.</li>
-          <li><strong>Client &amp; signer data.</strong> Names, emails, and signatures of the people your agency invites to review or sign a document through the portal — provided by you, not collected directly from them beyond what&rsquo;s needed to complete a signature.</li>
+          <li><strong>Client &amp; signer data.</strong> Names, emails, and signatures of the people your agency invites to review or sign a document through the portal — provided by you. When someone signs or responds through the portal, we also record the details needed as evidence of the signature: their signature, the time, and their IP address and browser details.</li>
           <li><strong>Forwarded correspondence.</strong> If you forward client emails to a project&rsquo;s Guardian inbox (via Postmark), we process the message content to check it against that project&rsquo;s signed scope.</li>
           <li><strong>Billing data.</strong> Handled by Paystack; we store the resulting subscription status and plan tier, not full card numbers.</li>
           <li><strong>Usage &amp; device data.</strong> IP address, browser/device information, and in-app activity, used for security (e.g. session integrity, audit logging) rather than marketing analytics. See our <a href="/legal/cookies">Cookie Policy</a> for the cookies we set.</li>
@@ -96,7 +96,6 @@ export default function PrivacyPolicyPage() {
             <tr><td>Paystack</td><td>Subscription billing (its checkout script loads from js.paystack.co when you open checkout)</td><td>Billing contact details; payment handled by Paystack directly</td></tr>
             <tr><td>Google</td><td>Optional &ldquo;Sign in with Google&rdquo;</td><td>Name, email address, and Google account identifier, only if you choose Google sign-in</td></tr>
             <tr><td>Cloudflare and GitHub</td><td>Triggering our scheduled background jobs</td><td>No customer content; scheduled requests to our own endpoints</td></tr>
-            <tr><td>jsDelivr</td><td>Delivering the icon stylesheet used across the app</td><td>Visitor IP address and browser details, as in any standard web request</td></tr>
           </tbody>
         </table>
 
@@ -138,9 +137,11 @@ export default function PrivacyPolicyPage() {
 
         <h2 id="international">10. International transfers</h2>
         <p>
-          ScopeGov is operated from Kenya, and our database and hosting infrastructure is located in the
-          United States. Personal data you or your clients submit is therefore transferred to and processed in
-          the United States and Kenya, and by our subprocessors in the countries where they operate.
+          ScopeGov is operated from Kenya. Our database, authentication, and file storage are hosted by
+          Supabase in the European Union (Ireland). Our application runs on Vercel&rsquo;s infrastructure in the
+          United States, and several subprocessors (for example our AI, email, and billing providers) process
+          data in the United States and other countries where they operate. Personal data you or your clients
+          submit may therefore be processed in Ireland, the United States, and Kenya.
         </p>
         <p>
           For transfers to our subprocessors, we rely on each provider&rsquo;s data processing terms, which

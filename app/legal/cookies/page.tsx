@@ -16,16 +16,17 @@ export default function CookiesPage() {
       <div className={styles.prose}>
         <h2>What we use cookies for</h2>
         <p>
-          ScopeGov uses a small number of cookies to keep you signed in and to keep the product working
-          correctly — not for advertising, and not to track you across other sites.
+          ScopeGov uses a small number of cookies, mainly to keep you signed in and keep the product working
+          correctly, plus one to attribute referral sign-ups. We don&rsquo;t use them for advertising or to
+          track you across other sites.
         </p>
 
         <table className={styles.table}>
           <thead><tr><th>Cookie</th><th>Purpose</th><th>Duration</th><th>Type</th></tr></thead>
           <tbody>
-            <tr><td>Supabase session cookies</td><td>Keep you signed in and identify your active workspace session</td><td>Session / refresh-token lifetime</td><td>Strictly necessary</td></tr>
+            <tr><td>Supabase session cookies</td><td>Keep you signed in and identify your active workspace session</td><td>Up to 400 days; removed when you sign out</td><td>Strictly necessary</td></tr>
             <tr><td>Sign-in verification cookie (name ends in <code>-code-verifier</code>)</td><td>Lets a sign-in or password-reset link finish correctly, including when it returns on a different <code>scopegov.app</code> address than the one you started on</td><td>Short-lived; used only while sign-in completes</td><td>Strictly necessary</td></tr>
-            <tr><td><code>ss_ref</code></td><td>Remembers which referral link brought a first-time visitor to the site, so we can attribute signups correctly</td><td>30 days</td><td>Strictly necessary (first-party, no cross-site tracking)</td></tr>
+            <tr><td><code>ss_ref</code></td><td>Remembers which referral link brought a first-time visitor to the site, so we can attribute signups correctly</td><td>30 days</td><td>Functional (first-party; no cross-site tracking)</td></tr>
           </tbody>
         </table>
 
@@ -42,15 +43,16 @@ export default function CookiesPage() {
           While you set up a workspace, the onboarding wizard saves your progress in your browser&rsquo;s local
           storage so you can resume it; that data stays in your browser. Separately, when you open billing
           checkout, Paystack&rsquo;s checkout script loads from js.paystack.co, and Paystack may set its own
-          cookies under its own policy. Our app also loads an icon stylesheet from jsDelivr.
+          cookies under its own policy.
         </p>
 
         <h2>Managing cookies</h2>
         <p>
-          Because our current cookies are strictly necessary for signing in and basic site function, there
+          Our sign-in cookies are strictly necessary for signing in and basic site function, so there
           isn&rsquo;t an in-product toggle to disable them — blocking them in your browser will generally
-          prevent you from staying signed in. You can clear or block cookies through your browser&rsquo;s
-          settings at any time.
+          prevent you from staying signed in. The referral cookie (<code>ss_ref</code>) isn&rsquo;t needed to
+          use ScopeGov; blocking or clearing it doesn&rsquo;t affect signing in. You can clear or block cookies
+          through your browser&rsquo;s settings at any time.
         </p>
 
         <h2>Questions</h2>

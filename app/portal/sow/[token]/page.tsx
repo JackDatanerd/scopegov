@@ -2,6 +2,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import SignaturePad, { type SignaturePadHandle } from '@/components/ui/SignaturePad'
+import PortalLegalFooter from '@/components/portal/PortalLegalFooter'
 import { isTableSection, SOW_TABLE_SCHEMAS, columnLabel, type SowTableSectionId, type SowTableRow } from '@/lib/sow/table-schema'
 // FIX (deep audit, client-facing/signing section): this page formatted money with raw
 // .toLocaleString() — no minimumFractionDigits, so a figure with cents (1234.50) could print as
@@ -564,6 +565,7 @@ function PortalShell({ children, accent, agencyName, logoUrl }: {
         </div>
       </div>
       {children}
+      <PortalLegalFooter />
     </div>
   )
 }
