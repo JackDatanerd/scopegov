@@ -6,7 +6,7 @@
   --green-dark: #0F2818;
   --ink: #1B1B17;
   --ink-2: #4A4A42;
-  --ink-3: #8B8B7F;
+  --ink-3: #66665B; /* AA on parchment (5.1), parchment-2 (4.7) and white (5.8); the old #8B8B7F measured 2.8-3.4 */
   --border: #DFDBCE;
   --gold: #92680A;
   --gold-lt: #FBF4E3;
@@ -81,7 +81,11 @@
   padding: 0 3px; font-weight: 500; white-space: nowrap;
 }
 
-.table { width: 100%; border-collapse: collapse; margin: 4px 0 20px; font-size: 13px; }
+/* The cookie/subprocessor tables are wider than a phone (the cookie table is ~390px), so each one scrolls inside its own
+   box instead of forcing the whole page to scroll sideways. */
+.tableWrap { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 4px 0 20px; max-width: 100%; }
+.tableWrap:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
+.table { width: 100%; border-collapse: collapse; margin: 0; font-size: 13px; }
 .table th, .table td { text-align: left; padding: 10px 12px; border: 1px solid var(--border); vertical-align: top; }
 .table th { background: var(--surface); font-family: var(--mono); font-size: 10.5px; letter-spacing: .04em; text-transform: uppercase; color: var(--ink-3); font-weight: 500; }
 .table td { background: var(--surface); color: var(--ink-2); }

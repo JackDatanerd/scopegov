@@ -52,6 +52,7 @@ export default function DpaPage() {
         </p>
 
         <h2 id="processing-details">3. Details of processing</h2>
+        <div className={styles.tableWrap} role="region" aria-label="Details of processing" tabIndex={0}>
         <table className={styles.table}>
           <thead><tr><th>Category</th><th>Detail</th></tr></thead>
           <tbody>
@@ -62,6 +63,7 @@ export default function DpaPage() {
             <tr><td>Categories of data subjects</td><td>Your team members; your clients&rsquo; contacts and authorized signers</td></tr>
           </tbody>
         </table>
+        </div>
 
         <h2 id="customer-instructions">4. Processing on instructions</h2>
         <p>

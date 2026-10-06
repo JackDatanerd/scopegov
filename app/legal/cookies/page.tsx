@@ -21,6 +21,7 @@ export default function CookiesPage() {
           track you across other sites.
         </p>
 
+        <div className={styles.tableWrap} role="region" aria-label="Cookies we set" tabIndex={0}>
         <table className={styles.table}>
           <thead><tr><th>Cookie</th><th>Purpose</th><th>Duration</th><th>Type</th></tr></thead>
           <tbody>
@@ -29,6 +30,7 @@ export default function CookiesPage() {
             <tr><td><code>ss_ref</code></td><td>Remembers which referral link brought a first-time visitor to the site, so we can attribute signups correctly</td><td>30 days</td><td>Functional (first-party; no cross-site tracking)</td></tr>
           </tbody>
         </table>
+        </div>
 
         <h2>What we don&rsquo;t use</h2>
         <p>

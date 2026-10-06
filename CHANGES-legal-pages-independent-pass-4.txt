@@ -1,0 +1,15 @@
+Legal pages — independent pass 4 (Oct 2026, base 3177f1f)
+
+Both findings were measured in a real headless Chromium against the production build, not guessed.
+
+1. Tables overflowed phones. The Cookie Policy table is 388px wide, so at 320-390px viewports the whole page scrolled sideways
+   (scrollWidth 408) and the right-hand columns (incl. the strictly-necessary / functional "Type" column) sat off-screen; the
+   Privacy subprocessor table overflowed at 320px. Each of the 3 legal tables (cookies, privacy, dpa) is now wrapped in
+   .tableWrap (overflow-x:auto) with role="region", an aria-label and tabIndex=0 so the scrolled table is keyboard-reachable.
+   After: scrollWidth == viewport at 320/360/390 on all five pages.
+2. Low contrast. --ink-3 (#8B8B7F) measured 2.78-3.44:1 (WCAG AA needs 4.5:1) on the "Last updated" line, "On this page",
+   every table header and the footer sentence that names Saltern Studio Ltd. Now #66665B (5.10 / 4.69 / 5.81 on parchment /
+   parchment-2 / white). After: browser contrast scan of all five pages reports zero failures.
+
+Tests: tests/legal-pages-accuracy.test.ts gains a table-wrapper guard and a WCAG AA ratio check over ink/ink-2/ink-3/green on all
+three backgrounds; both verified to FAIL on the pre-fix code. No copy changes, no dependency changes.

@@ -83,6 +83,7 @@ export default function PrivacyPolicyPage() {
 
         <h2 id="subprocessors">5. Subprocessors</h2>
         <p>We use the following subprocessors to run ScopeGov. We&rsquo;ll update this table when that list changes.</p>
+        <div className={styles.tableWrap} role="region" aria-label="Subprocessors" tabIndex={0}>
         <table className={styles.table}>
           <thead>
             <tr><th>Provider</th><th>Purpose</th><th>Data involved</th></tr>
@@ -99,6 +100,7 @@ export default function PrivacyPolicyPage() {
             <tr><td>Cloudflare and GitHub</td><td>Triggering our scheduled background jobs</td><td>No customer content; scheduled requests to our own endpoints</td></tr>
           </tbody>
         </table>
+        </div>
 
         <h2 id="legal-basis">6. Legal basis</h2>
         <p>

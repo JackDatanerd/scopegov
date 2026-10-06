@@ -143,4 +143,31 @@ describe('legal pages — publish-ready and consistent with the code', () => {
     expect(read('app/legal/cookies/page.tsx')).not.toContain('Short-lived')
     expect(read('app/legal/cookies/page.tsx')).toContain('Removed as soon as sign-in completes')
   })
+  it('every legal table sits in a scroll container (a bare table made phones scroll the whole page sideways)', () => {
+    const css = read('styles/legal.module.css')
+    expect(css).toMatch(/\.tableWrap\s*\{[^}]*overflow-x:\s*auto/)
+    for (const { n, src } of pages) {
+      const tables = (src.match(/<table\b/g) || []).length
+      const wrapped = (src.match(/<div className=\{styles\.tableWrap\}[^>]*>\s*<table\b/g) || []).length
+      expect(wrapped, `${n}: ${tables} table(s), ${wrapped} wrapped`).toBe(tables)
+    }
+    // the scrolling region must be keyboard-reachable
+    expect(read('app/legal/cookies/page.tsx')).toMatch(/tableWrap\}\s+role="region"[^>]*tabIndex=\{0\}/)
+  })
+
+  it('legal text colours meet WCAG AA (4.5:1) on every background they are drawn on', () => {
+    const css = read('styles/legal.module.css')
+    const tok = (n: string) => new RegExp(`--${n}:\\s*(#[0-9A-Fa-f]{6})`).exec(css)![1]
+    const lum = (h: string) => {
+      const [r, g, b] = [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16) / 255)
+        .map(v => (v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4)))
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b
+    }
+    const ratio = (a: string, b: string) => (Math.max(lum(a), lum(b)) + 0.05) / (Math.min(lum(a), lum(b)) + 0.05)
+    for (const fg of ['ink', 'ink-2', 'ink-3', 'green']) {
+      for (const bg of ['parchment', 'parchment-2', 'surface']) {
+        expect(ratio(tok(fg), tok(bg)), `--${fg} on --${bg}`).toBeGreaterThanOrEqual(4.5)
+      }
+    }
+  })
 })
