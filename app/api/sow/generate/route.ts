@@ -112,10 +112,12 @@ export async function POST(request: NextRequest) {
     const service = createServiceClient()
 
     // Fetch project + client + workspace for context
-    const { data: project } = await (service as any)
+    const { data: project, error: projectErr } = await (service as any)
       .from('projects')
       .select('id,name,disc,type,retainer_duration_months,status,contract_value,currency,clients(name,email,company_name),workspaces(agency_name,governing_law,sow_language)')
-      .eq('id', projectId).eq('workspace_id', session.workspaceId).is('deleted_at', null).single()
+      .eq('id', projectId).eq('workspace_id', session.workspaceId).is('deleted_at', null).maybeSingle()
+    // SOW lifecycle pass 17, B5: a failed read is not "not found" — fail into the route's 500 handler.
+    if (projectErr) throw new Error(`project read failed: ${projectErr.message}`)
     if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 })
     if (!(await canReadProject(service, session, projectId)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })

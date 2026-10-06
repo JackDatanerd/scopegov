@@ -307,7 +307,7 @@ function SectionShell({ s, keepTogether, title, content }: { s: any; keepTogethe
   return <View style={s.section}>{content(heading)}</View>
 }
 
-function SowSection({ sec, num, s, language }: { sec: SowPdfData['sections'][number]; num: number; s: any; language?: string }) {
+function SowSection({ sec, num, s, language, currency }: { sec: SowPdfData['sections'][number]; num: number; s: any; language?: string; currency?: string }) {
   const keepTogether = isTableSection(sec.id) ? (sec.table || []).length <= TABLE_KEEP_TOGETHER_MAX_ROWS : fitsOnOnePage(sec.content)
   return (
     <SectionShell
@@ -315,7 +315,7 @@ function SowSection({ sec, num, s, language }: { sec: SowPdfData['sections'][num
       keepTogether={keepTogether}
       title={<><Text style={s.secNum}>{num}. </Text>{sec.title}</>}
       content={lead => isTableSection(sec.id)
-        ? <SowTable sectionId={sec.id} rows={sec.table || []} language={language} lead={lead} />
+        ? <SowTable sectionId={sec.id} rows={sec.table || []} language={language} lead={lead} currency={currency} />
         : <RichText html={sec.content} style={s.body} lead={lead} />}
     />
   )
@@ -500,7 +500,7 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
             suppressed section's own position instead of tacked onto the
             end, so numbering and reading order agree. */}
         {sections.slice(0, hasMilestoneBlock ? scheduleIndex : sections.length).map((sec, i) => (
-          <SowSection key={sec.id} sec={sec} num={i + 1} s={s} language={data.language} />
+          <SowSection key={sec.id} sec={sec} num={i + 1} s={s} language={data.language} currency={data.currency} />
         ))}
 
         {/* Payment schedule — sourced from payment_milestones, which only
@@ -545,7 +545,7 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
         )}
 
         {hasMilestoneBlock && sections.slice(scheduleIndex).map((sec, i) => (
-          <SowSection key={sec.id} sec={sec} num={scheduleIndex + i + 2} s={s} language={data.language} />
+          <SowSection key={sec.id} sec={sec} num={scheduleIndex + i + 2} s={s} language={data.language} currency={data.currency} />
         ))}
 
         {/* Signature block. FIX (doc-quality audit round 3): had no

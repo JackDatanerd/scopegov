@@ -9,6 +9,7 @@ import { renderSowPdf, resolveLogoDataUri } from '@/lib/pdf/renderer'
 import { canReadProject } from '@/lib/utils/project-access'
 import { fetchExecutedPdf } from '@/lib/documents/executed-pdf'
 import { hydrateSections } from '@/lib/sow/sections'
+import { sowPdfFilename } from '@/lib/documents/sow-pdf-name'
 import { sowWatermarkLabel } from '@/lib/pdf/sow-watermark'
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -57,7 +58,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         'Cache-Control':       'private, no-cache',
       },
     })
-    const fileName = `SOW-${sow.projects?.name?.replace(/[^a-z0-9]/gi, '-')}-v${sow.version}.pdf`
+    const fileName = sowPdfFilename(sow.projects?.name, sow.version, sow.document_number)
 
     // A signed SOW is served from the copy frozen at signing (lib/documents/executed-pdf.ts) so it
     // cannot change when live rows do. Documents signed before that shipped fall through to a

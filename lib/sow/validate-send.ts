@@ -121,12 +121,12 @@ export function validateSowForSend(input: {
   // to hide them; this refuses to send them empty.)
   const deliverables = byId('deliverables')
   const deliverableRows = (Array.isArray(deliverables?.table) ? deliverables.table : [])
-    .filter((r: any) => String(r?.deliverable ?? '').trim())
+    .filter((r: any) => !isBlankText(String(r?.deliverable ?? '')))
   if (deliverableRows.length === 0)
     errors.push('List at least one deliverable before sending this SOW.')
-  if (!textOf(byId('oos')?.content))
+  if (isBlankText(textOf(byId('oos')?.content)))
     errors.push('Fill in the Out of Scope section before sending this SOW — it is what protects both sides from scope creep. Write "None" if nothing is excluded.')
-  if (!textOf(byId('payment')?.content))
+  if (isBlankText(textOf(byId('payment')?.content)))
     errors.push('Fill in the Payment Terms section before sending this SOW.')
 
   // FIX (section-9 re-audit, independent pass): 'parties', 'governing_law' and

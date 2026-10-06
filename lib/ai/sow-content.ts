@@ -564,6 +564,9 @@ export function normalizeEnumCell(value: string, options: string[]): string {
   }
 
   // Word columns (Owner): exact, then prefix, then a small synonym map.
+  // An empty cell is "unspecified": same default (the last option) the editor, blankRow and sanitizeTableRows use.
+  // (SOW lifecycle pass 17, B1: ''.startsWith-style prefix matching used to resolve it to the FIRST option, Provider.)
+  if (!v) return options[options.length - 1]
   const exact = options.find(o => o.toLowerCase() === v)
   if (exact) return exact
   const prefix = options.find(o => v.startsWith(o.toLowerCase()) || o.toLowerCase().startsWith(v))

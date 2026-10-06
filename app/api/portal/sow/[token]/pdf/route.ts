@@ -10,6 +10,7 @@ import { sowWatermarkLabel } from '@/lib/pdf/sow-watermark'
 import { getWorkspaceJwtSecret, isWorkspaceDeleted } from '@/lib/utils/workspace-secret'
 import { fetchExecutedPdf } from '@/lib/documents/executed-pdf'
 import { hydrateSections } from '@/lib/sow/sections'
+import { sowPdfFilename } from '@/lib/documents/sow-pdf-name'
 import { sowRetainerTerms } from '@/lib/sow/retainer'
 
 const SOW_PDF_COLUMNS = `id, version, document_number, sections, metadata, status, signed_at, signed_by,
@@ -101,7 +102,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         'Cache-Control':       'private, no-cache',
       },
     })
-    const baseName = `SOW-${(sow.projects?.name || 'document').replace(/[^a-z0-9]/gi, '-')}-v${sow.version}`
+    const baseName = sowPdfFilename(sow.projects?.name, sow.version, sow.document_number).replace(/\.pdf$/, '')
 
     // Executed copy, rendered once at signing (see sign route / lib/documents/executed-pdf.ts).
     if (isSigned) {

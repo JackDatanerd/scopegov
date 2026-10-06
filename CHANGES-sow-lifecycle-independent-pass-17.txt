@@ -1,0 +1,7 @@
+SOW lifecycle independent pass 17
+B1 empty Owner cell from AI output -> Joint (was Provider)            lib/ai/sow-content.ts
+B2 parse-brief coerces model JSON to strings (arrays joined)          app/api/sow/parse-brief/route.ts
+B3 unsigned Payment Schedule amounts print as "USD 6,000"             lib/pdf/sow-table.tsx, lib/pdf/renderer.tsx
+B4 isBlankText for oos / payment / deliverable rows at send           lib/sow/validate-send.ts
+B5 shared SOW PDF filename (3 sites) + generate reads project error   lib/documents/sow-pdf-name.ts, api/pdf/sow, portal pdf + sign, api/sow/generate
+Tests: tests/sow-lifecycle-independent-pass-17.test.ts. Full suite: 309 files / 3061 tests pass.

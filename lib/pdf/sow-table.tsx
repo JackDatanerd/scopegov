@@ -11,7 +11,7 @@
 
 import React from 'react'
 import { View, Text } from '@react-pdf/renderer'
-import { SOW_TABLE_SCHEMAS, columnLabel, type SowTableSectionId, type SowTableRow } from '@/lib/sow/table-schema'
+import { SOW_TABLE_SCHEMAS, columnLabel, parseTableAmount, type SowTableSectionId, type SowTableRow } from '@/lib/sow/table-schema'
 
 import { PDF_FONT } from '@/lib/pdf/fonts'
 // FIX (section-9 audit, 9-G7): column headers were hardcoded English and
@@ -25,7 +25,20 @@ import { PDF_FONT } from '@/lib/pdf/fonts'
 // that straddled a page break printed its first lines on one page and the rest (or just the owner/date cells) on the next.
 export const COL_GUTTER = 10
 
-export function SowTable({ sectionId, rows, language, lead }: { sectionId: SowTableSectionId; rows: SowTableRow[]; language?: string; lead?: React.ReactNode }) {
+// SOW lifecycle pass 17, B3: the Payment Schedule 'amount' cell is free text and printed as typed ("6,000",
+// "6500.50", no currency), while the signed-SOW milestone block prints "USD 6,000" / "USD 6,500.50". A readable
+// amount is now formatted the same way in both; anything unreadable is printed as typed so nothing is hidden.
+function cellText(sectionId: string, key: string, raw: string, currency?: string): string {
+  if (!raw) return '—'
+  if (sectionId !== 'payment_schedule' || key !== 'amount' || !currency) return raw
+  const n = parseTableAmount(raw)
+  if (n === null) return raw
+  const whole = Math.round(Math.abs(n) * 100) % 100 === 0
+  const body = Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: whole ? 0 : 2, maximumFractionDigits: 2 })
+  return `${n < 0 ? '-' : ''}${currency} ${body}`
+}
+
+export function SowTable({ sectionId, rows, language, lead, currency }: { sectionId: SowTableSectionId; rows: SowTableRow[]; language?: string; lead?: React.ReactNode; currency?: string }) {
   const schema = SOW_TABLE_SCHEMAS[sectionId]
 
   // FIX (bug — numbered section heading printed over completely blank
@@ -77,7 +90,7 @@ export function SowTable({ sectionId, rows, language, lead }: { sectionId: SowTa
     <View key={i} wrap={false} style={[s.row, i === rows.length - 1 ? s.lastRow : {}]}>
       {schema.columns.map((col, ci) => (
         <Text key={col.key} style={[s.td, { flex: flexOf(col.width), textAlign: col.align || 'left', paddingRight: ci < lastCol ? COL_GUTTER : 0 }]}>
-          {row[col.key] || '—'}
+          {cellText(sectionId, col.key, row[col.key] || '', currency)}
         </Text>
       ))}
     </View>

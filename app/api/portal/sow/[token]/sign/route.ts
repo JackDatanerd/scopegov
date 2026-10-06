@@ -22,6 +22,7 @@ import { withPrimaryContactCc } from '@/lib/utils/client-contacts'
 import { computeContentHash, storeExecutedPdf } from '@/lib/documents/executed-pdf'
 import { createHash } from 'node:crypto'
 import { hydrateSections } from '@/lib/sow/sections'
+import { sowPdfFilename } from '@/lib/documents/sow-pdf-name'
 import { createSowMilestones, ensureGuardianEmail, writeScopeSnapshot } from '@/lib/documents/post-signing'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ token: string }> }) {
@@ -364,7 +365,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         // same SOW carries.
         documentNumber: sow.document_number || null,
       })
-      pdfAttachment = { filename: `SOW-${project.name.replace(/[^a-z0-9]/gi, '-')}.pdf`, content: pdfBuffer.toString('base64') }
+      pdfAttachment = { filename: sowPdfFilename(project.name, null, sow.document_number), content: pdfBuffer.toString('base64') }
     } catch (e) { console.error('SOW PDF generation failed (emails will send without attachment):', e) }
 
     // Freeze. Two separate updates so a deployment that hasn't applied migration 061 yet still

@@ -86,7 +86,20 @@ Rules:
     // generic parse failure.
     if (msg.stop_reason === 'max_tokens')
       return NextResponse.json({ error: 'That brief is too long to read in one go. Shorten it or split it, then try again.' }, { status: 422 })
-    const brief = stripAndParse<Record<string, unknown>>(raw)
+    const parsed = stripAndParse<Record<string, unknown>>(raw)
+    // SOW lifecycle pass 17, B2: the model's JSON shape is not trusted. A list (instead of the requested newline
+    // string) in a text field reached the form as an array and was then dropped by generate's string-only cap.
+    const text = (v: unknown): string => {
+      if (typeof v === 'string') return v
+      if (Array.isArray(v)) return v.filter(x => typeof x === 'string' && x.trim()).map(x => `- ${String(x).replace(/^[-*]\s*/, '')}`).join('\n')
+      return ''
+    }
+    const brief = {
+      objective: text(parsed?.objective), deliverables: text(parsed?.deliverables),
+      outOfScope: text(parsed?.outOfScope), timeline: text(parsed?.timeline),
+      paymentStructure: typeof parsed?.paymentStructure === 'string' ? parsed.paymentStructure : '',
+      revisionRounds: Number(parsed?.revisionRounds),
+    }
     return NextResponse.json({ brief })
   } catch (err) {
     console.error('Brief parse error:', err)
