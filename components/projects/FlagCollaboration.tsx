@@ -44,6 +44,9 @@ export default function FlagCollaboration({
   const [open, setOpen] = useState(false)
   const [loaded, setLoaded] = useState(false)
   const [loadFailed, setLoadFailed] = useState(false)
+  // FIX (Guardian section 13, pass 16 - B-E): a role with none of the governance-view permissions got a permanent 403 rendered as a
+  // retryable load error. A 403 is a definitive "not for you", so the panel is hidden instead of offering a Retry that cannot succeed.
+  const [forbidden, setForbidden] = useState(false)
   const [comments, setComments] = useState<Comment[]>([])
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [draft, setDraft] = useState('')
@@ -64,6 +67,7 @@ export default function FlagCollaboration({
       // showed "No notes or evidence attached yet" with the composer open — evidence looked deleted. A non-JSON
       // body threw into a catch whose message only rendered inside the loaded branch, i.e. never: the panel sat on
       // "Loading…" forever. A failed read is now an explicit, retryable error state.
+      if (cRes.status === 403 || aRes.status === 403) { setForbidden(true); return }
       if (!cRes.ok || !aRes.ok) throw new Error('load failed')
       const [cJson, aJson] = await Promise.all([cRes.json(), aRes.json()])
       setComments(cJson.comments || [])
@@ -133,6 +137,8 @@ export default function FlagCollaboration({
       setError(NETWORK_ERROR)
     } finally { setDeletingId(null) }
   }
+
+  if (forbidden) return null
 
   const activityCount = (loaded ? comments.length + attachments.length : null)
 

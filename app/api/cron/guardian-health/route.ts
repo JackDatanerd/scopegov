@@ -190,9 +190,14 @@ async function healStrandedFlags(service: any) {
   const out = { linked: 0, reopened: 0, failed: 0 }
   for (const f of stuck || []) {
     try {
-      const { data: cos, error: coErr } = await service.from('change_orders')
-        .select('id').eq('flag_id', f.id).order('created_at', { ascending: true }).limit(1)
+      // FIX (Guardian section 13, pass 16 - B-F): the earliest CO was linked even when it was already withdrawn / closed / declined /
+      // expired / superseded, so the flag stayed at converted_to_co pointing at a dead CO and Guardian refused a new draft. Only a live
+      // CO is a link target; with none, the flag is reopened.
+      const { data: allCos, error: coErr } = await service.from('change_orders')
+        .select('id, status').eq('flag_id', f.id).order('created_at', { ascending: true }).limit(20)
       if (coErr) throw new Error(coErr.message)
+      const DEAD_CO = ['withdrawn', 'closed', 'declined', 'expired', 'superseded']
+      const cos = (allCos || []).filter((c: any) => !DEAD_CO.includes(c.status)).slice(0, 1)
       const now = new Date().toISOString()
       const patch = cos?.length ? { change_order_id: cos[0].id, updated_at: now } : { status: 'open', updated_at: now }
       const { data: rows, error: upErr } = await service.from('guardian_flags').update(patch)

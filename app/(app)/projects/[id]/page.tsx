@@ -107,6 +107,8 @@ export default async function ProjectPage({ params, searchParams }: Props) {
     .order('version', { ascending: false, foreignTable: 'sow_documents' })
     .order('version', { ascending: false, foreignTable: 'change_orders' })
     .order('created_at', { ascending: false, foreignTable: 'exceptions_log' })
+    // FIX (Guardian section 13, pass 16 - B-D): the flags embed had no order, so the Guardian tab listed flags in arbitrary order that could reshuffle after an update.
+    .order('created_at', { ascending: false, foreignTable: 'guardian_flags' })
     .eq('id', id)
     .eq('workspace_id', session.workspaceId)
     .is('deleted_at', null)

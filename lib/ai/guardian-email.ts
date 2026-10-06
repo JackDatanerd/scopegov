@@ -42,7 +42,15 @@ const SIGNATURE_DELIM = /^--\s?$/
 const I18N_FROM = /^(from|von|de|da|van|fr[åa]n|fra)\s*:/i
 const I18N_SENT = /^(sent|date|gesendet|datum|envoy[ée]|date d['’]envoi|enviado(?: el)?|enviada|fecha|inviato|data)\s*:/i
 const I18N_HEADER = /^(from|sent|date|to|cc|bcc|subject|reply-to|von|gesendet|an|betreff|datum|de|[àa]|objet|envoy[ée]|para|asunto|enviado(?: el)?|fecha|da|inviato|oggetto|a|assunto|enviada|data)\s*:/i
-const HEADER_LINE = I18N_HEADER
+// FIX (Guardian section 13, pass 16 - B-A): the one/two-letter localized header words (a, an, de, da, data, para) are also ordinary
+// line starts in a client's request ("A: add a store", "De: nada, solo un blog"), and skipHeaderBlock swallowed them as headers. Those
+// ambiguous words now only count as header lines when the value carries an address (a real To:/A:/An: line lists recipients).
+const WEAK_HEADER = /^(an|de|[àa]|para|da|a|data)\s*:/i
+function isHeaderLine(v: string): boolean {
+  if (!I18N_HEADER.test(v)) return false
+  if (WEAK_HEADER.test(v)) return /[@<]/.test(v)
+  return true
+}
 const ON_WROTE_I18N = /^(am|le|el|il|em|op|den)\s.{5,300}\b(schrieb|a [ée]crit|escribi[óo]|ha scritto|escreveu|schreef|skrev)(?=[\s:]).{0,200}:\s*$/i
 
 export function isForwardSubject(subject: string): boolean {
@@ -122,7 +130,13 @@ export function extractUnquotedContent(text: string, opts: { isForward?: boolean
         let rest = 0, first = ''
         for (let k = i + 1; k < lines.length && rest <= 12; k++) if (lines[k].trim()) { if (!rest) first = lines[k].trim(); rest++ }
         // A signature's first line is a name / sign-off, not a sentence: a line ending in . ! ? is more request text.
-        if (rest > 12 || /[.!?]$/.test(first)) continue
+        // FIX (Guardian section 13, pass 16 - B-B): a second request with no terminal punctuation ("Also add a Spanish version") was
+        // still read as a signature and dropped. Losing a signature costs nothing; losing a request is the failure Guardian exists to
+        // prevent, so only a short name-like line, a sign-off, or a contact line (address / phone / pipe) ends the scan.
+        const signoff = /^(thanks|thank you|regards|kind regards|best|best regards|cheers|sincerely|warm regards|sent from|get outlook)\b/i.test(first)
+        const contactLike = /[@|]|\d{5,}/.test(first)
+        const nameLike = first.split(/\s+/).length <= 4 && !/[.!?]$/.test(first)
+        if (!signoff && (rest > 12 || /[.!?]$/.test(first) || !(contactLike || nameLike))) continue
       }
       if (!inForwardedBody) {
         const start = forwardedBodyStart(i + 1)
@@ -159,16 +173,23 @@ export function extractUnquotedContent(text: string, opts: { isForward?: boolean
 
   // Advance past the run of header lines (From:/Sent:/To:/Subject: …) + blank lines that follows.
   function skipHeaderBlock() {
-    while (i + 1 < lines.length && (HEADER_LINE.test(view(lines[i + 1])) || view(lines[i + 1]) === '')) i++
+    while (i + 1 < lines.length && (isHeaderLine(view(lines[i + 1])) || view(lines[i + 1]) === '')) i++
   }
 }
 
 // A "From: x" line immediately followed (within 3 lines) by "Sent:"/"Date:" is an
 // Outlook-style quoted header block; a lone "From:" line in prose is not.
 function isHeaderPair(lines: string[], i: number, view: (l: string) => string): boolean {
-  if (!I18N_FROM.test(view(lines[i]))) return false
+  const from = view(lines[i])
+  if (!I18N_FROM.test(from)) return false
+  // FIX (Guardian section 13, pass 16 - B-C): "From: the design team we want more" + "Date: Monday is the deadline" in a client's prose
+  // was cut as an Outlook header block. A real block's date line carries a year or a clock time (or at least a digit when the From
+  // line carries an address); prose rarely does.
+  // A From: line with an address ("Name <a@b.com>") plus a Sent:/Date: line is accepted as before.
+  const hasAddr = /[@<]/.test(from)
   for (let k = 1; k <= 3; k++) {
-    if (I18N_SENT.test(view(lines[i + k] || ''))) return true
+    const d = view(lines[i + k] || '')
+    if (I18N_SENT.test(d) && (hasAddr || /\d{4}|\d{1,2}[:h]\d{2}/.test(d))) return true
   }
   return false
 }

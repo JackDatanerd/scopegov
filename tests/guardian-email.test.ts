@@ -85,3 +85,28 @@ describe('senderEmail / matchGuardianAddress', () => {
     expect(matchGuardianAddress('proj-ab12cd34@guard.scopegov.app.evil.com', 'guard.scopegov.app')).toBeNull()
   })
 })
+
+describe('pass 16 regressions', () => {
+  it('B-A: localized header words in a forwarded body are not swallowed', () => {
+    const t = 'FYI\n\n---------- Forwarded message ---------\nFrom: Jane <j@a.com>\nDate: Mon, Sep 1, 2026 at 10:00 AM\nSubject: Hi\nTo: me\n\nA: add a store\nB: add a blog'
+    const r = extractUnquotedContent(t)
+    expect(r).toContain('A: add a store')
+    expect(r).toContain('B: add a blog')
+    expect(extractUnquotedContent('Fwd\n\n---------- Forwarded message ---------\nFrom: J <j@a.com>\nTo: x@y.com\n\nDe: nada, solo queremos un blog', { isForward: true })).toContain('De: nada')
+  })
+  it('B-A: a real localized To/A line with an address is still dropped as a header', () => {
+    const r = extractUnquotedContent('Hi\n\n---------- Forwarded message ---------\nDe: Jane <j@a.com>\nA: yo <y@a.com>\n\nQuiero un blog.')
+    expect(r).not.toContain('A: yo')
+    expect(r).toContain('Quiero un blog.')
+  })
+  it('B-B: a bare -- separator keeps an unpunctuated second request, but still ends at a signature', () => {
+    expect(extractUnquotedContent('Please add dark mode\n--\nAlso add a Spanish version')).toContain('Spanish version')
+    expect(extractUnquotedContent('Please add dark mode\n--\nJack Smith\nAcme Inc')).toBe('Please add dark mode')
+    expect(extractUnquotedContent('Please add dark mode\n--\nBest regards\nJack')).toBe('Please add dark mode')
+  })
+  it('B-C: prose From:/Date: lines are not an Outlook header block', () => {
+    const r = extractUnquotedContent('We need an app.\nFrom: the design team we want more\nDate: Monday is the deadline\nthanks')
+    expect(r).toContain('thanks')
+    expect(r).toContain('Monday is the deadline')
+  })
+})
