@@ -133,7 +133,12 @@ export function extractUnquotedContent(text: string, opts: { isForward?: boolean
 
     // Gmail / Apple Mail attribution, possibly wrapped onto the next line.
     const next = view(lines[i + 1] || '')
-    if (ON_WROTE_ONE.test(t)) break
+    // FIX (Guardian section 13, pass 15 - B1): this single-line form was the only attribution rule without the date/address
+    // hint, so ordinary prose such as "On the kickoff call Sarah wrote:" cut the scan there and everything after it - the
+    // client's actual new request - was dropped (classified as just the greeting -> in_scope, no flag).
+    // A genuine attribution carries a date/address, or (abbreviated forms like "On Sun, Jane wrote:") is followed by the
+    // quoted text itself, so a hint-less line only cuts when the next line is ">"-quoted.
+    if (ON_WROTE_ONE.test(t) && (ATTRIBUTION_HINT.test(t) || (lines[i + 1] || '').trim().startsWith('>'))) break
     if (ON_WROTE_I18N.test(t) && ATTRIBUTION_HINT.test(t)) break
     if (ON_WROTE_START.test(t) && ATTRIBUTION_HINT.test(t) && !t.endsWith('wrote:') && WROTE_ONLY.test(next)) break
     if (ON_WROTE_START.test(t) && ATTRIBUTION_HINT.test(t) && /wrote:\s*$/i.test(next) && next.length < 120) break

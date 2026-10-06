@@ -1,0 +1,5 @@
+Guardian / Scope governance - independent pass 15
+B1  lib/ai/guardian-email.ts: the single-line "On ... wrote:" reply rule cut the message with no date/address check, so a
+    prose line like "On the kickoff call Sarah wrote:" dropped the client's real request below it (classified as the
+    greeting only -> in_scope, no flag). It now cuts only with a date/address hint, or when the next line is ">"-quoted.
+    Tests: tests/guardian-section13-pass15-fixes.test.ts
