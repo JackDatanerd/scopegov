@@ -197,12 +197,28 @@ async function loadSession(strict: boolean): Promise<SessionUser | null> {
       hasPasswordIdentity:  (user.identities || []).some((i: any) => i.provider === 'email'),
     }
   } catch (err) {
+    // Next.js signals "this render is dynamic" (cookies()/headers() during a static pass), redirects and
+    // not-found by THROWING errors that carry a `digest`. Those are control flow, not an outage: wrapping
+    // them in SessionUnavailableError hides the signal from Next, so every page that reads the session
+    // fails prerender at build time ("Error occurred prerendering page") instead of being rendered
+    // dynamically. Let them through untouched in both modes.
+    if (isNextControlFlowError(err)) throw err
     if (strict) {
       if (err instanceof SessionUnavailableError) throw err
       throw new SessionUnavailableError(err instanceof Error ? err.message : undefined)
     }
     return null
   }
+}
+
+/** True for Next.js's internal control-flow errors (dynamic-usage bailout, redirect, not-found, CSR bailout). */
+export function isNextControlFlowError(err: unknown): boolean {
+  const digest = (err as { digest?: unknown } | null)?.digest
+  return typeof digest === 'string' && (
+    digest === 'DYNAMIC_SERVER_USAGE' ||
+    digest === 'BAILOUT_TO_CLIENT_SIDE_RENDERING' ||
+    digest.startsWith('NEXT_')
+  )
 }
 
 // FIX (deep audit, Auth+MFA section): middleware.ts's forced-enrollment

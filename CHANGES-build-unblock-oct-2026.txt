@@ -1,0 +1,16 @@
+Build unblock (Oct 6 2026, base 419ed6a) — Vercel `next build` failed at type-check.
+
+1. app/api/scope-governance/[entityType]/[entityId]/attachments/route.ts
+   `export const MAX_ATTACHMENTS_PER_ENTITY` made module-local. Next.js rejects any route.ts export that is not an HTTP
+   handler or route-segment config ("not a valid Route export field"). Only use is inside the same file; the existing
+   guardian-section13-pass14 test (reads the file for the name) still passes.
+
+2. lib/auth/session.ts — second blocker, hidden behind (1): the strict catch (added 2026-10-01, auth+mfa pass 9) wrapped
+   EVERY thrown error in SessionUnavailableError, including Next's own control-flow errors (DYNAMIC_SERVER_USAGE from
+   cookies(), redirects, not-found). Next then could not mark the page dynamic, so 16 pages (/dashboard, /projects, /team,
+   /settings, /invoices, /approvals ...) failed prerender. Control-flow errors (digest DYNAMIC_SERVER_USAGE / NEXT_* /
+   BAILOUT_TO_CLIENT_SIDE_RENDERING) now pass through untouched in both strict and non-strict mode; real outages still
+   become SessionUnavailableError / null as before.
+
+Verified with a real `next build` (dummy Supabase env): before = type error; after = Compiled, 131/131 pages, 0 prerender errors.
+Added tests/build-route-exports-and-session-bailout.test.ts (scans every route.ts for invalid exports; pins the session pass-through).

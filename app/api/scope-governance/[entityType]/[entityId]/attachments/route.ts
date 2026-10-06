@@ -18,7 +18,7 @@ import { ALLOWED_ATTACHMENT_TYPES as ALLOWED_TYPES, matchesDeclaredType, resolve
 // existing `pdfs` bucket) — see README §1.2 for setup. Never public: this
 // is client-submitted evidence and signed addenda, not brand assets.
 const BUCKET = 'flag-evidence'
-export const MAX_ATTACHMENTS_PER_ENTITY = 25
+const MAX_ATTACHMENTS_PER_ENTITY = 25
 const MAX_FILE_BYTES = MAX_UPLOAD_BYTES // see lib/utils/upload-limits.ts (Vercel's 4.5 MB request-body limit)
 
 export async function GET(
