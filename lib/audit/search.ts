@@ -19,8 +19,11 @@
 
 export const AUDIT_SEARCH_COLUMNS = ['event_type', 'entity_name', 'actor_name', 'actor_email', 'ip_address'] as const
 
+// PostgREST rewrites `*` to `%` inside like/ilike values and offers no way to escape it, so a typed `*`
+// acted as a wildcard (a lone `*` matched every row). `_` (single-character wildcard) is the closest
+// literal-safe stand-in: it still matches a real `*`, but can no longer match arbitrary-length text.
 export function escapeIlike(text: string): string {
-  return text.replace(/[\\%_]/g, '\\$&')
+  return text.replace(/[\\%_]/g, '\\$&').replace(/\*/g, '_')
 }
 
 export function quotePostgrestValue(text: string): string {
