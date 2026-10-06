@@ -14,6 +14,7 @@ import {
 import { logAudit } from '@/lib/utils/audit'
 import { stripUnstorableText, truncateText } from '@/lib/utils/sanitize'
 import { claimAiRateSlotByProject } from '@/lib/utils/rate-limit'
+import { isWorkspaceLapsed } from '@/lib/billing/plans'
 import { EVIDENCE_BUCKET } from '@/lib/utils/storage-cleanup'
 import { ALLOWED_ATTACHMENT_TYPES, matchesDeclaredType, resolveAttachmentType } from '@/lib/utils/file-signature'
 import { sameEmail } from '@/lib/utils/escape-like'
@@ -103,7 +104,7 @@ export async function POST(request: NextRequest) {
     const { data: projects, error: projectErr } = await (service as any)
       .from('projects')
       .select(`id, name, status, stall_reason, workspace_id, client_id,
-        workspaces(id, agency_name, guardian_sensitivity_tier, deleted_at),
+        workspaces(id, agency_name, guardian_sensitivity_tier, deleted_at, plan_tier, trial_ends_at, lapsed_at),
         project_scope_snapshot(deliverables, out_of_scope, last_updated_at)`)
       .ilike('guardian_email', `proj-${guardianPrefix}@%`)
       .is('deleted_at', null) // soft-deleted project: same as "no such project"
@@ -261,14 +262,17 @@ export async function POST(request: NextRequest) {
 
     // ── No signed SOW yet: keep the mail, spend nothing ───────
     // Re-classified automatically by the guardian-health sweep after the SOW is signed.
-    if (!snapshot) {
+    // A lapsed (read-only) workspace has no paid plan: the mail is kept (nothing is lost if they resubscribe) but spends no AI,
+    // raises no flag and emails nobody. The guardian-health sweep skips lapsed workspaces and picks the backlog up afterwards.
+    const lapsed = isWorkspaceLapsed(project.workspaces.plan_tier, project.workspaces.trial_ends_at, project.workspaces.lapsed_at)
+    if (!snapshot || lapsed) {
       if (await queueFull()) {
         console.warn(`Guardian inbound backlog full for project ${project.id} — email dropped`)
         return NextResponse.json({ ok: true, outcome: 'dropped', reason: 'backlog_full' })
       }
       const r = await insertCheck({ source_metadata: sourceMetadata, is_duplicate: false, outcome: 'pending' })
       if (r.id) await saveCheckAttachments(r.id)
-      return NextResponse.json({ ok: true, outcome: 'pending', checkId: r.id })
+      return NextResponse.json({ ok: true, outcome: 'pending', checkId: r.id, ...(lapsed ? { reason: 'workspace_lapsed' } : {}) })
     }
 
     // ── Rate limit: KEEP the email (previously dropped with a 200 → lost forever) ──

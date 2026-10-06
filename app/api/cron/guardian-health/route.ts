@@ -106,6 +106,8 @@ async function sweepUnclassified(service: any) {
     .is('projects.deleted_at', null)
     .not('projects.status', 'in', '(Complete,Archived)')
     .is('projects.workspaces.deleted_at', null)
+    // A lapsed (read-only) workspace is not monitored (see guardian/inbound); excluded here so its rows cannot fill the batch.
+    .is('projects.workspaces.lapsed_at', null)
     // FIX (independent pass 6, section 13 - P1): a manually paused project is "stop watching this" (see guardian/inbound);
     // excluded in the query for the same starvation reason as the dead rows above. The or() keeps rows whose
     // stall_reason is NULL (every non-stalled project) - a bare neq would drop those too.
@@ -114,9 +116,9 @@ async function sweepUnclassified(service: any) {
   // One bounded query per attempt count, each already filtered to rows that are due (see sweepDueFilter), for both
   // kinds; merged oldest-first with failed rows ahead of backlog.
   const buckets = sweepAttemptCutoffs(now)
-  const failedSelect = `${cols}, projects!inner(deleted_at, status, workspaces!inner(deleted_at))`
+  const failedSelect = `${cols}, projects!inner(deleted_at, status, workspaces!inner(deleted_at, plan_tier, trial_ends_at, lapsed_at))`
   // Backlog: pending, never failed, and the project NOW has a signed-SOW snapshot.
-  const backlogSelect = `${cols}, projects!inner(deleted_at, status, workspaces!inner(deleted_at), project_scope_snapshot!inner(id))`
+  const backlogSelect = `${cols}, projects!inner(deleted_at, status, workspaces!inner(deleted_at, plan_tier, trial_ends_at, lapsed_at), project_scope_snapshot!inner(id))`
   const run = (select: string, failed: boolean, c: ReturnType<typeof sweepAttemptCutoffs>[number]) =>
     live(service.from('guardian_checks').select(select))
       .eq('outcome', 'pending').eq('is_duplicate', false).eq('classification_failed', failed)

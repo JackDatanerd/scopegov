@@ -1,0 +1,7 @@
+Guardian section 13 - lapsed-workspace pass (Oct 6)
+DECISION: a lapsed (read-only) workspace gets no Guardian monitoring: no AI, no flags, no emails.
+B1 guardian/inbound: lapsed workspace -> mail is KEPT (queued pending, attachments saved) but nothing is classified; response carries reason 'workspace_lapsed'.
+B2 lib/ai/guardian-pipeline reclassifyCheck: lapsed workspace -> skipped 'inactive' before the claim (no attempt burned, no usage recorded).
+B3 cron/guardian-health sweep: rows of workspaces with lapsed_at set are excluded in the query (cannot starve the batch); expired-trial-not-yet-marked is skipped by B2.
+Queued mail is classified by the sweep once the workspace has a plan again (90-day sweep window).
+TEST: tests/guardian-lapsed-workspace.test.ts (3). tsc clean.

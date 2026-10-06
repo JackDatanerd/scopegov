@@ -27,6 +27,7 @@ import { stripUnstorableText, truncateText } from '@/lib/utils/sanitize'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
 import { PROJECT_COMPLETE_CLOSE_PREFIX } from '@/lib/utils/project-status'
+import { isWorkspaceLapsed } from '@/lib/billing/plans'
 
 export const DEDUP_THRESHOLD = 0.85
 export const DEDUP_WINDOW_DAYS = 30
@@ -452,7 +453,7 @@ export async function reclassifyCheck(service: any, checkId: string, opts: {
   if (attempts >= (opts.maxAttempts ?? Infinity)) return { status: 'skipped', reason: 'max_attempts' }
 
   const { data: project, error: projectErr } = await service.from('projects')
-    .select(`id, name, status, stall_reason, deleted_at, workspace_id, workspaces(id, guardian_sensitivity_tier, deleted_at), project_scope_snapshot(deliverables, out_of_scope, last_updated_at)`)
+    .select(`id, name, status, stall_reason, deleted_at, workspace_id, workspaces(id, guardian_sensitivity_tier, deleted_at, plan_tier, trial_ends_at, lapsed_at), project_scope_snapshot(deliverables, out_of_scope, last_updated_at)`)
     .eq('id', check.project_id).eq('workspace_id', check.workspace_id).maybeSingle()
   if (projectErr) throw new Error(`reclassifyCheck: project read failed: ${projectErr.message}`)
   if (!project) return { status: 'skipped', reason: 'not_found' }
@@ -461,6 +462,10 @@ export async function reclassifyCheck(service: any, checkId: string, opts: {
   // attempt is burned and no AI usage recorded.
   const finished = ['Complete', 'Archived'].includes(project.status)
   if (project.deleted_at || !project.workspaces || project.workspaces.deleted_at || (finished && !opts.allowFinishedProject))
+    return { status: 'skipped', reason: 'inactive' }
+  // A lapsed (read-only) workspace gets no AI classification, flags or emails until it has a plan again - checked before the
+  // claim so no attempt is burned. Its queued mail is picked up by the sweep afterwards.
+  if (isWorkspaceLapsed(project.workspaces.plan_tier, project.workspaces.trial_ends_at, project.workspaces.lapsed_at))
     return { status: 'skipped', reason: 'inactive' }
   if (opts.skipManualPause && project.status === 'Stalled' && project.stall_reason === 'manual')
     return { status: 'skipped', reason: 'paused' }
