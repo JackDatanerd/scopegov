@@ -1,5 +1,6 @@
 export const runtime = 'nodejs'
 
+import { isUuidString } from '@/lib/utils/uuid'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
@@ -42,6 +43,8 @@ export async function POST(request: NextRequest) {
     const projectContext = asText(reqBody.projectContext, 500).trim()
     if (typeof sowId !== 'string' || typeof sectionId !== 'string')
       return NextResponse.json({ error: 'sowId and sectionId are required' }, { status: 400 })
+    // FIX (SOW lifecycle independent pass 16, B2): a malformed sowId is not a failed read — 404, not a logged 500.
+    if (!isUuidString(sowId)) return NextResponse.json({ error: 'SOW not found' }, { status: 404 })
 
     // FIX (section-9 re-pass): sectionId was never checked against
     // anything — a request for a table-only section id (deliverables,

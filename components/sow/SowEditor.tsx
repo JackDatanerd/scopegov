@@ -697,9 +697,14 @@ function SowAttachmentsPanel({ sowId, canEdit, isLocked }: { sowId: string; canE
   useEffect(() => {
     setLoading(true)
     fetch(`/api/sow/${sowId}/attachments`)
-      .then(res => res.json())
-      .then(json => { if (mounted.current) setAttachments(Array.isArray(json.attachments) ? json.attachments : []) })
-      .catch(() => {})
+      .then(async res => {
+        const json = await res.json().catch(() => null)
+        // FIX (SOW lifecycle independent pass 16, B3): a failed load used to render as "no attachments".
+        if (!res.ok || !json || !Array.isArray(json.attachments)) throw new Error('load failed')
+        return json
+      })
+      .then(json => { if (mounted.current) setAttachments(json.attachments) })
+      .catch(() => { if (mounted.current) setError('Could not load attachments — reload the page to try again.') })
       .finally(() => { if (mounted.current) setLoading(false) })
   }, [sowId])
 

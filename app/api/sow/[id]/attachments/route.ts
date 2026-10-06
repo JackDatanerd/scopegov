@@ -58,11 +58,14 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
     if (!(await canReadProject(service, session, sow.project_id)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
-    const { data: attachments } = await (service as any)
+    // FIX (SOW lifecycle independent pass 16, B3): the error was never read, so a failed list answered 200 with no
+    // attachments and the panel presented that as "this SOW has none". A failed read is a 500.
+    const { data: attachments, error: attachmentsErr } = await (service as any)
       .from('sow_attachments')
       .select('id, file_name, file_size, mime_type, storage_path, uploaded_at, uploaded_by, users!sow_attachments_uploaded_by_fkey(name)')
       .eq('sow_id', id)
       .order('uploaded_at', { ascending: false })
+    if (attachmentsErr) throw new Error(`SOW attachments read failed: ${attachmentsErr.message}`)
 
     // Bucket is private — hand back short-lived signed URLs, same as the
     // flag-evidence route this is modeled on.

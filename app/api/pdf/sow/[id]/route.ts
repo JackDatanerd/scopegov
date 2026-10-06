@@ -1,5 +1,6 @@
 export const runtime = 'nodejs'
 
+import { isUuidString } from '@/lib/utils/uuid'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { sowRetainerTerms } from '@/lib/sow/retainer'
@@ -15,6 +16,9 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const { id }  = await params
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    // FIX (SOW lifecycle independent pass 16, B2): a malformed id reached the query as invalid uuid text (Postgres 22P02),
+    // which the read-failure branch below turned into a logged 500 "PDF generation failed". It is simply not found.
+    if (!isUuidString(id)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
     // FIX (section-9 re-audit): this route rendered the contract value
     // (and the payment-schedule table, which states it repeatedly) into
     // the PDF with no VIEW_FINANCIALS check — the same data GET

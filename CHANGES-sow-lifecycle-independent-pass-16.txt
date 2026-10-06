@@ -1,0 +1,7 @@
+SOW lifecycle independent pass 16 (c9)
+
+B1 app/(app)/sow/page.tsx - SOW Registry: a failed list or count query now shows a danger banner and no "No SOWs yet" empty state (same as the invoices registry).
+B2 app/api/pdf/sow/[id]/route.ts, app/api/sow/regenerate-section/route.ts - malformed id is a 404, not a logged 500.
+B3 app/api/sow/[id]/attachments/route.ts, components/sow/SowEditor.tsx - a failed attachments read is a 500, and the panel says it could not load instead of showing none.
+B4 app/api/sow/[id]/route.ts - GET logs the error it catches.
+Tests: tests/sow-lifecycle-independent-pass-16.test.ts

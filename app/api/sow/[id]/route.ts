@@ -264,7 +264,9 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         canViewFinancials: hasPermission(session, 'VIEW_FINANCIALS'),
       },
     })
-  } catch {
+  } catch (err) {
+    // FIX (SOW lifecycle independent pass 16, B4): this was a bare catch, so a failed editor load left no server log.
+    console.error('SOW GET error:', err)
     return NextResponse.json({ error: 'Error' }, { status: 500 })
   }
 }

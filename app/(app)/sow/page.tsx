@@ -87,11 +87,16 @@ export default async function SowPage() {
     if (status) q = q.eq('status', status)
     return q
   }
-  const [{ count: totalCount }, { count: signedCount }, { count: pendingCount }] = await Promise.all([
+  const [{ count: totalCount, error: totalErr }, { count: signedCount, error: signedErr }, { count: pendingCount, error: pendingErr }] = await Promise.all([
     countQuery(),
     countQuery('signed'),
     countQuery('awaiting_signature'),
   ])
+
+  // FIX (SOW lifecycle independent pass 16, B1): neither the list nor the counts had their failure surfaced — a failed
+  // query rendered "No SOWs yet" and zero / list-capped totals as if they were true. Same fix the invoices registry got.
+  const loadFailed = !!sowErr || !!totalErr || !!signedErr || !!pendingErr
+  if (totalErr || signedErr || pendingErr) console.error('SOW registry count error:', totalErr || signedErr || pendingErr)
 
   const stats = {
     total:   totalCount   ?? safeSows.length,
@@ -117,6 +122,12 @@ export default async function SowPage() {
           <p className="page-sub">All Statements of Work across your workspace</p>
         </div>
       </div>
+
+      {loadFailed && (
+        <div className="banner banner-danger" style={{ marginBottom: 20 }}>
+          <span>The SOW registry could not be fully loaded, so what you see below may be incomplete. Reload the page to try again.</span>
+        </div>
+      )}
 
       {/* FIX (SOW lifecycle pass, B6): only when older SOWs are actually hidden. */}
       {isSoloCapped && stats.total > safeSows.length && (
@@ -152,7 +163,7 @@ export default async function SowPage() {
         </div>
       </div>
 
-      {!safeSows.length ? (
+      {sowErr && !safeSows.length ? null : !safeSows.length ? (
         <div className="surface">
           <div className="empty-state">
             <i className="ti ti-file-description empty-state-icon" />
