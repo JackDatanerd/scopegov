@@ -612,10 +612,12 @@ export async function sendTrialWarningEmail(params: {
       <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
         ${daysLeft === 0
           ? `The trial period for <strong>${agencyName}</strong>'s ScopeGov workspace has ended. The workspace is now <strong>read-only</strong>: you and your team can still view and export everything, and your clients can still open and sign documents you already sent, but creating or sending anything new needs a plan.`
-          : `The trial for <strong>${agencyName}</strong>'s ScopeGov workspace ends in <strong>${daysLeft} day${daysLeft !== 1 ? 's' : ''}</strong>. Upgrade now to keep access to all your projects, SOWs, and Guardian history.`}
+          : `The trial for <strong>${agencyName}</strong>'s ScopeGov workspace ends in <strong>${daysLeft} day${daysLeft !== 1 ? 's' : ''}</strong>. Upgrade now to keep creating and sending without interruption. If the trial ends without a plan, the workspace becomes read-only.`}
       </p>
       <p style="font-size:13px;color:${C.text2};">
-        Your data is safe — nothing is deleted. Choose a plan to unlock editing again.
+        ${daysLeft === 0
+          ? 'Your data is safe — nothing is deleted. Choose a plan to unlock editing again.'
+          : 'Your data is safe either way — nothing is deleted.'}
       </p>
     `,
     cta: 'Upgrade your plan →',
@@ -1183,6 +1185,8 @@ export async function sendPaymentFailedEmail(params: {
   const { to, name: nameRaw, agencyName: agencyNameRaw, upgradeUrl, graceDaysLeft } = params
   const name       = escapeHtml(nameRaw)
   const agencyName = escapeHtml(agencyNameRaw)
+  // "1 days" read wrongly on the last day of the grace period (the reminder cron clamps to a minimum of 1).
+  const daysLabel  = `${graceDaysLeft} day${graceDaysLeft === 1 ? '' : 's'}`
 
   const html = baseTemplate({
     agencyName: 'ScopeGov',
@@ -1196,7 +1200,8 @@ export async function sendPaymentFailedEmail(params: {
         You have a <strong>${graceDaysLeft}-day grace period</strong> to update your payment details.
       </p>
       <p style="font-size:13px;color:${C.text2};">
-        If the payment is not resolved within ${graceDaysLeft} days, your plan will be downgraded.
+        If the payment is not resolved within ${daysLabel}, the workspace becomes <strong>read-only</strong>: you and your
+        team can still view and export everything, but creating or sending anything new needs a plan.
         Your data will never be deleted.
       </p>
     `,
@@ -1207,7 +1212,7 @@ export async function sendPaymentFailedEmail(params: {
   return deliver({
     from:    systemFrom(),
     to,
-    subject: `Action needed: Payment failed for ScopeGov — ${graceDaysLeft} days to resolve`,
+    subject: `Action needed: Payment failed for ScopeGov — ${daysLabel} to resolve`,
     html,
   })
 }
@@ -1929,7 +1934,8 @@ export async function sendSubscriptionCancelScheduledEmail(params: {
       <p style="font-size:14px;color:${C.text};line-height:1.7;margin:0 0 16px;">Hi ${name},</p>
       <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
         ${actorName} cancelled the paid subscription for <strong>${agencyName}</strong>. You keep your
-        current plan until <strong>${endsAtLabel}</strong>; after that the workspace moves to the Solo plan.
+        current plan until <strong>${endsAtLabel}</strong>; after that the workspace becomes <strong>read-only</strong>: you and
+        your team can still view and export everything, but creating or sending anything new needs a plan.
         You won&apos;t be charged again.
       </p>
       <p style="font-size:13px;color:${C.text2};">
@@ -2478,7 +2484,7 @@ export async function sendInvoiceDisputeResolvedEmail(params: {
       </p>
       ${note ? `
       <div style="background:${C.bg};border:1px solid ${C.border};border-radius:6px;padding:14px 16px;margin:16px 0;">
-        <p style="font-size:11px;color:${C.text3};text-transform:uppercase;letter-spacing:.05em;margin:0 0 6px;">Their response</p>
+        <p style="font-size:11px;color:${C.text3};text-transform:uppercase;letter-spacing:.05em;margin:0 0 6px;">Response from ${agencyName}</p>
         <p style="font-size:13px;color:${C.text2};margin:0;line-height:1.6;white-space:pre-line;">${note}</p>
       </div>` : ''}
       <p style="font-size:13px;color:${C.text2};margin:0;">If anything is still unclear you can raise it again from the invoice page.</p>

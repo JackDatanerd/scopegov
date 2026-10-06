@@ -1,0 +1,28 @@
+Notifications & email independent pass 15 (Oct 7)
+
+Scope: api/notifications/*, lib/email/* (templates, send, from, reply-to, delivery, webhook) plus the Resend webhook,
+  recipient/preference engine and bell/inbox clients as traced. Audited from scratch; bugs only.
+Result: no logic, security or data bugs. Five copy defects, all customer-facing, all drift from the Oct 6
+  "no free Solo tier, lapsed = read-only" change (CHANGES-trial-subscription-end.txt fixed only two of the places).
+
+BUGS FIXED
+ B1 (medium) sendSubscriptionCancelScheduledEmail told the customer that after the paid period "the workspace moves to
+    the Solo plan". It becomes read-only (plan_tier solo + lapsed_at). Copy now says read-only: view/export stay,
+    creating/sending needs a plan.
+ B2 (medium) Same drift in three more places: sendPaymentFailedEmail ("your plan will be downgraded"), the Settings
+    grace banner ("will be downgraded to Solo") and the Cancel-subscription confirm dialog ("then the workspace will
+    be downgraded"). All say read-only now. sendTrialWarningEmail for 1-3 days left no longer says "unlock editing
+    again" (nothing is locked yet) or "keep access to all your projects" (view access is kept); day 0 is unchanged.
+ B3 (low)    sendPaymentFailedEmail: "1 days to resolve" / "within 1 days". The grace reminder cron clamps the days
+    left to a minimum of 1, so this was reachable on the last day. Singular/plural handled.
+ B4 (low)    sendInvoiceDisputeResolvedEmail: the agency's note to the client was headed "Their response". Now
+    "Response from <agency>".
+
+FILES
+  lib/email/templates.ts
+  components/settings/SettingsClient.tsx
+  tests/notifications-email-pass-15.test.ts   (6 tests; all fail on the previous code)
+
+VERIFIED  full suite 310 files / 3067 tests pass; tsc clean.
+NOT CHANGED (examined, intentionally left): Outlook ignores display:flex rows (design limit); sendEmail reports
+  ok+skipped for an erased-user address (only users can have one, never clients).

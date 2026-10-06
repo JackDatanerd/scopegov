@@ -1870,7 +1870,7 @@ function BillingTab({ workspace, billing, billingLoadFailed = false, session, pe
   if (!permissions.manageBilling) return <Restricted need="MANAGE_BILLING" />
 
   async function handleCancel() {
-    if (!confirm('Cancel your subscription? You\u2019ll keep access until the end of the current billing period, then the workspace will be downgraded.')) return
+    if (!confirm('Cancel your subscription? You\u2019ll keep access until the end of the current billing period, then the workspace becomes read-only (you can still view and export everything).')) return
     setCancelling(true); setCancelError('')
     try {
       const res  = await fetchWithStepUp('/api/billing/cancel', { method: 'POST' })
@@ -2060,7 +2060,7 @@ function BillingTab({ workspace, billing, billingLoadFailed = false, session, pe
         <div className="banner banner-warn" style={{ marginBottom: 14, alignItems: 'center', justifyContent: 'space-between' }}>
           <span>
             Your last payment failed. Update your payment method within {graceDaysLeft} day{graceDaysLeft === 1 ? '' : 's'} or this
-            workspace will be downgraded to Solo.
+            workspace becomes read-only.
           </span>
           <button
             className="btn btn-primary btn-sm"
