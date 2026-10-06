@@ -1,0 +1,8 @@
+Notifications & email — independent pass 12 (bugs only)
+
+1. lib/email/send.ts recordEmailLog(): the stored subject (cap 300) and provider error (cap 500) were cut with raw
+   String.slice. Subjects can reach ~420 characters (project name <=200 + CO/invoice title <=200), so the cut could land
+   inside an emoji and leave a lone high surrogate. Postgres rejects that JSON, the whole email_log insert failed (only a
+   console.error), and the send went untracked: a later bounce/complaint found no row, so no alert and no client-record
+   bounce marker. Both now use truncateText (lib/utils/sanitize.ts), as every other capped free-text field already did.
+Tests: tests/notifications-email-pass-12.test.ts (new).

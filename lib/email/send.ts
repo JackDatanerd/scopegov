@@ -19,6 +19,7 @@
 import { EMAIL_RE } from '@/lib/utils/client-input'
 import { Resend } from 'resend'
 import { createServiceClient } from '@/lib/supabase/server'
+import { truncateText } from '@/lib/utils/sanitize'
 
 export interface EmailPayload {
   from: string
@@ -158,10 +159,11 @@ async function recordEmailLog(
       actor_id:     ctx.actorId ?? null,
       to_emails:    to,
       cc_emails:    cc,
-      subject:      subject.slice(0, 300),
+      // truncateText never strands half an emoji: a lone surrogate makes Postgres reject the whole row, losing bounce tracking.
+      subject:      truncateText(subject, 300),
       provider_id:  result.ok ? result.id : null,
       status:       result.ok ? 'sent' : 'failed',
-      error:        result.ok ? null : result.error.slice(0, 500),
+      error:        result.ok ? null : truncateText(result.error, 500),
     })
     if (error) console.error('[email] email_log insert failed:', error.message)
   } catch (e) {
