@@ -128,3 +128,47 @@ export function addDaysToDateString(date: string, days: number): string {
   d.setUTCDate(d.getUTCDate() + days)
   return d.toISOString().slice(0, 10)
 }
+
+/** Offset (ms) of `zone` from UTC at the given instant: wall-clock-as-UTC minus the instant (seconds precision). */
+function zoneOffsetMs(instantMs: number, zone: string): number {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: zone, hourCycle: 'h23',
+    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit',
+  }).formatToParts(new Date(instantMs))
+  const n = (t: string) => Number(parts.find(p => p.type === t)?.value || 0)
+  const wall = Date.UTC(n('year'), n('month') - 1, n('day'), n('hour'), n('minute'), n('second'))
+  return wall - Math.floor(instantMs / 1000) * 1000
+}
+
+/** The instant a calendar day (YYYY-MM-DD) begins in the given zone; null for a malformed date. */
+export function zonedDayStart(ymd: string, tz: string | null | undefined): Date | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd || '')
+  if (!m) return null
+  const y = Number(m[1]), mo = Number(m[2]), d = Number(m[3])
+  const probe = new Date(Date.UTC(y, mo - 1, d))
+  if (probe.getUTCFullYear() !== y || probe.getUTCMonth() !== mo - 1 || probe.getUTCDate() !== d) return null
+  const zone = resolveTimeZone(tz)
+  const wallAsUtc = probe.getTime()
+  // Two passes so a day whose start sits across a DST change resolves against the offset in force at that instant.
+  let guess = wallAsUtc - zoneOffsetMs(wallAsUtc, zone)
+  guess = wallAsUtc - zoneOffsetMs(guess, zone)
+  return new Date(guess)
+}
+
+/** The last millisecond of a calendar day in the given zone (one ms before the next day starts there). */
+export function zonedDayEnd(ymd: string, tz: string | null | undefined): Date | null {
+  const start = zonedDayStart(ymd, tz)
+  if (!start) return null
+  const [y, mo, d] = ymd.split('-').map(Number)
+  const next = new Date(Date.UTC(y, mo - 1, d + 1))
+  const nextYmd = `${next.getUTCFullYear()}-${String(next.getUTCMonth() + 1).padStart(2, '0')}-${String(next.getUTCDate()).padStart(2, '0')}`
+  const nextStart = zonedDayStart(nextYmd, tz)
+  return nextStart ? new Date(nextStart.getTime() - 1) : null
+}
+
+/** Today's calendar date in the given zone, shifted back by `days` calendar days, as YYYY-MM-DD. */
+export function zonedDateDaysAgo(days: number, tz: string | null | undefined, now: Date = new Date()): string {
+  const [y, mo, d] = isoDateInZone(now, tz).split('-').map(Number)
+  const shifted = new Date(Date.UTC(y, mo - 1, d - days))
+  return `${shifted.getUTCFullYear()}-${String(shifted.getUTCMonth() + 1).padStart(2, '0')}-${String(shifted.getUTCDate()).padStart(2, '0')}`
+}

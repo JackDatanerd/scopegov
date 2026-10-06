@@ -3,7 +3,7 @@ import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import Link from 'next/link'
 import { formatRelative } from '@/lib/utils/format'
 import { AUDIT_CATEGORIES } from '@/lib/audit/categories'
-import { formatDateTimeInZone } from '@/lib/utils/timezone'
+import { formatDateTimeInZone, zonedDayStart, zonedDayEnd, zonedDateDaysAgo } from '@/lib/utils/timezone'
 
 interface Project { id: string; name: string; deleted?: boolean }
 interface Member { id: string; name: string; email: string; status: 'active' | 'invited' | 'expired' | 'deactivated' }
@@ -44,28 +44,9 @@ function eventColour(type: string) {
 // toISOString().slice(0, 10) — the UTC calendar day — and sent to the server
 // as bare dates (also read as UTC). For anyone east of UTC (Nairobi is +3)
 // "today" was wrong for the first hours of every local day and the picker's
-// `max` blocked choosing it. Dates are now the viewer's LOCAL calendar days,
-// and the request carries the exact instants those days start and end at.
-function localDate(d: Date) {
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
-}
-function startOfLocalDay(ymd: string): Date | null {
-  const [y, m, d] = ymd.split('-').map(Number)
-  if (!y || !m || !d) return null
-  return new Date(y, m - 1, d, 0, 0, 0, 0)
-}
-function endOfLocalDay(ymd: string): Date | null {
-  const [y, m, d] = ymd.split('-').map(Number)
-  if (!y || !m || !d) return null
-  return new Date(y, m - 1, d, 23, 59, 59, 999)
-}
-function daysAgoLocal(days: number) {
-  const d = new Date()
-  d.setDate(d.getDate() - days)
-  return localDate(d)
-}
-
+// `max` blocked choosing it. Dates are now calendar days and the request carries
+// the exact instants those days start and end at. They are the workspace's own calendar days (same zone the rows below are rendered in), not the viewer's browser zone, so
+// a range edge never splits a day differently from the times on screen.
 const RANGE_PRESETS = [
   { key: '30d',  label: 'Last 30 days',  days: 30 },
   { key: '90d',  label: 'Last 90 days',  days: 90 },
@@ -98,8 +79,8 @@ export default function AuditLogClient({ projects, members, timeZone, projectsCo
   projectsComplete?: boolean; membersComplete?: boolean
 }) {
   const [preset, setPreset] = useState('90d')
-  const [from, setFrom] = useState(daysAgoLocal(90))
-  const [to, setTo] = useState(localDate(new Date()))
+  const [from, setFrom] = useState(() => zonedDateDaysAgo(90, timeZone))
+  const [to, setTo] = useState(() => zonedDateDaysAgo(0, timeZone))
   const [projectId, setProjectId] = useState('')
   const [actorId, setActorId] = useState('')
   const [category, setCategory] = useState('')
@@ -134,8 +115,8 @@ export default function AuditLogClient({ projects, members, timeZone, projectsCo
     setPreset(key)
     const p = RANGE_PRESETS.find(r => r.key === key)
     if (p && p.days > 0) {
-      setFrom(daysAgoLocal(p.days))
-      setTo(localDate(new Date()))
+      setFrom(zonedDateDaysAgo(p.days, timeZone))
+      setTo(zonedDateDaysAgo(0, timeZone))
     }
   }
 
@@ -147,8 +128,8 @@ export default function AuditLogClient({ projects, members, timeZone, projectsCo
       if (document.visibilityState !== 'visible') return
       const p = RANGE_PRESETS.find(r => r.key === preset)
       if (!p || p.days <= 0) return
-      const today = localDate(new Date())
-      if (today !== to) { setFrom(daysAgoLocal(p.days)); setTo(today) }
+      const today = zonedDateDaysAgo(0, timeZone)
+      if (today !== to) { setFrom(zonedDateDaysAgo(p.days, timeZone)); setTo(today) }
     }
     document.addEventListener('visibilitychange', refreshRange)
     window.addEventListener('focus', refreshRange)
@@ -156,18 +137,18 @@ export default function AuditLogClient({ projects, members, timeZone, projectsCo
       document.removeEventListener('visibilitychange', refreshRange)
       window.removeEventListener('focus', refreshRange)
     }
-  }, [preset, to])
+  }, [preset, to, timeZone])
 
   const dateError = useMemo(() => {
-    const f = startOfLocalDay(from), t = endOfLocalDay(to)
+    const f = zonedDayStart(from, timeZone), t = zonedDayEnd(to, timeZone)
     if (!f || !t) return 'Choose both a start and an end date.'
     if (f.getTime() > t.getTime()) return 'The start date must be on or before the end date.'
     return ''
-  }, [from, to])
+  }, [from, to, timeZone])
 
   const buildParams = useCallback((format: string, opts: { q: string; offset?: number; asOf?: string | null }) => {
     const params = new URLSearchParams({ format })
-    const f = startOfLocalDay(from), t = endOfLocalDay(to)
+    const f = zonedDayStart(from, timeZone), t = zonedDayEnd(to, timeZone)
     if (f) params.set('from', f.toISOString())
     if (t) params.set('to', t.toISOString())
     if (projectId) params.set('projectId', projectId)
@@ -177,7 +158,7 @@ export default function AuditLogClient({ projects, members, timeZone, projectsCo
     if (opts.offset) params.set('offset', String(opts.offset))
     if (opts.asOf) params.set('asOf', opts.asOf)
     return params.toString()
-  }, [from, to, projectId, actorId, category])
+  }, [from, to, projectId, actorId, category, timeZone])
 
   // Any filter change starts over: cancel the in-flight request, clear the
   // old rows immediately (stale rows must never sit under a new filter or an
@@ -251,7 +232,7 @@ export default function AuditLogClient({ projects, members, timeZone, projectsCo
     } finally { setExporting(null) }
   }
 
-  const todayStr = localDate(new Date())
+  const todayStr = zonedDateDaysAgo(0, timeZone)
 
   return (
     <div className="page" style={{ maxWidth: 1080 }}>

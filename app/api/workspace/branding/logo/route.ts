@@ -192,8 +192,19 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Upload succeeded but could not be saved. Try again.' }, { status: 500 })
     }
 
-    if (previousPath && previousPath !== path) {
-      const { error: removeErr } = await (service as any).storage.from('logos').remove([previousPath])
+    // FIX (Settings independent pass 18): cleanup used the path read BEFORE the upload. Two admins uploading a PNG
+    // and a JPG at the same moment each saw "no previous logo", each linked their own file, and the loser's object
+    // stayed in the public bucket unreferenced forever. Re-read what the workspace points at now that our link is
+    // written, then: remove our own object if someone else linked after us (it's the orphan), and remove the
+    // previous object only if neither we nor the current link use it.
+    const { data: nowWs } = await (service as any)
+      .from('workspaces').select('logo_storage_path').eq('id', session.workspaceId).maybeSingle()
+    const currentPath: string | undefined = nowWs?.logo_storage_path ?? undefined
+    const stale: string[] = []
+    if (currentPath && currentPath !== path) stale.push(path)
+    if (previousPath && previousPath !== path && previousPath !== currentPath) stale.push(previousPath)
+    if (stale.length) {
+      const { error: removeErr } = await (service as any).storage.from('logos').remove(stale)
       if (removeErr) console.error('Stale logo cleanup failed (non-fatal):', removeErr)
     }
 
