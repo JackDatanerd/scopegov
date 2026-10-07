@@ -258,6 +258,8 @@ export function parseTableAmount(input: unknown): number | null {
   if (/^\s*(?:%|percent\b|per\s?cent\b)/i.test(after)) return null
   // "1.5k" / "2K" shorthand.
   if (/^\s*k\b/i.test(after)) n *= 1000
+  // FIX (SOW lifecycle pass 20): "1.5M" / "2 million" parsed as 1.5 / 2 (only "k" was understood), a millionfold understatement.
+  else if (/^\s*(?:m|mn|million)\b/i.test(after)) n *= 1000000
 
   // Accounting-style negatives: "(500)"/"($500)" or a leading minus ("-500", "-$500").
   // FIX (fix round, SOW-B1): this used to only ever test `before` for a literal '-'

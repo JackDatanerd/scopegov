@@ -46,6 +46,10 @@ async function checkSowLock(
     return `This project has a signed SOW — use a change order to adjust the ${label}.`
   // A SOW out for signature quotes the current value: changing it would leave
   // the client signing a number that no longer matches the project.
+  // FIX (SOW lifecycle pass 20): a SOW the client sent back for changes is not "out for signature", and withdrawing it no longer
+  // emails the client a cancellation (see api/sow/[id]/withdraw) — say what is actually blocking, and how to clear it.
+  if (!sows.some(s => s.status === 'awaiting_signature') && sows.some(s => s.status === 'changes_requested'))
+    return `The client asked for changes to an earlier SOW version, which still holds the existing ${termNoun}. Withdraw that version from the SOW tab (the client is not emailed) before changing the ${shortNoun}.`
   if (sows.some(s => ['awaiting_signature', 'changes_requested'].includes(s.status)))
     return `A SOW is currently out for signature at the existing ${termNoun} — withdraw it before changing the ${shortNoun}, then send the client the revised SOW.`
   // A draft SOW sitting in an approval chain would be approved at the old value.

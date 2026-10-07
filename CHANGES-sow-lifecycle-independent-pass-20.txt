@@ -1,0 +1,8 @@
+SOW lifecycle independent pass 20
+1. lib/sow/table-schema.ts: "1.5M"/"2 million"/"2mn" parsed as 1.5/2 -> now x1,000,000 (k unchanged).
+2. app/api/sow/[id]/withdraw/route.ts: withdrawing a changes_requested SOW no longer emails the client a cancellation.
+   app/api/projects/[id]/route.ts: the contract-value / retainer-term lock message for a changes_requested SOW now says what blocks it.
+3. supabase/migrations/152_sow_patch_rpcs_approval_lock.sql (RUN IT): sow_apply_section_patch refuses a draft inside an approval chain, under the row lock.
+4. lib/pdf/rich-text.tsx + lib/pdf/renderer.tsx: a section tall but short in characters (150-line code block, <br> runs) was kept
+   unsplittable and drawn off the page, losing text from the PDF (and the frozen executed copy). Line breaks now count as full lines.
+Tests: tests/sow-lifecycle-independent-pass-20.test.ts

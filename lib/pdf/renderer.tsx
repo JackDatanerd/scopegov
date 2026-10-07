@@ -9,7 +9,7 @@ import {
   StyleSheet, renderToBuffer,
 } from '@react-pdf/renderer'
 import { safeFetch } from '@/lib/utils/safe-fetch'
-import { RichText } from '@/lib/pdf/rich-text'
+import { RichText, printedWeight } from '@/lib/pdf/rich-text'
 import { SowTable } from '@/lib/pdf/sow-table'
 import { isTableSection, milestoneBlockLabels, type SowTableRow } from '@/lib/sow/table-schema'
 import { formatAddressLines, roundCurrency, type LegalAddress } from '@/lib/utils/format'
@@ -283,7 +283,9 @@ const KEEP_TOGETHER_MAX_CHARS  = 1200
 const KEEP_TOGETHER_MAX_BLOCKS = 12
 function fitsOnOnePage(html: string | null | undefined): boolean {
   const h = html || ''
-  const chars  = h.replace(/<[^>]*>/g, '').length
+  // FIX (SOW lifecycle pass 20): only characters were counted, so a tall-but-short section (150-line code block, <br> runs) stayed
+  // unsplittable and was drawn off the page, losing text. printedWeight counts every forced line break as a full line.
+  const chars  = printedWeight(h)
   const blocks = (h.match(/<(p|li|h[1-4]|blockquote|pre)[\s>]/gi) || []).length
   return chars <= KEEP_TOGETHER_MAX_CHARS && blocks <= KEEP_TOGETHER_MAX_BLOCKS
 }

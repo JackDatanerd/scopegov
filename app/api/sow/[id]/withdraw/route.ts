@@ -135,9 +135,14 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // if we got here they have a live link/email — tell them it's dead.
     const client = sow.projects?.clients
     let emailed = true
+    // FIX (SOW lifecycle pass 20): a SOW the client sent back for changes is already inert on their side (the portal shows
+    // "changes requested", the link cannot sign), and the agency's revised draft is what they will receive next. A "withdrawn"
+    // cancellation email on top of their own request read as the agency rescinding the deal. Only a live signing link needs one.
+    const skipClientEmail = sow.status === 'changes_requested'
     // An unverified member never triggers outbound client email (same rule as sending and CO withdraw/close) — the
     // withdrawal itself still goes through, and the caller is told the client was not notified.
-    if (client?.email && !session.emailVerifiedAt) emailed = false
+    if (skipClientEmail) emailed = true
+    else if (client?.email && !session.emailVerifiedAt) emailed = false
     else if (client?.email) {
       const cc = await withPrimaryContactCc(service, sow.projects?.client_id, client.email, client.cc_emails, 'sow')
       const replyTo = await resolveReplyTo(service, session.workspaceId, session.email)

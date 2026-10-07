@@ -373,6 +373,14 @@ export function escapeStrayAngleBrackets(html: string): string {
 // heading-only group, which is the old behaviour.
 const LEAD_GROUP_MAX_CHARS = 3000
 
+/** Rough printed size of a fragment in characters, counting every forced line break (<br>, newline inside <pre>) as a full ~90-char line. */
+export function printedWeight(html: string): number {
+  const breaks = (html.match(/<br\s*\/?>/gi) || []).length +
+    (html.match(/<pre[\s\S]*?<\/pre>/gi) || []).reduce((n, b) => n + (b.match(/\n/g) || []).length, 0)
+  // A <pre> body arrives without its own <pre> wrapper in Block.inner, so count its newlines directly as well.
+  return html.replace(/<[^>]*>/g, '').length + breaks * 90
+}
+
 export function RichText({ html: rawHtml, style, lead }: { html: string | null | undefined; style: any; lead?: React.ReactNode }) {
   if (!rawHtml || !rawHtml.trim()) return lead ? <>{lead}</> : null
   const html = escapeStrayAngleBrackets(rawHtml)
@@ -384,7 +392,7 @@ export function RichText({ html: rawHtml, style, lead }: { html: string | null |
   // silently dropping it.
   if (blocks.length === 0) {
     const para = <Text style={[style, { marginBottom: 6 }]}>{renderRuns(collectInlineRuns(html))}</Text>
-    return lead && html.length <= LEAD_GROUP_MAX_CHARS ? <View wrap={false}>{lead}{para}</View> : <>{lead}{para}</>
+    return lead && printedWeight(html) <= LEAD_GROUP_MAX_CHARS ? <View wrap={false}>{lead}{para}</View> : <>{lead}{para}</>
   }
 
   const nodes = renderBlocks(html, style)
@@ -396,7 +404,8 @@ export function RichText({ html: rawHtml, style, lead }: { html: string | null |
     nodes[k] = <ListBlock key={k} tag={first.tag} inner={first.inner} style={style} depth={0} lead={lead} />
     return <>{nodes}</>
   }
-  if (first.inner.length <= LEAD_GROUP_MAX_CHARS) {
+  const innerWeight = printedWeight(first.inner) + (first.tag === 'pre' ? (first.inner.match(/\n/g) || []).length * 90 : 0)
+  if (innerWeight <= LEAD_GROUP_MAX_CHARS) {
     nodes[k] = <View key={k} wrap={false}>{lead}{nodes[k]}</View>
     return <>{nodes}</>
   }
