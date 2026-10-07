@@ -13,11 +13,11 @@ import { hydrateSections } from '@/lib/sow/sections'
 import { sowPdfFilename } from '@/lib/documents/sow-pdf-name'
 import { sowRetainerTerms } from '@/lib/sow/retainer'
 
-const SOW_PDF_COLUMNS = `id, version, document_number, sections, metadata, status, signed_at, signed_by,
+const SOW_PDF_COLUMNS = `id, version, document_number, sections, metadata, status, signed_at, signed_by, signer_title, signer_company,
   client_signature_data, workspace_id, pdf_path,
   projects(id, name, disc, contract_value, currency, type, retainer_duration_months,
     clients(name, company_name, billing_address, vat_number),
-    workspaces(timezone, agency_name, brand_colour, logo_storage_path, agency_signature_data,
+    workspaces(timezone, agency_name, brand_colour, logo_storage_path, agency_signature_data, agency_signatory_name, agency_signatory_title,
       legal_address, tax_id, phone, website))`
 
 // FIX (audit): no portal-scoped PDF route existed for SOWs at all. The only
@@ -174,8 +174,12 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         trigger: m.trigger, dueDate: m.due_date, status: m.status,
       })),
       signedBy:      isSigned ? (sow.signed_by || undefined) : undefined,
+      clientSignerTitle:   isSigned ? (sow.signer_title || null) : null,
+      clientSignerCompany: isSigned ? (sow.signer_company || null) : null,
       signedAt:      isSigned ? (sow.signed_at || undefined) : undefined,
       agencySignatureData: ws?.agency_signature_data || null,
+      agencySignatoryName: ws?.agency_signatory_name || null,
+      agencySignatoryTitle: ws?.agency_signatory_title || null,
       clientSignatureData: isSigned ? (sow.client_signature_data || null) : null,
       version:       sow.version,
       isWatermarked: !isSigned,

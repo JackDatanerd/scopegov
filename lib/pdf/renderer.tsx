@@ -588,6 +588,7 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
             </View>
             <View style={s.sigRule} />
             <Text style={s.sigName}>{[data.agencySignatoryName || data.agencyName, data.agencySignatoryTitle].filter(Boolean).join(', ')}</Text>
+            {data.signedAt && <Text style={s.sigDate}>{fmtDate(data.signedAt, data.timeZone)}</Text>}
           </View>
           <View style={s.sigCol}>
             <Text style={s.sigLabel}>{t.clientLabel} — {data.clientSignerCompany || data.clientCompany || data.clientName}</Text>
@@ -890,6 +891,7 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
             </View>
             <View style={s.sigRule} />
             <Text style={s.sigName}>{[data.agencySignatoryName || data.agencyName, data.agencySignatoryTitle].filter(Boolean).join(', ')}</Text>
+            {data.acceptedAt && <Text style={{ fontSize: 9, color: '#909090' }}>{fmtDate(data.acceptedAt, data.timeZone)}</Text>}
           </View>
           <View style={s.sigCol}>
             <Text style={s.sigLabel}>Client — {data.clientSignerCompany || data.clientName}</Text>

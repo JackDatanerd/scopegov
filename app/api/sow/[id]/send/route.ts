@@ -34,7 +34,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const { data: sow, error: sowReadErr } = await (service as any)
       .from('sow_documents')
       .select(`id, version, status, project_id, sections, metadata,
-        projects(id, name, disc, status, contract_value, currency, type, retainer_duration_months, client_id)`)
+        projects(id, name, disc, status, contract_value, currency, type, retainer_duration_months, client_id, start_date)`)
       .eq('id', id).eq('workspace_id', session.workspaceId).maybeSingle()
     // FIX (SOW lifecycle independent pass 15, B4): a failed read is not "not found" — fail into the route's 500 handler.
     if (sowReadErr) throw new Error(`SOW read failed: ${sowReadErr.message}`)
@@ -69,6 +69,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       sections: sow.sections, metadata: sow.metadata, contractValue: project.contract_value,
       redactContractValue: !canSeeFinancials,
       projectType: project.type,
+      projectStartDate: project.start_date,
     })
     if (validation.errors.length > 0)
       return NextResponse.json({ error: validation.errors[0], errors: validation.errors }, { status: 400 })

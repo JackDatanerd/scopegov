@@ -477,7 +477,8 @@ Rules:
 - Deliverables table rows must cover every item in the deliverables brief above — one row per deliverable, not grouped.
 - Roles table must reflect that ${input.agencyName} is the Provider and ${input.clientName} is the Client.
 - Write with professional, authoritative language appropriate for a legal document.
-- Never add a "late fee rate" or "revision fee" unless explicitly provided.${standardsPromptBlock(input.standards)}${wantsPaymentSchedule ? '\n- Payment Schedule table: propose sensible milestone titles and trigger conditions based on the deliverables/timeline above. Amount must be exactly 0 on every row — never write a dollar figure or percentage there.' : ''}${languageInstruction}${reminder}`
+- Never add a "late fee rate" or "revision fee" unless explicitly provided.
+- Whenever you write a calendar date, include the year (e.g. "June 16, 2026"). Never print a date without it.${standardsPromptBlock(input.standards)}${wantsPaymentSchedule ? '\n- Payment Schedule table: propose sensible milestone titles and trigger conditions based on the deliverables/timeline above. Amount must be exactly 0 on every row — never write a dollar figure or percentage there.' : ''}${languageInstruction}${reminder}`
 }
 
 // ── 3. Parsers — tolerant of anything except the markers themselves ────

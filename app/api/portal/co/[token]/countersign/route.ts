@@ -51,7 +51,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         timeline_impact_days,scope_impact_note,is_retainer_renewal,renewal_term_months,is_credit,
         token,document_number,project_id,workspace_id,
         projects(id,name,type,status,currency,contract_value,retainer_duration_months,client_id,clients(name,email,cc_emails,company_name,billing_address,vat_number),
-          workspaces(id,agency_name,brand_colour,logo_storage_path,agency_signature_data,
+          workspaces(id,agency_name,brand_colour,logo_storage_path,agency_signature_data, agency_signatory_name, agency_signatory_title,
             legal_address,tax_id,phone,website))`)
       .eq('token', token).single()
 

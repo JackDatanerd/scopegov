@@ -34,10 +34,10 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 
     const { data: sow, error: sowReadErr } = await (service as any)
       .from('sow_documents')
-      .select(`id, version, document_number, sections, metadata, status, signed_at, signed_by, client_signature_data, project_id, pdf_path,
+      .select(`id, version, document_number, sections, metadata, status, signed_at, signed_by, signer_title, signer_company, client_signature_data, project_id, pdf_path,
         projects(id, name, disc, contract_value, currency, type, retainer_duration_months,
           clients(name, company_name, billing_address, vat_number),
-          workspaces(timezone, agency_name, brand_colour, logo_storage_path, agency_signature_data,
+          workspaces(timezone, agency_name, brand_colour, logo_storage_path, agency_signature_data, agency_signatory_name, agency_signatory_title,
             legal_address, tax_id, phone, website))`)
       .eq('id', id)
       .eq('workspace_id', session.workspaceId)
@@ -130,8 +130,12 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         trigger: m.trigger, dueDate: m.due_date, status: m.status,
       })),
       signedBy:      sow.signed_by || undefined,
+      clientSignerTitle:   sow.signer_title || null,
+      clientSignerCompany: sow.signer_company || null,
       signedAt:      sow.signed_at || undefined,
       agencySignatureData: ws?.agency_signature_data || null,
+      agencySignatoryName: ws?.agency_signatory_name || null,
+      agencySignatoryTitle: ws?.agency_signatory_title || null,
       clientSignatureData: sow.client_signature_data || null,
       version:       sow.version,
       // FIX (re-audit): only 'draft' was watermarked. An 'awaiting_signature'

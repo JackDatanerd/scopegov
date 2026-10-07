@@ -423,6 +423,8 @@ export async function finalizeCoAcceptance(service: any, params: {
       acceptedBy:    signerName.trim(),
       acceptedAt:    now,
       agencySignatureData: ws.agency_signature_data || null,
+      agencySignatoryName: ws.agency_signatory_name || null,
+      agencySignatoryTitle: ws.agency_signatory_title || null,
       clientSignatureData: signatureData,
       documentNumber: co.document_number || null,
       timelineImpactDays: co.timeline_impact_days ?? null,

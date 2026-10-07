@@ -68,7 +68,7 @@ export async function sendSowDocument(service: any, params: {
   const { data: sow, error: sowReadErr } = await (service as any)
     .from('sow_documents')
     .select(`id, version, status, project_id, document_number, sections, metadata, updated_at,
-      projects(id, name, disc, status, contract_value, currency, type, retainer_duration_months, client_id, deleted_at,
+      projects(id, name, disc, status, contract_value, currency, type, retainer_duration_months, client_id, start_date, deleted_at,
         clients(name, email, cc_emails),
         workspaces(id, agency_name, brand_colour, logo_storage_path))`)
     .eq('id', sowId).eq('workspace_id', workspaceId).maybeSingle()
@@ -107,6 +107,7 @@ export async function sendSowDocument(service: any, params: {
     sections: sow.sections, metadata: sow.metadata, contractValue: project.contract_value,
     redactContractValue: params.redactContractValue !== false,
     projectType: project.type,
+    projectStartDate: project.start_date,
   })
   if (validation.errors.length > 0)
     return { ok: false, error: validation.errors[0], status: 400 }

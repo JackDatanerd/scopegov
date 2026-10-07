@@ -40,6 +40,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (!reqBody || typeof reqBody !== 'object')
       return NextResponse.json({ error: 'Invalid request' }, { status: 400 })
     const signerName = cleanTextField((reqBody as any).signerName, 120)
+    // Optional: the signer's position, and the company they sign on behalf of (printed under the signature).
+    const signerTitle = cleanTextField((reqBody as any).signerTitle, 120) || null
+    const signerCompany = cleanTextField((reqBody as any).signerCompany, 160) || null
     const signatureData = (reqBody as any).signatureData
     // The audit trail records where the signature came from: the real client hop, not the raw
     // x-forwarded-for chain (which can carry several comma-separated addresses).
@@ -68,7 +71,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       .select(`id, version, status, sections, metadata, expires_at, project_id, workspace_id, document_number,
         projects(id, name, disc, currency, contract_value, type, retainer_duration_months, client_id, created_by, guardian_email,
           clients(name, email, cc_emails, company_name, billing_address, vat_number),
-          workspaces(timezone, id, agency_name, brand_colour, logo_storage_path, agency_signature_data,
+          workspaces(timezone, id, agency_name, brand_colour, logo_storage_path, agency_signature_data, agency_signatory_name, agency_signatory_title,
             first_sow_signed_at, legal_address, tax_id, phone, website))`)
       .eq('token', token).single()
 
@@ -123,6 +126,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         status:      'signed',
         signed_at:   now,
         signed_by:   signerName,
+        signer_title:   signerTitle,
+        signer_company: signerCompany,
         signer_email: client.email,
         signer_ip:   ip,
         client_signature_data: signatureData,
@@ -285,6 +290,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       sections: sow.sections || [], metadata: sow.metadata || {},
       contractValue: project.contract_value, currency: project.currency,
       signedBy: signerName, signedAt: now, signerEmail: client.email,
+      // Only present when supplied, so a signature without them hashes exactly as before.
+      ...(signerTitle ? { signerTitle } : {}), ...(signerCompany ? { signerCompany } : {}),
       signatureSha256: createHash('sha256').update(signatureData).digest('hex'),
     })
 
@@ -357,8 +364,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
           trigger: m.trigger, dueDate: m.due_date, status: m.status,
         })),
         signedBy:      signerName,
+        clientSignerTitle:   signerTitle,
+        clientSignerCompany: signerCompany,
         signedAt:      now,
         agencySignatureData: ws.agency_signature_data || null,
+        agencySignatoryName: ws.agency_signatory_name || null,
+        agencySignatoryTitle: ws.agency_signatory_title || null,
         clientSignatureData: signatureData,
         version:       sow.version,
         // The emailed executed copy omitted the document number that every later download of the

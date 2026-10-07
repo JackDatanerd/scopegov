@@ -57,6 +57,8 @@ export default function SowPortalPage() {
   const [sow,       setSow]       = useState<SowData | null>(null)
   const [mode,      setMode]      = useState<'view' | 'sign' | 'changes' | 'decline'>('view')
   const [signerName, setSignerName] = useState('')
+  const [signerTitle, setSignerTitle] = useState('')
+  const [signerCompany, setSignerCompany] = useState('')
   const [agreed,    setAgreed]    = useState(false)
   const [changesNote, setChangesNote] = useState('')
   const [declineReason, setDeclineReason] = useState('')
@@ -100,7 +102,7 @@ export default function SowPortalPage() {
       const res  = await fetch(`/api/portal/sow/${token}/sign`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ signerName: signerName.trim(), signatureData }),
+        body:    JSON.stringify({ signerName: signerName.trim(), signerTitle: signerTitle.trim(), signerCompany: signerCompany.trim(), signatureData }),
       })
       const json = await res.json()
       if (!res.ok) throw new Error(json.error)
@@ -425,6 +427,22 @@ export default function SowPortalPage() {
                 autoFocus
                 style={{ fontFamily: 'Georgia,serif', fontSize: 16 }}
               />
+            </div>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 14 }}>
+              <div style={{ flex: '1 1 180px' }}>
+                <label style={{ display: 'block', fontSize: 11, fontWeight: 600, letterSpacing: '.02em', color: '#555', marginBottom: 5 }}>
+                  Position <span style={{ fontWeight: 400, color: '#909090' }}>(optional)</span>
+                </label>
+                <input className="finp" value={signerTitle} maxLength={120} placeholder="e.g. Creative Director"
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSignerTitle(e.target.value)} />
+              </div>
+              <div style={{ flex: '1 1 180px' }}>
+                <label style={{ display: 'block', fontSize: 11, fontWeight: 600, letterSpacing: '.02em', color: '#555', marginBottom: 5 }}>
+                  Signing on behalf of <span style={{ fontWeight: 400, color: '#909090' }}>(optional)</span>
+                </label>
+                <input className="finp" value={signerCompany} maxLength={160} placeholder="Company name, if not you"
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSignerCompany(e.target.value)} />
+              </div>
             </div>
             <div style={{ marginBottom: 14 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 }}>

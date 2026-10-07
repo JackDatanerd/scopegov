@@ -50,6 +50,8 @@ const COLUMNS: Record<string, string> = {
   taxId:                      'tax_id',
   phone:                      'phone',
   website:                    'website',
+  agencySignatoryName:        'agency_signatory_name',
+  agencySignatoryTitle:       'agency_signatory_title',
   defaultPaymentInstructions: 'default_payment_instructions',
   replyToEmail:               'reply_to_email',
   legalAddress:               'legal_address',
@@ -82,6 +84,8 @@ const OPTIONAL_TEXT: Record<string, { label: string; max: number }> = {
   taxId:                      { label: 'Tax ID', max: 50 },
   phone:                      { label: 'Phone', max: 40 },
   website:                    { label: 'Website', max: 200 },
+  agencySignatoryName:        { label: 'Signatory name', max: 120 },
+  agencySignatoryTitle:       { label: 'Signatory position', max: 120 },
   defaultPaymentInstructions: { label: 'Default payment instructions', max: 2000 },
 }
 

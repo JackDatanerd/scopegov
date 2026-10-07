@@ -120,6 +120,8 @@ function workspaceToForm(ws: any) {
     taxId:                      ws?.tax_id || '',
     phone:                      ws?.phone || '',
     website:                    ws?.website || '',
+    agencySignatoryName:        ws?.agency_signatory_name || '',
+    agencySignatoryTitle:       ws?.agency_signatory_title || '',
     replyToEmail:               ws?.reply_to_email || '',
     defaultPaymentInstructions: ws?.default_payment_instructions || '',
     defaultTaxRate:             String(ws?.default_tax_rate ?? 0),
@@ -1036,6 +1038,16 @@ function WorkspaceTab({ form, setForm, permissions, onSave, saving, slugChangedA
           <div className="fgrp">
             <label className="flbl">Phone <span className="fhint">— optional</span></label>
             <input className="finp" value={form.phone} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set('phone', e.target.value)} />
+          </div>
+        </div>
+        <div className="f2">
+          <div className="fgrp">
+            <label className="flbl">Signatory name <InfoTip text="The person who signs for your agency. Printed under your signature on SOW and change order PDFs. Leave blank to print the agency name." /></label>
+            <input className="finp" maxLength={120} value={form.agencySignatoryName} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set('agencySignatoryName', e.target.value)} placeholder="Jane Doe" />
+          </div>
+          <div className="fgrp">
+            <label className="flbl">Signatory position</label>
+            <input className="finp" maxLength={120} value={form.agencySignatoryTitle} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set('agencySignatoryTitle', e.target.value)} placeholder="Managing Director" />
           </div>
         </div>
         <div className="fgrp">

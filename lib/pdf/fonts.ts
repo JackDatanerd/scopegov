@@ -42,6 +42,8 @@ function registerPdfFonts() {
   Font.register({ family: PDF_FONT.bold,       src: dataUri(NOTO_SANS_BOLD_B64) })
   Font.register({ family: PDF_FONT.italic,     src: dataUri(NOTO_SANS_ITALIC_B64) })
   Font.register({ family: PDF_FONT.boldItalic, src: dataUri(NOTO_SANS_BOLD_ITALIC_B64) })
+  // Never hyphenate: react-pdf's English patterns split other languages ("ma-hakama") and web addresses mid-word.
+  Font.registerHyphenationCallback(word => [word])
 }
 
 registerPdfFonts()

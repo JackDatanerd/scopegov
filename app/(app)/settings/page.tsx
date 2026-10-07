@@ -48,7 +48,7 @@ export default async function SettingsPage() {
       // here or the new "Workspace handle" field in WorkspaceTab below
       // would render blank on every load, and the rate-limit hint would
       // have nothing to compute "next eligible" from.
-      .select('id,name,slug,slug_changed_at,agency_name,brand_colour,logo_storage_path,agency_signature_data,industry,currency,timezone,sow_language,governing_law,proactive_risk_threshold,proactive_risk_alerts_enabled,guardian_sensitivity_tier,plan_tier,trial_ends_at,created_at,created_by,tax_id,phone,website,default_payment_instructions,legal_address,updated_at')
+      .select('id,name,slug,slug_changed_at,agency_name,brand_colour,logo_storage_path,agency_signature_data,agency_signatory_name,agency_signatory_title,industry,currency,timezone,sow_language,governing_law,proactive_risk_threshold,proactive_risk_alerts_enabled,guardian_sensitivity_tier,plan_tier,trial_ends_at,created_at,created_by,tax_id,phone,website,default_payment_instructions,legal_address,updated_at')
       .eq('id', session.workspaceId)
       .single(),
     (service as any)

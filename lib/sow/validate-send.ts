@@ -110,6 +110,10 @@ export function validateSowForSend(input: {
   // (pass 11, B1) The project's type. When given, the SOW's payment structure must agree with how the project is
   // billed (retainer <=> monthly). Omitted by callers that cannot know it, which skips only that check.
   projectType?: string | null
+  // ISO date (YYYY-MM-DD) the project starts; a start date already in the past earns a warning.
+  projectStartDate?: string | null
+  // Injectable clock for tests.
+  today?: string
 }): SowSendValidation {
   const errors: string[] = []
   const warnings: string[] = []
@@ -163,6 +167,16 @@ export function validateSowForSend(input: {
     errors.push('Fill in the Governing Law section before sending this SOW.')
   if (isBlankText(textOf(byId('signature')?.content)))
     errors.push('Fill in the Signature section before sending this SOW.')
+
+  // Governing law that names only a country: for the US the governing state is what makes the clause usable.
+  const lawText = textOf(byId('governing_law')?.content).replace(/\s+/g, ' ').trim()
+  if (/laws? of (the )?(united states( of america)?|u\.?s\.?a?\.?)\s*\.?$/i.test(lawText))
+    warnings.push('The Governing Law clause names only "United States". Name a specific state (e.g. "the State of Florida") so the clause can be applied.')
+
+  const start = typeof input.projectStartDate === 'string' ? input.projectStartDate.slice(0, 10) : ''
+  const today = input.today || new Date().toISOString().slice(0, 10)
+  if (/^\d{4}-\d{2}-\d{2}$/.test(start) && start < today)
+    warnings.push(`The project start date (${start}) is already in the past, so the timeline in this SOW will start before it is signed.`)
 
   // Payment Terms is authored prose; the contract value is data. Nothing else ties
   // them together, and a contract value edited after generation leaves the old
