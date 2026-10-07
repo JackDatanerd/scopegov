@@ -44,12 +44,23 @@ function textOf(html: unknown): string {
 const AMOUNT_TOKEN_RE =
   /(?<![\d,.])\d{1,2}(?:,\d{2})+,\d{3}(?:\.\d{1,2})?(?!\d)|\d{1,3}(?:[,.'\u2019\u00a0\u202f]\d{3})+(?:[.,]\d{1,2})?(?!\d)|\d{1,3}(?: \d{3})+(?:[.,]\d{1,2})?(?!\d)|\d+(?:[.,]\d+)?|(?<![\w.,])\.\d{1,2}(?!\d)/g
 
+// FIX (SOW lifecycle pass 21, B5): parseTableAmount reads "1.5k" / "1.5M" / "2 million" (pass 20) but this tokenizer only ever saw the
+// bare digits, so prose stating a contract value as "USD 1.5M" read as 1.5 — a false "does not state the contract value" warning, a
+// redundant appended value line, and figuresPreserved unable to see a rewrite change "1.5M" to "2M". The magnitude word is applied here too.
+const MAGNITUDE_AFTER = /^\s?(?:(k)\b|(?:m|mn|million)\b)/i
+function withMagnitude(n: number, after: string): number {
+  const m = MAGNITUDE_AFTER.exec(after)
+  if (!m) return n
+  return n * (m[1] ? 1000 : 1000000)
+}
+
 export function amountsMentioned(text: string): number[] {
-  const tokens = text.match(AMOUNT_TOKEN_RE) || []
   const out: number[] = []
-  for (const t of tokens) {
-    const n = parseTableAmount(t)
-    if (n !== null) out.push(n)
+  const re = new RegExp(AMOUNT_TOKEN_RE.source, 'g')
+  let m: RegExpExecArray | null
+  while ((m = re.exec(text))) {
+    const n = parseTableAmount(m[0])
+    if (n !== null) out.push(withMagnitude(n, text.slice(m.index + m[0].length)))
   }
   return out
 }
@@ -69,6 +80,9 @@ export function amountsStated(text: string): number[] {
   const out: number[] = []
   const re = new RegExp(AMOUNT_TOKEN_RE.source, 'g')
   let m: RegExpExecArray | null
+  // FIX (SOW lifecycle pass 21, B6): the digits of a date ("2026-10-15", "15/10/2026") were read as amounts, so a contract value equal to
+  // a day or month number counted as stated. Dates are blanked out (same length, so offsets hold) before tokenizing.
+  text = text.replace(/\b\d{4}-\d{1,2}-\d{1,2}\b|\b\d{1,2}[\/.-]\d{1,2}[\/.-]\d{2,4}\b/g, d => ' '.repeat(d.length))
   while ((m = re.exec(text))) {
     const token = m[0]
     if (NOT_AN_AMOUNT_AFTER.test(text.slice(m.index + token.length))) continue
@@ -78,7 +92,7 @@ export function amountsStated(text: string): number[] {
     // appended a redundant value line to text that already had it.
     if (NET_BEFORE.test(text.slice(0, m.index)) && /^\d{1,3}$/.test(token)) continue
     const n = parseTableAmount(token)
-    if (n !== null) out.push(n)
+    if (n !== null) out.push(withMagnitude(n, text.slice(m.index + token.length)))
   }
   return out
 }

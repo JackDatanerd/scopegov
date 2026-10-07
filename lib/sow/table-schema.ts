@@ -213,7 +213,9 @@ export function parseTableAmount(input: unknown): number | null {
   // preceding digit/letter/separator) is now its own token.
   const tokens = raw.match(/\d{1,3}(?:[ \u00a0\u202f'\u2019]\d{3})+(?:[.,]\d{1,2})?(?!\d)|\d[\d.,]*|(?<![\w.,])\.\d{1,2}(?!\d)/g)
   if (!tokens) return null
-  const cleanedTokens = tokens.map(t => t.replace(/[\s'\u2019\u00a0\u202f]+$/g, ''))
+  // FIX (SOW lifecycle pass 21, B4): a sentence-ending full stop / comma after a decimal amount ("Ksh 1,000.00.") stayed in the token,
+  // left a second separator and made Number() fail, so a perfectly readable cell was reported as not a number. Trailing separators go.
+  const cleanedTokens = tokens.map(t => t.replace(/[\s'\u2019\u00a0\u202f]+$/g, '').replace(/[.,]+$/, ''))
   if (cleanedTokens.length !== 1) return null
   let token = cleanedTokens[0].replace(/[\s'\u2019\u00a0\u202f]/g, '')
 

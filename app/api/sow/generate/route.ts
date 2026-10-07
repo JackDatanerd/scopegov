@@ -12,6 +12,7 @@ export const maxDuration = 120
 import { sowRetainerTerms } from '@/lib/sow/retainer'
 import { structureForProject, paymentStructureError } from '@/lib/sow/payment-structure'
 import { createServiceClient } from '@/lib/supabase/server'
+import { isUuidString } from '@/lib/utils/uuid'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { getPendingApprovalForDocument } from '@/lib/approvals/engine'
@@ -82,6 +83,10 @@ export async function POST(request: NextRequest) {
     const { projectId } = body
 
     if (!projectId) return NextResponse.json({ error: 'projectId required' }, { status: 400 })
+    // FIX (SOW lifecycle pass 21, B3): a malformed id reached the query as invalid uuid text and came back as a logged 500; it is simply not found
+    // (same treatment regenerate-section, send, the PDF routes and the rest of this section already have).
+    if (typeof projectId !== 'string' || !isUuidString(projectId))
+      return NextResponse.json({ error: 'Project not found' }, { status: 404 })
 
     // FIX (section-9 audit, 9-B11): every one of these went into the AI
     // prompt — and, for paymentStructure, straight into the drafted
@@ -150,25 +155,34 @@ export async function POST(request: NextRequest) {
     // signed scope go through a change order; changes to one awaiting signature go through
     // Withdraw first. Checked BEFORE the rate limit and the model call so a refused request
     // costs nothing.
-    const { data: liveSows } = await (service as any)
-      .from('sow_documents').select('id, status, version')
-      .eq('project_id', projectId).in('status', ['awaiting_signature', 'signed']).limit(1)
-    if (liveSows && liveSows.length > 0) {
-      return NextResponse.json({
-        error: liveSows[0].status === 'signed'
-          ? 'This project already has a signed SOW. Use a change order to change the agreed scope.'
-          : 'A SOW for this project is out for signature. Withdraw it before generating a new one.',
-      }, { status: 409 })
+    // FIX (SOW lifecycle pass 21, B2): shared so it can run again after the model call (below), and fails CLOSED — a failed read used to
+    // leave `liveSows` undefined, which passed the check.
+    const liveSowRefusal = async (): Promise<NextResponse | null> => {
+      const { data: liveSows, error: liveErr } = await (service as any)
+        .from('sow_documents').select('id, status, version')
+        .eq('project_id', projectId).in('status', ['awaiting_signature', 'signed']).limit(1)
+      if (liveErr) throw new Error(`live SOW check failed: ${liveErr.message}`)
+      if (liveSows && liveSows.length > 0) {
+        return NextResponse.json({
+          error: liveSows[0].status === 'signed'
+            ? 'This project already has a signed SOW. Use a change order to change the agreed scope.'
+            : 'A SOW for this project is out for signature. Withdraw it before generating a new one.',
+        }, { status: 409 })
+      }
+      return null
     }
+    const liveRefusal = await liveSowRefusal()
+    if (liveRefusal) return liveRefusal
 
     // FIX (SOW lifecycle independent pass 12, B6): the pending-approval refusal for an existing draft only ran AFTER
     // the model call below, so a regenerate that was always going to be refused still spent the rate-limit slot
     // and a full AI call (the UI hides the button, but the API is reachable). Pre-flight it here, before either; the
     // authoritative check against the freshly-read draft further down stays, since the draft can change meanwhile.
-    const { data: draftProbe } = await (service as any)
+    const { data: draftProbe, error: draftProbeErr } = await (service as any)
       .from('sow_documents').select('id')
       .eq('project_id', projectId).eq('status', 'draft')
       .order('version', { ascending: false }).limit(1).maybeSingle()
+    if (draftProbeErr) throw new Error(`draft check failed: ${draftProbeErr.message}`)
     if (draftProbe && await getPendingApprovalForDocument(service, 'sow', draftProbe.id)) {
       return NextResponse.json(
         { error: 'This SOW has a pending approval request — cancel it before regenerating.' },
@@ -400,6 +414,12 @@ export async function POST(request: NextRequest) {
         brief: { objective, deliverables, outOfScope, timeline },
       },
     }
+
+    // FIX (SOW lifecycle pass 21, B2): the one-live-SOW check above ran before the model call, which can take 20+ seconds. If the draft
+    // was sent (or the SOW signed) meanwhile, the lookup below finds no draft and the insert branch used to create a NEW draft next to the
+    // live SOW. Re-check right before writing; the overwrite branch is separately guarded on the write itself.
+    const liveAfterAi = await liveSowRefusal()
+    if (liveAfterAi) return liveAfterAi
 
     // Check for existing draft SOW on this project
     // FIX (fresh independent audit, section 9): `sections` added to the select — see

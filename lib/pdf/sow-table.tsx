@@ -35,7 +35,8 @@ function cellText(sectionId: string, key: string, raw: string, currency?: string
   if (n === null) return raw
   const whole = Math.round(Math.abs(n) * 100) % 100 === 0
   const body = Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: whole ? 0 : 2, maximumFractionDigits: 2 })
-  return `${n < 0 ? '-' : ''}${currency} ${body}`
+  // FIX (SOW lifecycle pass 21, B1): sign goes after the currency code, like the signed milestone block ("USD -500"), not before it.
+  return `${currency} ${n < 0 ? '-' : ''}${body}`
 }
 
 export function SowTable({ sectionId, rows, language, lead, currency }: { sectionId: SowTableSectionId; rows: SowTableRow[]; language?: string; lead?: React.ReactNode; currency?: string }) {

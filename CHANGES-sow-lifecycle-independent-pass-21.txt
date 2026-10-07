@@ -1,0 +1,10 @@
+SOW lifecycle independent pass 21 (applied against e8d26b8; no migration)
+
+B1 lib/pdf/sow-table.tsx            credit in the unsigned Payment Schedule printed "-USD 500"; signed block prints "USD -500". Now both "USD -500".
+B2 app/api/sow/generate/route.ts    one-live-SOW check re-run after the model call (a draft sent/signed meanwhile no longer gets a stray new draft
+                                    beside it); the live-SOW and draft pre-reads now fail closed on a read error.
+B3 app/api/sow/generate/route.ts    malformed projectId -> 404 instead of a logged 500.
+B4 lib/sow/table-schema.ts          "Ksh 1,000.00." (trailing full stop after decimals) is readable.
+B5 lib/sow/validate-send.ts         amountsStated/amountsMentioned apply k / M / mn / million (so "USD 1.5M" states 1,500,000; figuresPreserved sees it).
+B6 lib/sow/validate-send.ts         dates (2026-10-15, 15/10/2026) are no longer read as amounts when checking the contract value is stated.
+Tests: tests/sow-lifecycle-independent-pass-21.test.ts. Full suite: 320 files / 3149 tests pass; tsc --noEmit clean.
