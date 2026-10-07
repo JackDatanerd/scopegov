@@ -4,6 +4,7 @@ import { escapeHtml, sanitizeRichTextOrNull } from '@/lib/utils/sanitize'
 import { sendEmail, type EmailPayload, type EmailLogContext, type SendResult } from '@/lib/email/send'
 import { formatFrom, systemFrom } from '@/lib/email/from'
 import { formatMoney } from '@/lib/utils/money'
+import { formatRenewalTerm } from '@/lib/documents/co-renewal-term'
 const money = formatMoney
 
 // FIX (Notifications & email fix round): the lazy Resend singleton, the FROM
@@ -161,7 +162,7 @@ export async function sendSowEmail(params: {
     currency, portalUrl, brandColour, expiresAt, isRetainer, retainerMonths } = params
   const valueLabel = isRetainer ? 'Monthly retainer fee' : 'Contract value'
   const valueText = isRetainer
-    ? `${money(contractValue, currency)} / month${(retainerMonths || 0) > 0 ? ` · ${retainerMonths} months (${money(Math.round(contractValue * (retainerMonths as number) * 100) / 100, currency)} total)` : ''}`
+    ? `${money(contractValue, currency)} / month${(retainerMonths || 0) > 0 ? ` · ${formatRenewalTerm(retainerMonths as number)} (${money(Math.round(contractValue * (retainerMonths as number) * 100) / 100, currency)} total)` : ''}`
     : money(contractValue, currency)
   const clientName  = escapeHtml(clientNameRaw)
   const agencyName  = escapeHtml(agencyNameRaw)
@@ -1027,8 +1028,15 @@ export async function sendCoAcceptedEmail(params: {
   attachments?: Array<{ filename: string; content: string }>
   /** Credit / descope CO: `total` is stored NEGATIVE. Worded as a reduction, never as "additional value". */
   isCredit?: boolean
+  /** Retainer renewal: `total` is the NEW MONTHLY RATE (it replaces the old one), not extra value. */
+  isRenewal?: boolean
+  previousRate?: number | null
+  renewalTermMonths?: number | null
 }) {
-  const { to, clientName: clientNameRaw, projectName: projectNameRaw, coTitle: coTitleRaw, total, currency, acceptedBy: acceptedByRaw, projectUrl, attachments, isCredit } = params
+  const { to, clientName: clientNameRaw, projectName: projectNameRaw, coTitle: coTitleRaw, total, currency, acceptedBy: acceptedByRaw, projectUrl, attachments, isCredit: isCreditRaw, isRenewal, previousRate, renewalTermMonths } = params
+  const isCredit = !!isCreditRaw && !isRenewal
+  const renewalRate = `${money(total, currency)} / month${previousRate != null ? ` (previously ${money(previousRate, currency)} / month)` : ''}`
+  const renewalTerm = renewalTermMonths && renewalTermMonths > 0 ? ` and extended the retainer by ${formatRenewalTerm(renewalTermMonths)}` : ''
   const clientName  = escapeHtml(clientNameRaw)
   const projectName = escapeHtml(projectNameRaw)
   const coTitle     = escapeHtml(coTitleRaw)
@@ -1037,22 +1045,24 @@ export async function sendCoAcceptedEmail(params: {
   const html = baseTemplate({
     agencyName: 'ScopeGov',
     headerColour: C.green,
-    label: isCredit ? 'Credit change order accepted' : 'Change order accepted',
-    headline: isCredit ? `${clientName} accepted the credit change order` : `${clientName} accepted the change order`,
+    label: isRenewal ? 'Retainer renewal accepted' : isCredit ? 'Credit change order accepted' : 'Change order accepted',
+    headline: isRenewal ? `${clientName} accepted the retainer renewal` : isCredit ? `${clientName} accepted the credit change order` : `${clientName} accepted the change order`,
     body: `
       <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
-        ${isCredit ? '' : 'Great news — '}<strong>${clientName}</strong> has accepted the ${isCredit ? 'credit ' : ''}change order
+        ${isCredit ? '' : 'Great news — '}<strong>${clientName}</strong> has accepted the ${isRenewal ? 'retainer renewal ' : isCredit ? 'credit ' : ''}change order
         <strong>${coTitle}</strong> on <strong>${projectName}</strong>.
       </p>
       <div style="background:${C.greenLt};border:1px solid #B7DCC8;border-radius:6px;padding:14px 16px;margin:16px 0;font-size:13px;">
         <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
-          <span style="color:${C.green};">${isCredit ? 'Contract value reduced by' : 'Additional value locked in'}</span>
-          <strong style="color:${C.green};">${isCredit ? money(Math.abs(Number(total) || 0), currency) : money(total, currency)}</strong>
+          <span style="color:${C.green};">${isRenewal ? 'New monthly retainer rate' : isCredit ? 'Contract value reduced by' : 'Additional value locked in'}</span>
+          <strong style="color:${C.green};">${isRenewal ? renewalRate : isCredit ? money(Math.abs(Number(total) || 0), currency) : money(total, currency)}</strong>
         </div>
         <div style="font-size:12px;color:${C.text3};">Signed by: ${acceptedBy}</div>
       </div>
       <p style="font-size:13px;color:${C.text2};">
-        An amendment has been created and the contract value updated automatically.
+        ${isRenewal
+          ? `The monthly rate has been replaced${renewalTerm} automatically.`
+          : 'An amendment has been created and the contract value updated automatically.'}
       </p>
     `,
     cta: 'View project →',
@@ -1063,7 +1073,9 @@ export async function sendCoAcceptedEmail(params: {
   return deliver({
     from:    systemFrom(),
     to,
-    subject: isCredit
+    subject: isRenewal
+      ? `✓ Retainer renewal accepted — ${projectNameRaw} (${money(total, currency)} / month)`
+      : isCredit
       ? `✓ Credit change order accepted — ${projectNameRaw} (credit ${money(Math.abs(Number(total) || 0), currency)})`
       : `✓ Change order accepted — ${projectNameRaw} +${money(total, currency)}`,
     html,
@@ -1083,9 +1095,14 @@ export async function sendCoAcceptedClientEmail(params: {
   attachments?: Array<{ filename: string; content: string }>
   /** Credit / descope CO: `total` is stored NEGATIVE — say "a credit of", never "an additional -X". */
   isCredit?: boolean
+  /** Retainer renewal: `total` is the NEW MONTHLY RATE replacing the old one — never "an additional X". */
+  isRenewal?: boolean
+  previousRate?: number | null
+  renewalTermMonths?: number | null
 }) {
   const { to, cc, clientName: clientNameRaw, agencyName: agencyNameRaw, projectName: projectNameRaw,
-    coTitle: coTitleRaw, total, currency, portalUrl, attachments, isCredit } = params
+    coTitle: coTitleRaw, total, currency, portalUrl, attachments, isCredit: isCreditRaw, isRenewal, previousRate, renewalTermMonths } = params
+  const isCredit = !!isCreditRaw && !isRenewal
   const clientName  = escapeHtml(clientNameRaw)
   const agencyName  = escapeHtml(agencyNameRaw)
   const projectName = escapeHtml(projectNameRaw)
@@ -1100,7 +1117,9 @@ export async function sendCoAcceptedClientEmail(params: {
       <p style="font-size:14px;color:${C.text};line-height:1.7;margin:0 0 16px;">Hi ${clientName},</p>
       <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
         This confirms the change order <strong>${coTitle}</strong> for <strong>${projectName}</strong>
-        with <strong>${agencyName}</strong>, ${isCredit
+        with <strong>${agencyName}</strong>, ${isRenewal
+          ? `setting the monthly retainer rate to <strong>${money(total, currency)} / month</strong>${previousRate != null ? ` (previously ${money(previousRate, currency)} / month)` : ''}${renewalTermMonths && renewalTermMonths > 0 ? `, extending the retainer by ${formatRenewalTerm(renewalTermMonths)}` : ''}`
+          : isCredit
           ? `as a credit of <strong>${money(Math.abs(Number(total) || 0), currency)}</strong>`
           : `for an additional <strong>${money(total, currency)}</strong>`}.
         ${attachments?.length

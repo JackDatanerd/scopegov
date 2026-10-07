@@ -461,6 +461,7 @@ export async function finalizeCoAcceptance(service: any, params: {
       projectUrl: `${process.env.NEXT_PUBLIC_APP_URL}/projects/${co.project_id}?tab=co`,
       attachments: pdfAttachment ? [pdfAttachment] : undefined,
       isCredit,
+      isRenewal, previousRate: previousContractValue, renewalTermMonths: isRenewal ? renewalTermForDocument(co, project) : null,
     }), 'CO accepted (agency) email')
   }
 
@@ -478,6 +479,7 @@ export async function finalizeCoAcceptance(service: any, params: {
       portalUrl,
       attachments: pdfAttachment ? [pdfAttachment] : undefined,
       isCredit,
+      isRenewal, previousRate: previousContractValue, renewalTermMonths: isRenewal ? renewalTermForDocument(co, project) : null,
       log: { workspaceId: co.workspace_id, kind: 'co.accepted_confirmation', entityType: 'change_order', entityId: co.id, projectId: co.project_id },
     }), 'CO accepted (client) email')
   }
@@ -485,7 +487,9 @@ export async function finalizeCoAcceptance(service: any, params: {
   await notifyMembersWithPermission(service, {
     workspaceId: co.workspace_id, permission: 'SEND_CHANGE_ORDERS', eventType: 'co_accepted',
     type: 'co_accepted', title: `CO accepted — ${co.title}`,
-    body: isCredit
+    body: isRenewal
+      ? `${signerName.trim()} accepted a retainer renewal for ${project.name}: new monthly rate ${formatMoney(co.total, project.currency)}.`
+      : isCredit
       ? `${signerName.trim()} accepted a credit of ${formatMoney(Math.abs(Number(co.total) || 0), project.currency)} for ${project.name}.`
       : `${signerName.trim()} accepted ${formatMoney(co.total, project.currency)} for ${project.name}.`,
     entityType: 'project', entityId: co.project_id, projectId: co.project_id,
