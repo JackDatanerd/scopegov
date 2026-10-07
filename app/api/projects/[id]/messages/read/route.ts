@@ -44,7 +44,6 @@ export async function POST(
       .select('last_read_at')
       .eq('project_id', projectId).eq('user_id', session.id).maybeSingle()
     if (existingErr) throw new Error(existingErr.message)
-    const existingMs = existing?.last_read_at ? new Date(existing.last_read_at).getTime() : 0
     // Keep the exact timestamp string the client echoed back (it carries the
     // database's microseconds); only fall back to a JS date for the "now" case.
     // Only echo the client's string when it is a strict ISO-8601 timestamp: JS's Date parser accepts formats
@@ -52,7 +51,16 @@ export async function POST(
     const ISO_TS = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:?\d{2})$/
     const stamp = typeof body?.upTo === 'string' && target !== nowMs && ISO_TS.test(body.upTo)
       ? body.upTo : new Date(target).toISOString()
-    if (target <= existingMs) return NextResponse.json({ ok: true })
+    // Compare at the database's microsecond precision, not milliseconds: a message created in the same millisecond as the
+    // stored marker (but later) was otherwise never marked read.
+    const micros = (iso: string) => {
+      const ms = new Date(iso).getTime()
+      const frac = /\.(\d+)/.exec(iso)?.[1] ?? ''
+      return ms * 1000 + (frac.length > 3 ? parseInt(frac.slice(3, 6).padEnd(3, '0'), 10) : 0)
+    }
+    const targetMicros = target === nowMs ? target * 1000 : micros(stamp)
+    const existingMicros = existing?.last_read_at ? micros(existing.last_read_at) : 0
+    if (targetMicros <= existingMicros) return NextResponse.json({ ok: true })
 
     const { error } = await (service as any)
       .from('project_message_reads')

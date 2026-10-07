@@ -106,7 +106,7 @@ export default async function DashboardPage() {
     // see app/api/projects/route.ts for the full explanation. This
     // silently returned nothing for anyone without VIEW_ALL_PROJECTS.
     // Paged (a plain select is silently capped at 1000 rows) — see lib/utils/member-project-ids.ts.
-    accessibleProjectIds = await loadMemberProjectIds(service, session.id)
+    accessibleProjectIds = await loadMemberProjectIds(service, session.workspaceId, session.id)
     if (!accessibleProjectIds?.length) return <EmptyDash session={session} canCreate={canCreate} daysLeft={daysLeft} greetingText={greeting(ws?.timezone)} />
   }
 

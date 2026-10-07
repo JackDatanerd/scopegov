@@ -21,6 +21,9 @@ import { MESSAGE_MAX_LENGTH, LAPSED_DISCUSSION_ERROR, resolveMentions, notifyMen
 // actually run projects long enough to need it, but nothing so far in
 // this codebase paginates a comment feed either (flag_comments doesn't).
 const FEED_LIMIT = 200
+// Edited/deleted rows returned per poll. More than this since the last poll (a tab left hidden for a long time) is
+// reported as `changedTruncated` so the client reloads the feed instead of advancing its cursor past changes it never saw.
+const CHANGED_LIMIT = 100
 
 async function loadProject(service: any, workspaceId: string, projectId: string) {
   // FIX (Projects & Dashboard pass 10, B1): .single() + ignored `error` made a failed read look like a missing project (404). maybeSingle() and a
@@ -128,6 +131,7 @@ export async function GET(
     // else stayed invisible on every other open screen until a full reload — including a moderator
     // removing a message. `changedSince` returns rows edited or deleted since the last poll.
     let changed: ReturnType<typeof shape>[] = []
+    let changedTruncated = false
     if (afterRaw && changedSinceRaw) {
       const since = new Date(changedSinceRaw).toISOString() // re-serialised: only safe characters reach the filter
       const { data: changedRows, error: changedErr } = await (service as any)
@@ -135,13 +139,14 @@ export async function GET(
         .select(`id, body, created_at, edited_at, deleted_at, author_id, users!project_messages_author_id_fkey(name, avatar_url)`)
         .eq('project_id', projectId)
         .or(`edited_at.gt.${since},deleted_at.gt.${since}`)
-        .order('created_at', { ascending: true }).limit(100)
+        .order('created_at', { ascending: true }).limit(CHANGED_LIMIT + 1)
       if (changedErr) throw new Error(changedErr.message)
+      changedTruncated = (changedRows || []).length > CHANGED_LIMIT
       const returned = new Set(messages.map(m => m.id))
-      changed = (changedRows || []).filter((m: any) => !returned.has(m.id)).map(shape)
+      changed = (changedRows || []).slice(0, CHANGED_LIMIT).filter((m: any) => !returned.has(m.id)).map(shape)
     }
 
-    return NextResponse.json({ messages, changed, syncedAt, hasMore, lastReadAt: readRow?.last_read_at || null })
+    return NextResponse.json({ messages, changed, changedTruncated, syncedAt, hasMore, lastReadAt: readRow?.last_read_at || null })
   } catch (err) {
     console.error('Project messages GET error:', err)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })

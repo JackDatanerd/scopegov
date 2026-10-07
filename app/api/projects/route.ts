@@ -298,7 +298,7 @@ export async function GET() {
       // to users via user_id) — it has no user_id / workspace_id columns of
       // its own.
       // Paged (a plain select is silently capped at 1000 rows) — see lib/utils/member-project-ids.ts.
-      restrictedIds = await loadMemberProjectIds(service, session.id)
+      restrictedIds = await loadMemberProjectIds(service, session.workspaceId, session.id)
     }
 
     // FIX (Projects & Dashboard independent pass): fetchPaged so this can

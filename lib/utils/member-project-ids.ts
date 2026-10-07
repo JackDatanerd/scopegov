@@ -14,12 +14,20 @@
 
 import { fetchAll } from '@/lib/utils/fetch-all'
 
-export async function loadMemberProjectIds(service: any, userId: string): Promise<string[]> {
+// FIX (Projects & Dashboard independent pass 15): the read was not scoped to a workspace, so it also returned the
+// projects a person is assigned to in EVERY OTHER workspace they belong to (a creator is always added as a member of
+// their own projects, so an admin elsewhere has plenty). A restricted member with nothing assigned HERE but something
+// assigned there skipped the Dashboard / Projects empty states ("0 on record", "No active projects") and paid for chunked
+// reads of ids that could never match. Scoped to the active workspace and to the member's active membership, the same
+// rule canReadProject applies (project_members_active).
+export async function loadMemberProjectIds(service: any, workspaceId: string, userId: string): Promise<string[]> {
   const rows = await fetchAll<{ id: string; project_id: string }>('member project ids', (from, to) =>
     service
       .from('project_members')
       .select('id, project_id, workspace_members!inner(user_id)')
       .eq('workspace_members.user_id', userId)
+      .eq('workspace_members.workspace_id', workspaceId)
+      .eq('workspace_members.status', 'active')
       .order('id')
       .range(from, to))
   return Array.from(new Set(rows.map(r => r.project_id)))

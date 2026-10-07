@@ -132,7 +132,7 @@ export default async function ClientDetailPage({ params }: Props) {
   let accessibleProjectIds: Set<string> | null = null
   if (!canViewAllProjects) {
     // Paged (a plain select is silently capped at 1000 rows) and throws on a read error — see lib/utils/member-project-ids.ts.
-    accessibleProjectIds = new Set(await loadMemberProjectIds(service, session.id))
+    accessibleProjectIds = new Set(await loadMemberProjectIds(service, session.workspaceId, session.id))
   }
 
   const { data: projectsAll = [], error: projectsErr } = await (service as any)

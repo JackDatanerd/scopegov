@@ -33,7 +33,7 @@ export default async function ProjectsPage({ searchParams }: { searchParams: Pro
     // see app/api/projects/route.ts for the full explanation. This
     // silently returned nothing for anyone without VIEW_ALL_PROJECTS.
     // Paged (a plain select is silently capped at 1000 rows) — see lib/utils/member-project-ids.ts.
-    restrictedIds = await loadMemberProjectIds(service, session.id)
+    restrictedIds = await loadMemberProjectIds(service, session.workspaceId, session.id)
     if (restrictedIds.length === 0) return <EmptyProjects canCreate={canCreate} />
   }
 

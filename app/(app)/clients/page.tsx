@@ -55,7 +55,7 @@ export default async function ClientsPage() {
     // FIX (independent pass 1, section 14 — B5): the error was dropped, so a failed read looked like "this member
     // has no projects" and every client showed 0 projects. The detail page already throws here; so does this.
     // Paged (a plain select is silently capped at 1000 rows) and throws on a read error — see lib/utils/member-project-ids.ts.
-    accessibleProjectIds = new Set(await loadMemberProjectIds(service, session.id))
+    accessibleProjectIds = new Set(await loadMemberProjectIds(service, session.workspaceId, session.id))
   }
 
   // FIX (audit round 4, finding #3): this page shipped email, phone, and

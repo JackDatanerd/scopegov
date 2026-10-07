@@ -71,22 +71,22 @@ const mkRows = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `m${Str
 describe('H1 loadMemberProjectIds', () => {
   it('returns every id past the 1000-row cap', async () => {
     const { service } = fakeService(mkRows(2500))
-    const ids = await loadMemberProjectIds(service, 'u1')
+    const ids = await loadMemberProjectIds(service, 'w1', 'u1')
     expect(ids.length).toBe(2500)
     expect(ids[0]).toBe('p0')
     expect(ids[2499]).toBe('p2499')
   })
   it('handles exactly one full page and an empty result', async () => {
-    expect((await loadMemberProjectIds(fakeService(mkRows(1000)).service, 'u1')).length).toBe(1000)
-    expect((await loadMemberProjectIds(fakeService([]).service, 'u1')).length).toBe(0)
+    expect((await loadMemberProjectIds(fakeService(mkRows(1000)).service, 'w1', 'u1')).length).toBe(1000)
+    expect((await loadMemberProjectIds(fakeService([]).service, 'w1', 'u1')).length).toBe(0)
   })
   it('de-duplicates a project reached through more than one membership row', async () => {
     const rows = [{ id: 'a', project_id: 'p1' }, { id: 'b', project_id: 'p1' }, { id: 'c', project_id: 'p2' }]
-    expect(await loadMemberProjectIds(fakeService(rows).service, 'u1')).toEqual(['p1', 'p2'])
+    expect(await loadMemberProjectIds(fakeService(rows).service, 'w1', 'u1')).toEqual(['p1', 'p2'])
   })
   it('filters on the member, orders deterministically and pages with range', async () => {
     const { service, calls } = fakeService(mkRows(1))
-    await loadMemberProjectIds(service, 'user-9')
+    await loadMemberProjectIds(service, 'w1', 'user-9')
     expect(calls).toContainEqual(['from', 'project_members'])
     expect(calls).toContainEqual(['eq', 'workspace_members.user_id', 'user-9'])
     expect(calls).toContainEqual(['order', 'id'])
@@ -94,7 +94,7 @@ describe('H1 loadMemberProjectIds', () => {
   })
   it('throws on a read error instead of reporting "no projects"', async () => {
     let msg = ''
-    try { await loadMemberProjectIds(fakeService([], { error: 'boom' }).service, 'u1') } catch (e: any) { msg = e.message }
+    try { await loadMemberProjectIds(fakeService([], { error: 'boom' }).service, 'w1', 'u1') } catch (e: any) { msg = e.message }
     expect(msg).toMatch(/member project ids: boom/)
   })
 })
@@ -110,7 +110,7 @@ describe('H1 every restricted-member reader uses the paged helper', () => {
   for (const f of files) {
     it(`${f} calls loadMemberProjectIds and has no raw project_members id select`, () => {
       const s = src(f)
-      expect(s).toMatch(/loadMemberProjectIds\(service, session\.id\)/)
+      expect(s).toMatch(/loadMemberProjectIds\(service, session\.workspaceId, session\.id\)/)
       expect(s).not.toMatch(/\.from\('project_members'\)\s*\n?\s*\.select\('project_id, workspace_members!inner\(user_id\)'\)/)
     })
   }

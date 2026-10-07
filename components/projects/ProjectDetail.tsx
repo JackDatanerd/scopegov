@@ -1120,7 +1120,7 @@ function SowTab({ project, sows, amendments, permissions, router, pendingApprova
                         a changes_requested SOW (revoke its still-live token, notify the
                         client this thread is closed) rather than leaving it dangling
                         forever while its auto-created sibling draft sits unsent. */}
-                    {s.status === 'changes_requested' && permissions.sendSow && (
+                    {s.status === 'changes_requested' && (permissions.sendSow || permissions.settleSow) && (
                       <button
                         className="btn btn-ghost btn-xs"
                         onClick={() => handleWithdraw(s.id)}

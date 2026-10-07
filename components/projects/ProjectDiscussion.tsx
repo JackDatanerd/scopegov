@@ -208,6 +208,8 @@ export default function ProjectDiscussion({
         const res = await fetch(`${base}?${qs.toString()}`)
         if (!res.ok) return
         const json = await res.json()
+        // Too many edits/deletes to list since the last poll: reload the whole feed rather than skip past them.
+        if (json.changedTruncated) { await load(); return }
         if (json.syncedAt) syncedAtRef.current = json.syncedAt
         const incoming: Message[] = json.messages || []
         const changed: Message[] = json.changed || []
