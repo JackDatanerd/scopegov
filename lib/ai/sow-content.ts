@@ -571,14 +571,38 @@ export function normalizeEnumCell(value: string, options: string[]): string {
   if (exact) return exact
   const prefix = options.find(o => v.startsWith(o.toLowerCase()) || o.toLowerCase().startsWith(v))
   if (prefix) return prefix
+  // FIX (SOW lifecycle independent pass 19, B1): the synonym map was English-only. In an es/fr/pt/de/sw SOW a
+  // model that ignores "exactly Provider/Client/Joint" and localizes the value ("Proveedor", "Prestataire",
+  // "Auftragnehmer", "Mtoa huduma") matched nothing and fell through to the LAST option, Joint, silently turning a
+  // provider-owned deliverable into a shared one in the contract. Match accent-folded, localized words too.
+  const fold = (t: string) => t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim()
   const SYNONYMS: Record<string, string> = {
     agency: 'Provider', vendor: 'Provider', supplier: 'Provider', contractor: 'Provider',
     us: 'Provider', we: 'Provider', consultant: 'Provider', freelancer: 'Provider',
     customer: 'Client', them: 'Client', 'client team': 'Client',
     both: 'Joint', shared: 'Joint', mutual: 'Joint', together: 'Joint',
+    // es
+    proveedor: 'Provider', agencia: 'Provider', consultor: 'Provider', nosotros: 'Provider', contratista: 'Provider',
+    cliente: 'Client', ambos: 'Joint', conjunto: 'Joint', conjunta: 'Joint', compartido: 'Joint', mutuo: 'Joint', mixto: 'Joint',
+    // fr
+    prestataire: 'Provider', fournisseur: 'Provider', agence: 'Provider', nous: 'Provider',
+    'les deux': 'Joint', conjoint: 'Joint', conjointe: 'Joint', partage: 'Joint', ensemble: 'Joint',
+    // pt
+    prestador: 'Provider', fornecedor: 'Provider', nos: 'Provider', contratado: 'Provider',
+    compartilhado: 'Joint', conjuntos: 'Joint',
+    // de
+    anbieter: 'Provider', auftragnehmer: 'Provider', agentur: 'Provider', dienstleister: 'Provider', wir: 'Provider',
+    kunde: 'Client', auftraggeber: 'Client', beide: 'Joint', gemeinsam: 'Joint', zusammen: 'Joint',
+    // sw
+    'mtoa huduma': 'Provider', mtoa: 'Provider', wakala: 'Provider', sisi: 'Provider', mkandarasi: 'Provider',
+    mteja: 'Client', pamoja: 'Joint', wote: 'Joint', 'kwa pamoja': 'Joint',
   }
-  const mapped = SYNONYMS[v]
+  const mapped = SYNONYMS[v] ?? SYNONYMS[fold(v)]
   if (mapped && options.includes(mapped)) return mapped
+  // Localized value followed by detail, e.g. "Proveedor (equipo de diseño)" / "Client - approval".
+  const lead = fold(v).split(/[\s(,;:\/-]+/).filter(Boolean)[0]
+  const leadMapped = lead ? SYNONYMS[lead] : undefined
+  if (leadMapped && options.includes(leadMapped)) return leadMapped
 
   return options[options.length - 1]
 }
