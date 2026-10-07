@@ -1,0 +1,5 @@
+Projects & Dashboard pass 16 (independent audit, bugs only)
+1. dashboard/page.tsx: Subscription tile "1 days remaining" -> "1 day remaining".
+2. ProjectDetail.tsx GuardianTab: a manually paused project no longer shows the "Forward client emails to" box or claims forwarding still checks content (guardian/inbound skips manual pauses); copy now says paste-to-check only.
+3. projects/new/page.tsx: workspace-defaults fetch reads currency/defaults "touched" flags via refs so a late response cannot overwrite a value the person already changed.
+Tests: tests/projects-dashboard-pass-16.test.ts

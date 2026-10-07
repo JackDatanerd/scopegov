@@ -1488,12 +1488,12 @@ function GuardianTab({ project, flags, exceptions = [], permissions, router, tea
             </div>
             <div style={{ fontSize: 11, color: 'var(--text-3)' }}>
               {isActive ? `Monitoring via ${project.guardian_email || 'forwarding email'}`
-                : canSubmitLive ? `Paused — you can still check content against the signed scope via ${project.guardian_email || 'forwarding email'}`
+                : canSubmitLive ? 'Paused — forwarded client emails are not checked while paused, but you can still paste content here to check it against the signed scope'
                 : 'Activates when client signs the SOW'}
             </div>
           </div>
         </div>
-        {canSubmitLive && project.guardian_email && (
+        {isActive && project.guardian_email && (
           <div style={{ textAlign: 'right' }}>
             <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 3 }}>Forward client emails to</div>
             <code style={{ fontSize: 12, background: 'var(--surface-2)', padding: '3px 8px', borderRadius: 4, border: '1px solid var(--border)' }}>

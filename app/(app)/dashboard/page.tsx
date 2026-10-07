@@ -317,7 +317,7 @@ export default async function DashboardPage() {
             {session.lapsed ? 'No plan' : (PLAN_LABELS[session.planTier] || session.planTier)}
           </div>
           <div className="mc-sub">
-            {session.lapsed ? 'Read-only — choose a plan' : daysLeft !== null ? `${daysLeft} days remaining` : 'Active'}
+            {session.lapsed ? 'Read-only — choose a plan' : daysLeft !== null ? `${daysLeft} day${daysLeft === 1 ? '' : 's'} remaining` : 'Active'}
           </div>
         </div>
       </div>

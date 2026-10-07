@@ -1,6 +1,6 @@
 'use client'
 import { effectiveFormStructure } from '@/lib/sow/payment-structure'
-import { useState, useEffect, Suspense } from 'react'
+import { useState, useEffect, useRef, Suspense } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { PROJECT_TYPE_ICONS } from '@/lib/utils/format'
 import type { ProjectType, Client } from '@/lib/supabase/types'
@@ -162,14 +162,19 @@ function NewProjectPageInner() {
   // pick) — tracked separately since it can be touched independently of
   // payment structure / revision rounds.
   const [currencyTouched, setCurrencyTouched] = useState(false)
+  // Refs mirror the touched flags so a fetch that resolves AFTER the person edited a field sees the current value, not the one captured when it started.
+  const currencyTouchedRef = useRef(false)
+  const defaultsTouchedRef = useRef(false)
+  currencyTouchedRef.current = currencyTouched
+  defaultsTouchedRef.current = defaultsTouched
   useEffect(() => {
     let cancelled = false
     fetch(`/api/workspace/defaults?projectType=${projectType}`)
       .then(r => r.json())
       .then(json => {
         if (cancelled) return
-        if (json.currency && !currencyTouched) setCurrency(json.currency)
-        if (!defaultsTouched) {
+        if (json.currency && !currencyTouchedRef.current) setCurrency(json.currency)
+        if (!defaultsTouchedRef.current) {
           if (json.paymentStructure) setPaymentStructure(json.paymentStructure)
           if (json.revisionRounds)   setRevisionRounds(String(json.revisionRounds))
         }
