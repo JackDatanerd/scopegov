@@ -1,3 +1,4 @@
+import { isBlankText } from '@/lib/utils/client-input'
 // lib/sow/table-schema.ts
 //
 // Doc-quality audit (Aug 2026): the SOW PDF rendered every section — even
@@ -14,6 +15,19 @@
 export type SowTableSectionId = 'deliverables' | 'timeline' | 'roles' | 'payment_schedule'
 
 export const TABLE_SECTION_IDS: SowTableSectionId[] = ['deliverables', 'timeline', 'roles', 'payment_schedule']
+
+/**
+ * FIX (SOW lifecycle independent pass 18, B1): the Payment Schedule's Milestone cell was tested with a bare `.trim()`
+ * in validate-send, post-signing and the editor's running total, so a name made only of zero-width / invisible
+ * characters counted as a real milestone — the send check passed and signing created a payment milestone with an
+ * invisible title that then flowed into invoicing. One shared reader, using the same "is anything visible" test the
+ * other SOW rows already use (isBlankText), so the three can never drift: returns the trimmed name, or '' when
+ * nothing visible is left.
+ */
+export function milestoneName(row: any): string {
+  const raw = String(row?.milestone ?? '')
+  return isBlankText(raw) ? '' : raw.trim()
+}
 
 export function isTableSection(id: string): id is SowTableSectionId {
   return (TABLE_SECTION_IDS as string[]).includes(id)

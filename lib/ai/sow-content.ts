@@ -787,8 +787,13 @@ const FALLBACK_STRINGS: Record<string, FallbackStrings> = {
 export function buildFallbackSections(input: SowContentInput): Record<string, string> {
   const t = (isSowLanguage(input.language) ? FALLBACK_STRINGS[input.language] : undefined) || FALLBACK_STRINGS.en
 
-  const outOfScopeItems = (input.outOfScope || '').split('\n').map(l => l.trim()).filter(Boolean)
-    .map(l => `<li>${escapeHtml(l.replace(/^[-*]\s*/, ''))}</li>`).join('')
+  const outOfScopeItems = (input.outOfScope || '').split('\n')
+    // FIX (SOW lifecycle independent pass 18, B2): strip the bullet marker BEFORE dropping empty lines — a bare "-" line
+    // used to survive the filter and print as an empty <li> (an empty bullet on the PDF). Deliverables and Timeline
+    // already filter after stripping.
+    .map(l => l.trim().replace(/^[-*]\s*/, '').trim())
+    .filter(l => !isBlankText(l))
+    .map(l => `<li>${escapeHtml(l)}</li>`).join('')
 
   return {
     overview: `<p>${escapeHtml((input.objective || '').trim() ||

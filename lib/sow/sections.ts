@@ -6,6 +6,7 @@
 
 import { sanitizeRichText, sanitizePlainText, decodeHtmlEntities, truncateText } from '@/lib/utils/sanitize'
 import { isTableSection, SOW_TABLE_SCHEMAS, type SowTableSectionId } from '@/lib/sow/table-schema'
+import { isBlankText } from '@/lib/utils/client-input'
 import { SOW_SECTION_DEFS, sectionTitle, normalizeEnumCell } from '@/lib/ai/sow-content'
 
 // FIX (section-9 audit): PATCH /api/sow/[id] sanitized section content and
@@ -35,7 +36,10 @@ export function sanitizeTableRows(sectionId: string, rows: unknown): Array<Recor
   return rows.slice(0, MAX_TABLE_ROWS).map((row: any) => {
     const clean: Record<string, string> = {}
     for (const col of schema.columns) {
-      const value = sanitizePlainText(truncateText(String(row?.[col.key] ?? ''), MAX_TABLE_CELL_LENGTH))
+      // FIX (SOW lifecycle independent pass 18, B1): a free-text cell holding only invisible characters is stored empty
+      // so it can't pass for content downstream (a blank-titled payment milestone, an invisible deliverable name).
+      const sanitized = sanitizePlainText(truncateText(String(row?.[col.key] ?? ''), MAX_TABLE_CELL_LENGTH))
+      const value = isBlankText(sanitized) ? '' : sanitized
       // FIX (SOW lifecycle independent pass 12, B7): a select column (Owner, the roles tick/dash cells) accepted any
       // text through the API, and the PDF printed it ("Owner: Bogus"). It is now one of the column's options: an
       // empty cell becomes the option the editor displays for it (the last one), anything else is mapped the same way

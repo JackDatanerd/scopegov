@@ -12,7 +12,7 @@
 //              acknowledge them; the unattended approval path treats them as
 //              non-blocking.
 
-import { parseTableAmount, isTableSection } from '@/lib/sow/table-schema'
+import { parseTableAmount, isTableSection, milestoneName } from '@/lib/sow/table-schema'
 import { roundCurrency } from '@/lib/utils/format'
 import { paymentStructureError, storedPaymentStructure } from '@/lib/sow/payment-structure'
 import { isBlankText } from '@/lib/utils/client-input'
@@ -170,7 +170,7 @@ export function validateSowForSend(input: {
     const schedule = byId('payment_schedule')
     const rows: any[] = Array.isArray(schedule?.table) && isTableSection('payment_schedule') ? schedule.table : []
     const parsed = rows.map(r => ({
-      milestone: String(r?.milestone || '').trim(),
+      milestone: milestoneName(r),
       amount: parseTableAmount(r?.amount),
     }))
     const unreadable = parsed.filter(r => r.milestone && r.amount === null)

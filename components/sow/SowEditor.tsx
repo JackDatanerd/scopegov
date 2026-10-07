@@ -8,7 +8,7 @@ import { useEditor, EditorContent } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
 import Placeholder from '@tiptap/extension-placeholder'
 import { countWords, formatCurrencyExact } from '@/lib/utils/format'
-import { isTableSection, SOW_TABLE_SCHEMAS, blankRow, columnLabel, parseTableAmount, type SowTableRow, type SowTableSectionId } from '@/lib/sow/table-schema'
+import { isTableSection, SOW_TABLE_SCHEMAS, blankRow, columnLabel, parseTableAmount, milestoneName, type SowTableRow, type SowTableSectionId } from '@/lib/sow/table-schema'
 import { SOW_SECTION_DEFS, AI_SECTION_IDS } from '@/lib/ai/sow-content'
 import { MAX_UPLOAD_BYTES, MAX_UPLOAD_LABEL } from '@/lib/utils/upload-limits'
 
@@ -840,10 +840,10 @@ function TableSectionEditor({
   // named row's amount counts, whatever its sign, and an unnamed row never does.
   const showsTotals = sectionId === 'payment_schedule' && typeof contractValue === 'number'
   const scheduleTotal = showsTotals
-    ? rows.reduce((sum, r) => String(r.milestone || '').trim() ? sum + (parseTableAmount(r.amount) ?? 0) : sum, 0)
+    ? rows.reduce((sum, r) => milestoneName(r) ? sum + (parseTableAmount(r.amount) ?? 0) : sum, 0)
     : 0
   const unreadable = showsTotals
-    ? rows.filter(r => String(r.milestone || '').trim() && parseTableAmount(r.amount) === null).length
+    ? rows.filter(r => milestoneName(r) && parseTableAmount(r.amount) === null).length
     : 0
   const variance = showsTotals ? Math.round((scheduleTotal - (contractValue as number)) * 100) / 100 : 0
   const footsExactly = showsTotals && Math.abs(variance) < 0.01 && unreadable === 0

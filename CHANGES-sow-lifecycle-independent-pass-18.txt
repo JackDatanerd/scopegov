@@ -1,0 +1,12 @@
+SOW lifecycle — independent pass 18 (base a75761d)
+
+B1  Invisible-only Payment Schedule milestone name counted as a real milestone.
+    lib/sow/table-schema.ts   new shared milestoneName(row) (isBlankText-aware)
+    lib/sow/validate-send.ts  send check reads the name via milestoneName
+    lib/documents/post-signing.ts  signing creates milestones only for visibly named rows
+    components/sow/SowEditor.tsx   running total / unreadable count use milestoneName
+    lib/sow/sections.ts       sanitizeTableRows stores invisible-only free-text cells as ''
+B2  Fallback Out of Scope emitted an empty <li> for a bare "-" line.
+    lib/ai/sow-content.ts     strip marker before dropping empty lines
+
+Tests: tests/sow-pass18.test.ts (8; 7 fail without the fix). Full suite 313 files / 3107 tests green, tsc clean.

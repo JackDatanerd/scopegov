@@ -12,7 +12,7 @@
 // outcome so the caller can log it AND so the repair sweep can tell what is missing and redo just that.
 
 import { logAudit } from '@/lib/utils/audit'
-import { parseTableAmount } from '@/lib/sow/table-schema'
+import { parseTableAmount, milestoneName } from '@/lib/sow/table-schema'
 import { roundCurrency } from '@/lib/utils/format'
 import { decodeHtmlEntities, truncateText } from '@/lib/utils/sanitize'
 
@@ -199,7 +199,7 @@ export async function createSowMilestones(
       const rows: any[] = Array.isArray(scheduleSection?.table) ? scheduleSection.table : []
       const parsedRows = rows
         .map((r: any) => ({
-          title: String(r?.milestone || '').trim(),
+          title: milestoneName(r),
           // FIX (section-9 audit, 9-G6): bare Number() on a free-text
           // cell makes "1,500" NaN, which dropped the row and silently
           // collapsed the whole negotiated schedule to a single lump-sum
