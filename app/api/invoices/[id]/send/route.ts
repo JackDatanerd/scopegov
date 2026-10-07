@@ -1,6 +1,7 @@
 export const runtime = 'nodejs'
 
 import { isUuidString } from '@/lib/utils/uuid'
+import { loadClientDetailsWarning } from '@/lib/documents/client-details-gap'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
@@ -28,7 +29,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // (lib/documents/send-invoice.ts), same split as SOW/CO.
     const { data: invoice } = await (service as any)
       .from('invoices')
-      .select('id, title, amount, currency, status, due_date, payment_instructions, project_id, projects(id, name)')
+      .select('id, title, amount, currency, status, due_date, payment_instructions, project_id, projects(id, name, client_id)')
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!invoice) return NextResponse.json({ error: 'Invoice not found' }, { status: 404 })
@@ -52,6 +53,16 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // date and sends again.
     if (isDueDateInPast(invoice.due_date))
       return NextResponse.json({ error: 'The due date has already passed — set a current due date before sending this invoice.' }, { status: 400 })
+
+    // Courtesy check: the invoice prints the client's billing address. Warn (acknowledgeable) when it is empty.
+    const reqBody = await request.json().catch(() => ({} as any))
+    if (reqBody?.acknowledgeWarnings !== true) {
+      const clientDetails = await loadClientDetailsWarning(service, session.workspaceId, project.client_id)
+      if (clientDetails) {
+        const msg = `${clientDetails.clientName} has no ${clientDetails.missing.join(' or ')} on file, so the invoice will go out without it.`
+        return NextResponse.json({ error: msg, warnings: [msg], needsAcknowledgement: true, clientDetails }, { status: 409 })
+      }
+    }
 
     // Same preconditions as SOW/CO: don't ask approvers to sign off on a send
     // that can't reach the client (no client email / deleted project).

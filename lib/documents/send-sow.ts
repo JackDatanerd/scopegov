@@ -70,7 +70,7 @@ export async function sendSowDocument(service: any, params: {
     .select(`id, version, status, project_id, document_number, sections, metadata, updated_at,
       projects(id, name, disc, status, contract_value, currency, type, retainer_duration_months, client_id, start_date, deleted_at,
         clients(name, email, cc_emails),
-        workspaces(id, agency_name, brand_colour, logo_storage_path))`)
+        workspaces(id, agency_name, brand_colour, logo_storage_path, governing_law))`)
     .eq('id', sowId).eq('workspace_id', workspaceId).maybeSingle()
   // FIX (SOW lifecycle independent pass 15, B4): a failed read is not "not found".
   if (sowReadErr) return { ok: false, error: 'Could not load the SOW. Please try again.', status: 500 }
@@ -108,6 +108,7 @@ export async function sendSowDocument(service: any, params: {
     redactContractValue: params.redactContractValue !== false,
     projectType: project.type,
     projectStartDate: project.start_date,
+    workspaceGoverningLaw: project.workspaces?.governing_law,
   })
   if (validation.errors.length > 0)
     return { ok: false, error: validation.errors[0], status: 400 }

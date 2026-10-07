@@ -124,7 +124,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     return new NextResponse(new Uint8Array(pdfBuffer), {
       headers: {
         'Content-Type':        'application/pdf',
-        'Content-Disposition': `attachment; filename="${filename}"`,
+        'Content-Disposition': `${request.nextUrl.searchParams.get('preview') === '1' ? 'inline' : 'attachment'}; filename="${filename}"`,
         'Content-Length':      String(pdfBuffer.length),
         'Cache-Control':       'private, no-cache',
       },

@@ -112,6 +112,8 @@ export function validateSowForSend(input: {
   projectType?: string | null
   // ISO date (YYYY-MM-DD) the project starts; a start date already in the past earns a warning.
   projectStartDate?: string | null
+  // The workspace's governing-law setting (language-independent: the drafted clause may be in any language).
+  workspaceGoverningLaw?: string | null
   // Injectable clock for tests.
   today?: string
 }): SowSendValidation {
@@ -170,7 +172,9 @@ export function validateSowForSend(input: {
 
   // Governing law that names only a country: for the US the governing state is what makes the clause usable.
   const lawText = textOf(byId('governing_law')?.content).replace(/\s+/g, ' ').trim()
-  if (/laws? of (the )?(united states( of america)?|u\.?s\.?a?\.?)\s*\.?$/i.test(lawText))
+  const lawSetting = (input.workspaceGoverningLaw || '').trim().replace(/\.$/, '')
+  const bareCountry = /^(the )?(united states( of america)?|u\.?s\.?a?\.?|usa)$/i.test(lawSetting)
+  if (bareCountry || /laws? of (the )?(united states( of america)?|u\.?s\.?a?\.?)\s*\.?$/i.test(lawText))
     warnings.push('The Governing Law clause names only "United States". Name a specific state (e.g. "the State of Florida") so the clause can be applied.')
 
   const start = typeof input.projectStartDate === 'string' ? input.projectStartDate.slice(0, 10) : ''

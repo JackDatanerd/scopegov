@@ -4,11 +4,24 @@ import Sidebar from '@/components/layout/Sidebar'
 import CommandPalette from '@/components/layout/CommandPalette'
 import StepUpHost from '@/components/auth/StepUpHost'
 import Link from 'next/link'
+import MfaRecommendBanner from '@/components/auth/MfaRecommendBanner'
+import { createServerSupabaseClient } from '@/lib/supabase/server'
+import { mfaIsEnforced, permissionsRequireMfa } from '@/lib/auth/mfa-policy'
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const session = await getSessionStrict()
   if (!session) redirect('/login')
   if (!session.onboardingCompletedAt) redirect('/onboarding')
+
+  // 2FA is recommended (not forced) for sensitive roles: nudge anyone without a second factor.
+  let showMfaNudge = false
+  if (!mfaIsEnforced() && permissionsRequireMfa(session.permissions as any)) {
+    try {
+      const supabase = await createServerSupabaseClient()
+      const { data: aal } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel()
+      showMfaNudge = !!aal && aal.currentLevel === 'aal1' && aal.nextLevel === 'aal1'
+    } catch { /* a courtesy nudge never breaks the page */ }
+  }
 
   return (
     <div className="app">
@@ -30,6 +43,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
             )}
           </div>
         )}
+        {showMfaNudge && <MfaRecommendBanner />}
         {children}
         <CommandPalette permissions={session.permissions} />
         <StepUpHost />

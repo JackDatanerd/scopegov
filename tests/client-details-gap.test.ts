@@ -51,3 +51,19 @@ describe('send warnings: governing law and past start date', () => {
     expect(validateSowForSend({ ...base, projectStartDate: '2026-12-01' } as any).warnings.join(' ')).not.toMatch(/start date/)
   })
 })
+
+describe('governing law warning from the workspace setting (any drafting language)', () => {
+  const sections = [
+    { id: 'overview', visible: true, content: '<p>x</p>' }, { id: 'parties', visible: true, content: '<p>p</p>' },
+    { id: 'signature', visible: true, content: '<p>s</p>' },
+    { id: 'governing_law', visible: true, content: '<p>Makubaliano haya yanaongozwa na sheria za United States.</p>' },
+  ]
+  it('warns for a bare country setting even when the clause is Swahili', () => {
+    const w = validateSowForSend({ sections, metadata: {}, contractValue: 100, workspaceGoverningLaw: 'United States' } as any).warnings.join(' ')
+    expect(w).toMatch(/Governing Law/)
+  })
+  it('does not warn for a state-level setting', () => {
+    const w = validateSowForSend({ sections, metadata: {}, contractValue: 100, workspaceGoverningLaw: 'State of Florida, United States' } as any).warnings.join(' ')
+    expect(w).not.toMatch(/Governing Law/)
+  })
+})

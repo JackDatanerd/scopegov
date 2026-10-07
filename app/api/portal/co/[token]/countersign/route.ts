@@ -29,6 +29,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (!reqBody || typeof reqBody !== 'object')
       return NextResponse.json({ error: 'Invalid request' }, { status: 400 })
     const signerName = cleanTextField((reqBody as any).signerName, 120)
+    const signerTitle = cleanTextField((reqBody as any).signerTitle, 120) || null
+    const signerCompany = cleanTextField((reqBody as any).signerCompany, 160) || null
     const signatureData = (reqBody as any).signatureData
     const ip = clientIp || 'unknown'
 
@@ -74,7 +76,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       return NextResponse.json({ error: 'This link is no longer active' }, { status: 410 })
 
     const result = await finalizeCoAcceptance(service, {
-      co, signerName, signatureData, source: 'countersignature', signerIp: ip,
+      co, signerName, signatureData, signerTitle, signerCompany, source: 'countersignature', signerIp: ip,
       // FIX (re-audit, race-condition finding): see finalize-co.ts —
       // this is the compare-and-swap guard, not just a pre-check.
       expectedStatus: 'awaiting_countersignature',

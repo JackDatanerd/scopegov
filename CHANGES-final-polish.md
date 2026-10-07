@@ -13,3 +13,10 @@
 - PDFs no longer hyphenate words
 - Send warnings: governing law naming only a country; project start date already in the past
 - AI drafting prompt: dates always include the year
+
+## Round 3
+- Invoices: "Preview PDF" on drafts (inline, before sending); acknowledgeable reminder when the client's billing address is empty
+- Change orders: client signer position / "signing on behalf of" (migration 154), printed on the CO PDF
+- Governing-law warning now keys off the workspace setting (works for any drafting language)
+- AI drafting: Dispute Resolution no longer restates the governing law
+- Dashboard: dismissible 2FA nudge for sensitive roles without a second factor

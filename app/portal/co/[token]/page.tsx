@@ -54,6 +54,8 @@ export default function CoPortalPage() {
   const [co,     setCo]     = useState<CoData | null>(null)
   const [mode,   setMode]   = useState<CoMode>('view')
   const [signerName,     setSignerName]     = useState('')
+  const [signerTitle,    setSignerTitle]    = useState('')
+  const [signerCompany,  setSignerCompany]  = useState('')
   const [declineReason,  setDeclineReason]  = useState('')
   const [counterAmount,  setCounterAmount]  = useState('')
   const [counterNote,    setCounterNote]    = useState('')
@@ -100,7 +102,7 @@ export default function CoPortalPage() {
     try {
       const res  = await fetch(`/api/portal/co/${token}/${action}`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ signerName, ...extra }),
+        body: JSON.stringify({ signerName, signerTitle: signerTitle.trim(), signerCompany: signerCompany.trim(), ...extra }),
       })
       const json = await res.json()
       if (!res.ok) throw new Error(json.error)
@@ -411,6 +413,22 @@ export default function CoPortalPage() {
               <label style={{ display: 'block', fontSize: 11, fontWeight: 600, letterSpacing: '.02em', color: '#555', marginBottom: 5 }}>Your full name</label>
               <input className="finp" value={signerName} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSignerName(e.target.value)}
                 placeholder="Type your full name to accept" autoFocus style={{ fontFamily: 'Georgia,serif', fontSize: 15 }} />
+            </div>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 14 }}>
+              <div style={{ flex: '1 1 180px' }}>
+                <label style={{ display: 'block', fontSize: 11, fontWeight: 600, letterSpacing: '.02em', color: '#555', marginBottom: 5 }}>
+                  Position <span style={{ fontWeight: 400, color: '#909090' }}>(optional)</span>
+                </label>
+                <input className="finp" value={signerTitle} maxLength={120} placeholder="e.g. Creative Director"
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSignerTitle(e.target.value)} />
+              </div>
+              <div style={{ flex: '1 1 180px' }}>
+                <label style={{ display: 'block', fontSize: 11, fontWeight: 600, letterSpacing: '.02em', color: '#555', marginBottom: 5 }}>
+                  Signing on behalf of <span style={{ fontWeight: 400, color: '#909090' }}>(optional)</span>
+                </label>
+                <input className="finp" value={signerCompany} maxLength={160} placeholder="Company name, if not you"
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSignerCompany(e.target.value)} />
+              </div>
             </div>
             <div style={{ marginBottom: 14 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 }}>

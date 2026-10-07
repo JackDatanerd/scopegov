@@ -36,6 +36,9 @@ import { sanitizeRichTextOrNull } from '@/lib/utils/sanitize'
 export async function finalizeCoAcceptance(service: any, params: {
   co: any                 // change_orders row joined with projects/clients/workspaces, plus resolved `total`
   signerName: string
+  // Optional: the signer's position and the company they sign on behalf of (printed under the signature).
+  signerTitle?: string | null
+  signerCompany?: string | null
   signatureData: string
   source: 'direct' | 'countersignature'
   // FIX (doc-completeness audit, finding #2): sow_documents.signer_ip has
@@ -63,6 +66,8 @@ export async function finalizeCoAcceptance(service: any, params: {
   expectedStatus: string | string[]
 }) {
   const { co, signerName, signatureData, source, signerIp, expectedStatus } = params
+  const signerTitle = params.signerTitle || null
+  const signerCompany = params.signerCompany || null
   const project = co.projects
   const client  = project.clients
   const ws      = project.workspaces
@@ -116,6 +121,8 @@ export async function finalizeCoAcceptance(service: any, params: {
       status:                'accepted',
       accepted_at:           now,
       accepted_by:           signerName.trim(),
+      accepted_by_title:     signerTitle || null,
+      accepted_by_company:   signerCompany || null,
       client_signature_data: signatureData,
       signer_ip:             signerIp || 'unknown',
       responded_at:          now,
@@ -353,6 +360,8 @@ export async function finalizeCoAcceptance(service: any, params: {
     // document's hash recipe - and every hash already stored - is unchanged).
     ...(isRenewal && renewalTermForDocument(co, project) ? { renewalTermMonths: renewalTermForDocument(co, project) } : {}),
     acceptedBy: signerName.trim(), acceptedAt: now, source, signerEmail: client.email,
+    // Only present when supplied, so an acceptance without them hashes exactly as before.
+    ...(signerTitle ? { signerTitle } : {}), ...(signerCompany ? { signerCompany } : {}),
     signatureSha256: createHash('sha256').update(signatureData).digest('hex'),
   })
 
@@ -421,6 +430,8 @@ export async function finalizeCoAcceptance(service: any, params: {
       total:         co.total,
       currency:      project.currency || 'USD',
       acceptedBy:    signerName.trim(),
+      clientSignerTitle:   signerTitle || null,
+      clientSignerCompany: signerCompany || null,
       acceptedAt:    now,
       agencySignatureData: ws.agency_signature_data || null,
       agencySignatoryName: ws.agency_signatory_name || null,

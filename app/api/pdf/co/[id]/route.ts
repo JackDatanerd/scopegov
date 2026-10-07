@@ -32,7 +32,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       .from('change_orders')
       .select(`id, title, note, version, status, document_number, pdf_path, is_retainer_renewal, renewal_term_months, is_credit, line_items, subtotal, tax_rate, tax_inclusive, total,
         timeline_impact_days, scope_impact_note,
-        accepted_at, accepted_by, client_signature_data, project_id,
+        accepted_at, accepted_by, accepted_by_title, accepted_by_company, client_signature_data, project_id,
         projects(id, name, type, currency, contract_value, retainer_duration_months,
           clients(name, company_name, billing_address, vat_number),
           workspaces(timezone, agency_name, brand_colour, logo_storage_path, agency_signature_data, agency_signatory_name, agency_signatory_title,
@@ -139,6 +139,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       version:     co.version ?? null,
       isCredit:    !!co.is_credit,
       acceptedBy:  co.accepted_by || undefined,
+      clientSignerTitle:   co.accepted_by_title || null,
+      clientSignerCompany: co.accepted_by_company || null,
       acceptedAt:  co.accepted_at || undefined,
       agencySignatureData: ws?.agency_signature_data || null,
       agencySignatoryName: ws?.agency_signatory_name || null,
