@@ -5,6 +5,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { verifyCronSecret } from '@/lib/utils/verify-cron'
 import { sendEmail } from '@/lib/email/send'
+import { opsAlertRecipients } from '@/lib/utils/ops-recipients'
 import { systemFrom } from '@/lib/email/from'
 import { alertCronFailure } from '@/lib/utils/cron-alert'
 import { recordCronHeartbeat } from '@/lib/utils/cron-heartbeat'
@@ -38,8 +39,8 @@ import { logAudit } from '@/lib/utils/audit'
 // delivery failure defeats that just as thoroughly as never emailing at
 // all did before this route existed.
 async function alertOps(subject: string, lines: string[]): Promise<boolean> {
-  const to = process.env.OPS_ALERT_EMAIL
-  if (!to) return false
+  const to = opsAlertRecipients()
+  if (to.length === 0) return false
   // FIX (Notifications & email fix round): the try/catch that used to wrap
   // this could never fire — Resend's SDK resolves `{ error }` instead of
   // throwing — so this always returned true and the cooldown above was

@@ -9,6 +9,7 @@
 // ops_alert_state); degrades to console-only when OPS_ALERT_EMAIL is unset.
 
 import { sendEmail } from '@/lib/email/send'
+import { opsAlertRecipients } from '@/lib/utils/ops-recipients'
 import { systemFrom } from '@/lib/email/from'
 
 const escapeHtml = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -17,8 +18,8 @@ export async function alertBillingOps(
   service: any, key: string, subject: string, lines: string[], cooldownMs = 60 * 60_000,
 ): Promise<boolean> {
   console.error(`[BILLING ALERT] ${subject}\n${lines.join('\n')}`)
-  const to = process.env.OPS_ALERT_EMAIL
-  if (!to) return false
+  const to = opsAlertRecipients()
+  if (to.length === 0) return false
   try {
     const { data } = await service.from('ops_alert_state').select('last_sent_at').eq('key', key).maybeSingle()
     if (data && Date.now() - new Date(data.last_sent_at).getTime() < cooldownMs) return false

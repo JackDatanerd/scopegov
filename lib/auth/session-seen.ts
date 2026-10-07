@@ -59,11 +59,20 @@ export async function registerSessionSeen(args: {
     const ua = headers.get('user-agent')
     const { device, key } = describeUserAgent(ua)
 
-    const { data: existingRows } = await service
+    const { data: existingRows, error: existingErr } = await service
       .from('session_seen').select('session_id, device_key, first_seen_at')
       .eq('user_id', user.id)
       .gte('first_seen_at', new Date(Date.now() - KNOWN_WINDOW_DAYS * 86400_000).toISOString())
       .limit(200)
+    // FIX (Notifications & email pass 17 — B1): this read's `error` was never looked at. A failed read looked
+    // like "no prior sessions", so the device was registered as known WITHOUT an alert and every later sign-in
+    // from it stayed silent. Bail out before registering anything and forget the in-memory marker so the next
+    // request retries.
+    if (existingErr) {
+      seen.delete(sessionKey)
+      console.error('registerSessionSeen: could not read existing sessions (will retry):', existingErr.message)
+      return
+    }
     const rows = (existingRows || []) as Array<{ session_id: string; device_key: string | null }>
     if (rows.some(r => r.session_id === sessionKey)) return
 

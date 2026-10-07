@@ -24,6 +24,7 @@
 // not to have happened at all — see migration 058.
 
 import { sendEmail } from '@/lib/email/send'
+import { opsAlertRecipients } from '@/lib/utils/ops-recipients'
 import { systemFrom } from '@/lib/email/from'
 import { recordCronRunHistory } from '@/lib/utils/cron-history'
 
@@ -37,8 +38,8 @@ async function sendOpsAlert(
   service: any, key: string, subject: string, message: string, cooldownMs: number,
 ): Promise<boolean> {
   console.error(`[CRON ALERT] ${subject}: ${message}`)
-  const to = process.env.OPS_ALERT_EMAIL
-  if (!to) return false
+  const to = opsAlertRecipients()
+  if (to.length === 0) return false
   try {
     const { data } = await service.from('ops_alert_state').select('last_sent_at').eq('key', key).maybeSingle()
     if (data && Date.now() - new Date(data.last_sent_at).getTime() < cooldownMs) return false

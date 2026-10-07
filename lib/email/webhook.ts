@@ -36,7 +36,7 @@ export function verifyResendSignature(
   return false
 }
 
-export type EmailKindRole = 'send' | 'reminder' | 'notice' | 'confirmation' | 'other'
+export type EmailKindRole = 'send' | 'reminder' | 'notice' | 'update' | 'confirmation' | 'other'
 
 /**
  * Classify an email_log `kind` ('sow.send', 'co.withdraw_notice', 'invoice.auto_reminder', …) so the bounce
@@ -49,6 +49,10 @@ export function classifyEmailKind(kind: string | null | undefined): { docKind: s
   let role: EmailKindRole = 'other'
   if (tail === 'send' || tail === 'countersign_request') role = 'send'
   else if (/(^|_)reminder$/.test(tail)) role = 'reminder'
+  // FIX (Notifications & email pass 17 — B3): a dispute-resolved notice revokes nothing, so it must not share the
+  // 'notice' wording ("they may still act on the old link"). Every other *_notice kind withdraws, voids, closes
+  // or replaces a document the client could still act on.
+  else if (tail === 'dispute_resolved_notice') role = 'update'
   else if (/_notice$/.test(tail)) role = 'notice'
   else if (/_(confirmation|receipt)$/.test(tail)) role = 'confirmation'
   return { docKind, role }
@@ -60,6 +64,7 @@ export function bounceAlertBody(role: EmailKindRole, what: string): string {
     case 'reminder':     return `Your reminder for the ${what} was not delivered. Check the address on the client record, then resend.`
     case 'send':         return `Your ${what} was not delivered. Check the address on the client record, then resend.`
     case 'notice':       return `The ${what} notice to your client was not delivered, so they may still act on the old link. Check the address on the client record and let them know another way.`
+    case 'update':       return `The ${what} update to your client was not delivered. Check the address on the client record and let them know another way.`
     case 'confirmation': return `The ${what} confirmation email to your client was not delivered. Check the address on the client record and share their copy another way.`
     default:             return `An email about your ${what} was not delivered. Check the address on the client record.`
   }

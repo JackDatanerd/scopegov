@@ -1,0 +1,18 @@
+Notifications & email — independent pass 17 (base: 54bb40e)
+
+B1  lib/auth/session-seen.ts
+    The read of existing sessions never checked `error`. A failed read looked like "no prior sign-ins": the device was
+    recorded as known without a new-device alert, and every later sign-in from it stayed silent. Now bails out before
+    registering anything, clears the in-memory marker, and retries on the next request.
+
+B2  lib/utils/ops-recipients.ts (new), lib/utils/cron-alert.ts, lib/billing/ops-alert.ts, app/api/cron/guardian-health/route.ts, .env.local.example
+    sendEmail() treats a string `to` as one address, so a comma-separated OPS_ALERT_EMAIL was rejected as an invalid
+    recipient and every ops page was lost (console only). OPS_ALERT_EMAIL is now parsed (commas/semicolons/whitespace,
+    de-duplicated) into an array at all three senders. Variable documented in .env.local.example.
+
+B3  lib/email/webhook.ts
+    The bounce alert for invoice.dispute_resolved_notice said "they may still act on the old link", which is false
+    (nothing is revoked). New 'update' role with accurate wording; every other *_notice kind keeps the link-revoked wording.
+
+Tests: tests/session-seen-read-failure.test.ts (new), tests/ops-recipients.test.ts (new), tests/email-webhook.test.ts (updated).
+Full suite: 319 files / 3144 tests pass; tsc --noEmit clean.

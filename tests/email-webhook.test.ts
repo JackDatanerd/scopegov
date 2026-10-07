@@ -74,8 +74,12 @@ describe('classifyEmailKind', () => {
     expect(classifyEmailKind('co.auto_reminder').role).toBe('reminder')
   })
   it('recognises notices and confirmations/receipts', () => {
-    for (const k of ['invoice.void_notice', 'sow.withdraw_notice', 'co.close_notice', 'co.exception_notice', 'invoice.dispute_resolved_notice'])
+    for (const k of ['invoice.void_notice', 'sow.withdraw_notice', 'co.close_notice', 'co.exception_notice'])
       expect(classifyEmailKind(k).role).toBe('notice')
+    // A dispute-resolved notice revokes nothing, so it must not claim "they may still act on the old link".
+    expect(classifyEmailKind('invoice.dispute_resolved_notice').role).toBe('update')
+    expect(bounceAlertBody('update', 'invoice')).not.toMatch(/old link/)
+    expect(bounceAlertBody('notice', 'invoice')).toMatch(/old link/)
     for (const k of ['sow.signed_confirmation', 'co.accepted_confirmation', 'sow.decline_receipt', 'invoice.paid_receipt'])
       expect(classifyEmailKind(k).role).toBe('confirmation')
   })
