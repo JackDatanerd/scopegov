@@ -1,6 +1,7 @@
 export const runtime = 'nodejs'
 
 import { isUuidString } from '@/lib/utils/uuid'
+import { loadClientDetailsWarning } from '@/lib/documents/client-details-gap'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
@@ -33,7 +34,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const { data: sow, error: sowReadErr } = await (service as any)
       .from('sow_documents')
       .select(`id, version, status, project_id, sections, metadata,
-        projects(id, name, disc, status, contract_value, currency, type, retainer_duration_months)`)
+        projects(id, name, disc, status, contract_value, currency, type, retainer_duration_months, client_id)`)
       .eq('id', id).eq('workspace_id', session.workspaceId).maybeSingle()
     // FIX (SOW lifecycle independent pass 15, B4): a failed read is not "not found" — fail into the route's 500 handler.
     if (sowReadErr) throw new Error(`SOW read failed: ${sowReadErr.message}`)
@@ -72,6 +73,16 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (validation.errors.length > 0)
       return NextResponse.json({ error: validation.errors[0], errors: validation.errors }, { status: 400 })
     const acknowledged = body?.acknowledgeWarnings === true
+    // Courtesy check: the document prints the client's billing address. Warn (acknowledgeable) when it is empty.
+    if (!acknowledged) {
+      const clientDetails = await loadClientDetailsWarning(service, session.workspaceId, project.client_id)
+      if (clientDetails) {
+        const msg = `${clientDetails.clientName} has no ${clientDetails.missing.join(' or ')} on file, so the SOW will go out without it.`
+        return NextResponse.json({
+          error: msg, warnings: [msg, ...validation.warnings], needsAcknowledgement: true, clientDetails,
+        }, { status: 409 })
+      }
+    }
     if (validation.warnings.length > 0 && !acknowledged)
       return NextResponse.json({
         error: validation.warnings[0], warnings: validation.warnings, needsAcknowledgement: true,

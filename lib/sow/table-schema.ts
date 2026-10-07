@@ -166,6 +166,31 @@ export function milestoneBlockLabels(language?: string): { milestone: string; am
   }
 }
 
+// Display-only translation of the fixed vocabulary stored in English inside table cells (Owner options and
+// the ✓/Yes marks of the roles matrix). Stored values never change; only the printed text does.
+const OWNER_WORDS: Record<string, Record<string, string>> = {
+  es: { Provider: 'Proveedor', Client: 'Cliente', Joint: 'Conjunto' },
+  fr: { Provider: 'Prestataire', Client: 'Client', Joint: 'Conjoint' },
+  pt: { Provider: 'Prestador', Client: 'Cliente', Joint: 'Conjunto' },
+  de: { Provider: 'Anbieter', Client: 'Kunde', Joint: 'Gemeinsam' },
+  sw: { Provider: 'Wakala', Client: 'Mteja', Joint: 'Pamoja' },
+}
+const YES_NO_WORDS: Record<string, { yes: string; no: string }> = {
+  es: { yes: 'Sí', no: 'No' }, fr: { yes: 'Oui', no: 'Non' }, pt: { yes: 'Sim', no: 'Não' },
+  de: { yes: 'Ja', no: 'Nein' }, sw: { yes: 'Ndiyo', no: 'Hapana' },
+}
+export function localizeFixedCell(key: string, raw: string, language?: string): string {
+  if (!language || language === 'en' || !raw) return raw
+  if (key === 'owner') return OWNER_WORDS[language]?.[raw.trim()] ?? raw
+  if (key === 'provider' || key === 'client') {
+    const w = YES_NO_WORDS[language]
+    const v = raw.trim()
+    if (w && (v === 'Yes' || v === '✓')) return w.yes
+    if (w && (v === 'No' || v === '✗')) return w.no
+  }
+  return raw
+}
+
 export type SowTableRow = Record<string, string>
 
 /**

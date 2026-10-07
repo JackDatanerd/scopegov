@@ -10,6 +10,7 @@
 
 'use client'
 import { fetchWithStepUp } from '@/lib/client/step-up'
+import InfoTip from '@/components/ui/InfoTip'
 import { useState, useEffect, useRef } from 'react'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
@@ -50,11 +51,10 @@ type SettingsTab = 'account' | 'workspace' | 'branding' | 'defaults' | 'guardian
 // Workspace tab from rendering at all, just fall back to a short list of
 // common zones covering this product's actual customer base.
 const FALLBACK_TIMEZONES: string[] = [
-  'UTC', 'Africa/Nairobi', 'Africa/Lagos', 'Africa/Johannesburg', 'Africa/Cairo',
-  'Africa/Accra', 'Europe/London', 'Europe/Paris', 'Europe/Berlin', 'Europe/Madrid',
-  'America/New_York', 'America/Chicago', 'America/Denver', 'America/Los_Angeles',
-  'America/Sao_Paulo', 'Asia/Dubai', 'Asia/Kolkata', 'Asia/Singapore',
-  'Asia/Shanghai', 'Asia/Tokyo', 'Australia/Sydney',
+  'UTC', 'America/New_York', 'America/Chicago', 'America/Denver', 'America/Los_Angeles',
+  'America/Sao_Paulo', 'Europe/London', 'Europe/Paris', 'Europe/Berlin', 'Europe/Madrid',
+  'Africa/Nairobi', 'Africa/Lagos', 'Africa/Johannesburg', 'Africa/Cairo', 'Africa/Accra',
+  'Asia/Dubai', 'Asia/Kolkata', 'Asia/Singapore', 'Asia/Shanghai', 'Asia/Tokyo', 'Australia/Sydney',
 ]
 
 // The full runtime list. Node (server render) and the browser can ship different ICU data, so this
@@ -279,9 +279,10 @@ interface Props {
   session:     SessionUser
   permissions: { manageWorkspace: boolean; manageBilling: boolean; viewAuditLog: boolean; manageRoles: boolean; canDeleteWorkspace: boolean }
   mfaMandatory: boolean
+  mfaRecommended?: boolean
 }
 
-export default function SettingsClient({ workspace, billing, defaults, logoUrl, loadFailed = { workspace: false, defaults: false, billing: false }, session, permissions, mfaMandatory }: Props) {
+export default function SettingsClient({ workspace, billing, defaults, logoUrl, loadFailed = { workspace: false, defaults: false, billing: false }, session, permissions, mfaMandatory, mfaRecommended = false }: Props) {
   const searchParams = useSearchParams()
   const router       = useRouter()
   const supabase     = createClient()
@@ -533,7 +534,7 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
           </div>
         )}
 
-        {tab === 'account' && <AccountTab session={session} supabase={supabase} router={router} mfaMandatory={mfaMandatory} />}
+        {tab === 'account' && <AccountTab session={session} supabase={supabase} router={router} mfaMandatory={mfaMandatory} mfaRecommended={mfaRecommended} />}
 
         {tab === 'workspace' && (
           <WorkspaceTab form={wsForm} setForm={setWsForm} permissions={permissions} onSave={patchWorkspace} saving={saving}
@@ -574,7 +575,7 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
 }
 
 // ── ACCOUNT ──────────────────────────────────────────────────
-function AccountTab({ session, supabase, router, mfaMandatory }: any) {
+function AccountTab({ session, supabase, router, mfaMandatory, mfaRecommended }: any) {
   const [name,        setName]        = useState(session.name)
   const [currentPw,   setCurrentPw]   = useState('')
   const [newPw,       setNewPw]       = useState('')
@@ -798,7 +799,7 @@ function AccountTab({ session, supabase, router, mfaMandatory }: any) {
           the "Required, not set up" badge. Now computed server-side in
           app/(app)/settings/page.tsx via the same shared function every
           other site uses, and passed down as a prop. */}
-      <MfaSection mandatory={mfaMandatory} />
+      <MfaSection mandatory={mfaMandatory} recommended={mfaRecommended} />
       {/* FEATURE (cron audit, section 17 — feature gap): personal account
           deletion, not workspace deletion — deliberately NOT gated behind
           permissions.manageWorkspace (unlike DangerTab below), since any
@@ -887,11 +888,11 @@ function WorkspaceTab({ form, setForm, permissions, onSave, saving, slugChangedA
         <div className="settings-section-title">Identity</div>
         <div className="f2">
           <div className="fgrp">
-            <label className="flbl">Workspace name <span className="fhint">(internal only — not shown to clients or in the sidebar)</span></label>
+            <label className="flbl">Workspace name <InfoTip text="Internal only — not shown to clients or in the sidebar." /></label>
             <input className="finp" maxLength={120} value={form.name} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set('name', e.target.value)} />
           </div>
           <div className="fgrp">
-            <label className="flbl">Agency name <span className="fhint">(on documents)</span></label>
+            <label className="flbl">Agency name <InfoTip text="Shown on your SOW, change order and invoice documents." /></label>
             <input className="finp" maxLength={120} value={form.agencyName} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set('agencyName', e.target.value)} />
           </div>
         </div>
@@ -917,7 +918,7 @@ function WorkspaceTab({ form, setForm, permissions, onSave, saving, slugChangedA
         </div>
         <div className="f2">
           <div className="fgrp">
-            <label className="flbl">Timezone</label>
+            <label className="flbl">Timezone <InfoTip text="The audit log and your audit, portfolio and report PDFs show times in this timezone. CSV and JSON exports always use UTC." /></label>
             <select className="finp" value={form.timezone} onChange={(e: React.ChangeEvent<HTMLSelectElement>) => set('timezone', e.target.value)}>
               <option value="">Not set (UTC)</option>
               {/* A saved zone that this browser's list doesn't name (an alias
@@ -930,38 +931,35 @@ function WorkspaceTab({ form, setForm, permissions, onSave, saving, slugChangedA
               )}
               {zones.map((tz: string) => <option key={tz} value={tz}>{tz.replace(/_/g, ' ')}</option>)}
             </select>
-            <span className="fhint">The audit log and your audit, portfolio and report PDFs show times in this timezone. CSV and JSON exports always use UTC.</span>
           </div>
           <div className="fgrp">
-            <label className="flbl">Governing law</label>
+            <label className="flbl">Governing law <InfoTip text="Used in the governing-law clause on every SOW you send. Name the state or country whose law should apply." /></label>
             <input className="finp" value={form.governingLaw} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set('governingLaw', e.target.value)}
-              placeholder="e.g. Republic of Kenya" />
-            <span className="fhint">Used in the governing-law clause on every SOW you send.</span>
+              placeholder="e.g. State of Delaware, United States" />
           </div>
         </div>
         <div className="fgrp">
-          <label className="flbl">SOW language</label>
+          <label className="flbl">SOW language <InfoTip text="The language every new SOW is drafted in — the client-facing content, and the standard clauses (parties, governing law, signature block)." /></label>
           <select className="finp" style={{ maxWidth: 280 }} value={form.sowLanguage}
             onChange={(e: React.ChangeEvent<HTMLSelectElement>) => set('sowLanguage', e.target.value)}>
             {SOW_LANGUAGES.map(l => <option key={l.code} value={l.code}>{l.label}</option>)}
           </select>
-          <span className="fhint">The language every new SOW is drafted in — the client-facing content, and the standard clauses (parties, governing law, signature block).</span>
         </div>
         <div className="fgrp">
-          <label className="flbl">Workspace handle <span className="fhint">— used in exported report filenames</span></label>
+          <label className="flbl">Workspace handle <InfoTip text="Used in exported report filenames. Lowercase letters, numbers, and hyphens only. Can be changed once every 30 days; the change applies from your next export." /></label>
           <input className="finp" style={{ maxWidth: 280 }} value={form.slug} disabled={slugLocked}
             onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSlug(e.target.value)}
             placeholder="acme-studio" />
-          <span className="fhint">
+          {slugLocked && <span className="fhint">
             {slugLocked
               // FIX (Settings pass, B5): toLocaleDateString() used the browser's locale and zone (and differs between the server
               // render and the browser, a hydration mismatch). The API states this same date in the workspace's saved zone.
               ? `Can be changed again on ${formatDateInZone(nextSlugChangeAt!, savedTimezone)}. Lowercase letters, numbers, and hyphens only.`
-              : 'Lowercase letters, numbers, and hyphens only. Changing it can be done again after 30 days, and takes effect on the next report you export.'}
-          </span>
+              : null}
+          </span>}
         </div>
         <div className="settings-section-title" style={{ marginTop: 24 }}>
-          Client reminders <span className="fhint" style={{ fontWeight: 400 }}>— nudge clients automatically</span>
+          Client reminders <InfoTip text="Nudge clients automatically about unsigned or overdue documents." />
         </div>
         <div className="settings-row">
           <div>
@@ -1001,7 +999,7 @@ function WorkspaceTab({ form, setForm, permissions, onSave, saving, slugChangedA
           remit-to blocks until filled in. */}
       <div className="settings-section">
         <div className="settings-section-title">
-          Billing identity <span className="fhint" style={{ fontWeight: 400 }}>— printed on your SOW, Change Order, and Invoice PDFs</span>
+          Billing identity <InfoTip text="Printed on your SOW, Change Order, and Invoice PDFs." />
         </div>
         <div className="fgrp">
           <label className="flbl">Registered / mailing address</label>
@@ -1045,23 +1043,22 @@ function WorkspaceTab({ form, setForm, permissions, onSave, saving, slugChangedA
           <input className="finp" value={form.website} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set('website', e.target.value)} placeholder="acme.com" />
         </div>
         <div className="fgrp">
-          <label className="flbl">Reply-to email <span className="fhint">— optional; where a client&apos;s reply to a SOW, change order or invoice email is delivered. Leave blank and replies go to the person who sent it.</span></label>
+          <label className="flbl">Reply-to email <InfoTip text="Optional. Where a client&apos;s reply to a SOW, change order or invoice email is delivered. Leave blank and replies go to the person who sent it." /></label>
           <input className="finp" type="email" value={form.replyToEmail} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set('replyToEmail', e.target.value)} placeholder="billing@youragency.com" />
         </div>
         <div className="fgrp">
-          <label className="flbl">Default payment instructions <span className="fhint">— pre-fills new invoices; wire/ACH details, &ldquo;per PO terms&rdquo;, etc.</span></label>
+          <label className="flbl">Default payment instructions <InfoTip text="Pre-fills new invoices: wire/ACH details, &ldquo;per PO terms&rdquo;, etc." /></label>
           <textarea className="finp" rows={3} value={form.defaultPaymentInstructions}
             onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => set('defaultPaymentInstructions', e.target.value)} />
         </div>
         <div className="settings-section-title" style={{ marginTop: 24 }}>
-          Billing defaults <span className="fhint" style={{ fontWeight: 400 }}>— pre-fill new invoices and change orders; editable on each one</span>
+          Billing defaults <InfoTip text="Pre-fill new invoices and change orders. Editable on each one." />
         </div>
         <div className="f2">
           <div className="fgrp">
-            <label className="flbl">Default tax rate (%)</label>
+            <label className="flbl">Default tax rate (%) <InfoTip text="e.g. 8.25 for a combined US sales tax rate, or 20 for VAT. Leave at 0 if you don&apos;t charge tax." /></label>
             <input className="finp" type="number" min={0} max={100} step="0.01" value={form.defaultTaxRate}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) => set('defaultTaxRate', e.target.value)} />
-            <span className="fhint">e.g. 16 for Kenyan VAT. Leave at 0 if you don&apos;t charge tax.</span>
           </div>
           <div className="fgrp">
             <label className="flbl">Amounts entered are</label>
@@ -1073,7 +1070,7 @@ function WorkspaceTab({ form, setForm, permissions, onSave, saving, slugChangedA
           </div>
         </div>
         <div className="fgrp">
-          <label className="flbl">Default payment terms (days) <span className="fhint">— optional; sets each new invoice&apos;s due date this many days out</span></label>
+          <label className="flbl">Default payment terms (days) <InfoTip text="Optional. Sets each new invoice&apos;s due date this many days out." /></label>
           <input className="finp" type="number" min={0} max={365} step={1} style={{ maxWidth: 160 }} value={form.defaultPaymentTermsDays}
             placeholder="e.g. 14" onChange={(e: React.ChangeEvent<HTMLInputElement>) => set('defaultPaymentTermsDays', e.target.value)} />
         </div>

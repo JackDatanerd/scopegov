@@ -42,6 +42,9 @@ vi.mock('@/lib/auth/security-audit', () => ({ logSecurityAudit: async () => {}, 
 
 import { userHasAnyMfaMandatoryMembership, userHasAnyMfaMandatoryMembershipOrAssume, MfaPolicyLookupError } from '@/lib/auth/session'
 
+// These suites cover the ENFORCED path (MFA_ENFORCEMENT=required); the default is 'recommended' — see tests/mfa-recommended.test.ts.
+process.env.MFA_ENFORCEMENT = 'required'
+
 beforeEach(() => { memberError = null; memberRows = [] })
 
 describe('userHasAnyMfaMandatoryMembership', () => {

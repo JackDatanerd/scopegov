@@ -5,6 +5,7 @@ import { NextResponse } from 'next/server'
 import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/server'
 import { logSecurityAudit } from '@/lib/auth/security-audit'
 import { requireStepUp } from '@/lib/auth/step-up'
+import { mfaIsEnforced } from '@/lib/auth/mfa-policy'
 import { sendMfaDisabledEmail } from '@/lib/email/templates'
 import { userHasAnyMfaMandatoryMembership, MfaPolicyLookupError, resolveActiveWorkspaceId, resolveActorName } from '@/lib/auth/session'
 
@@ -113,7 +114,7 @@ export async function DELETE(request: Request) {
         error: 'We couldn\u2019t check your account\u2019s two-factor policy right now. Please try again.',
       }, { status: 503, headers: { 'Retry-After': '5' } })
     }
-    if (mandatory) {
+    if (mandatory && mfaIsEnforced()) {
       return NextResponse.json({
         error: 'Your role requires two-factor authentication to stay enabled. Ask an admin to change your permissions first.',
       }, { status: 403 })

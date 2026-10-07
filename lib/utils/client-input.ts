@@ -210,7 +210,7 @@ export function parseClientInput(
   if (body.timezone !== undefined) {
     if (body.timezone === null || body.timezone === '') updates.timezone = null
     else if (typeof body.timezone !== 'string' || !isValidTimeZone(body.timezone.trim()))
-      return fail('Timezone must be a valid IANA timezone, e.g. Africa/Nairobi')
+      return fail('Timezone must be a valid IANA timezone, e.g. America/New_York')
     else updates.timezone = body.timezone.trim()
   }
 

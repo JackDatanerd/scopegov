@@ -316,7 +316,7 @@ export default function ClientsClient({ clients, canCreate, canViewFinancials, c
                   <label className="flbl">Client name</label>
                   <input className="finp" value={name} autoFocus required
                     onChange={(e: React.ChangeEvent<HTMLInputElement>) => setName(e.target.value)}
-                    placeholder="Jane Mwangi" />
+                    placeholder="Jane Doe" />
                 </div>
                 <div className="fgrp">
                   <label className="flbl">Company <span className="fhint">— optional</span></label>
@@ -336,7 +336,7 @@ export default function ClientsClient({ clients, canCreate, canViewFinancials, c
                   <label className="flbl">Phone <span className="fhint">— optional</span></label>
                   <input className="finp" value={phone}
                     onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPhone(e.target.value)}
-                    placeholder="+254 7xx xxx xxx" />
+                    placeholder="+1 555 123 4567" />
                 </div>
               </div>
               <div className="fgrp">

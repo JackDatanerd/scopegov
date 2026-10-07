@@ -11,6 +11,7 @@ import {
 import { safeFetch } from '@/lib/utils/safe-fetch'
 import { RichText, printedWeight } from '@/lib/pdf/rich-text'
 import { SowTable } from '@/lib/pdf/sow-table'
+import { pdfChrome } from '@/lib/pdf/chrome-labels'
 import { isTableSection, milestoneBlockLabels, type SowTableRow } from '@/lib/sow/table-schema'
 import { formatAddressLines, roundCurrency, type LegalAddress } from '@/lib/utils/format'
 import { resolveTimeZone } from '@/lib/utils/timezone'
@@ -61,6 +62,11 @@ export interface SowPdfData {
   signedAt?:     string
   agencySignatureData?: string | null
   clientSignatureData?: string | null
+  // Optional signatory details: printed as "Name, Position" under each signature when present.
+  agencySignatoryName?: string | null
+  agencySignatoryTitle?: string | null
+  clientSignerTitle?: string | null
+  clientSignerCompany?: string | null
   version:       number
   isWatermarked?: boolean
   // Word stamped across a watermarked page (see lib/pdf/sow-watermark.ts). Defaults to DRAFT.
@@ -130,6 +136,10 @@ export interface CoPdfData {
   acceptedAt?:  string
   agencySignatureData?: string | null
   clientSignatureData?: string | null
+  agencySignatoryName?: string | null
+  agencySignatoryTitle?: string | null
+  clientSignerTitle?: string | null
+  clientSignerCompany?: string | null
   isPartial?:   boolean
   partialNote?: string
   documentNumber?: string | null
@@ -324,6 +334,7 @@ function SowSection({ sec, num, s, language, currency }: { sec: SowPdfData['sect
 }
 
 function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) {
+  const t = pdfChrome(data.language)
   const c = data.brandColour || '#1A5C3A'
 
   const s = StyleSheet.create({
@@ -358,7 +369,9 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
     sigCol:     { flex: 1 },
     sigLabel:   { fontSize: 8, color: '#909090', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 10 },
     sigLine:    { borderBottom: `1 solid #1A1A1A`, height: 28, marginBottom: 4 },
-    sigImg:     { height: 32, maxWidth: 160, marginBottom: 4, objectFit: 'contain' },
+    sigImg:     { width: 150, height: 40, objectFit: 'contain', objectPosition: 'left bottom' },
+    sigArea:    { height: 46, justifyContent: 'flex-end', alignItems: 'flex-start' },
+    sigRule:    { borderBottom: `1 solid #1A1A1A`, marginTop: 2, marginBottom: 5 },
     sigName:    { fontFamily: PDF_FONT.bold, fontSize: 10 },
     sigDate:    { fontSize: 9, color: '#909090' },
     // Watermark
@@ -429,7 +442,7 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
           fixed
           render={({ pageNumber }) =>
             pageNumber > 1
-              ? `${data.agencyName} · Statement of Work${data.documentNumber ? ` · ${data.documentNumber}` : ''} · ${data.projectName}`
+              ? `${data.agencyName} · ${t.sow}${data.documentNumber ? ` · ${data.documentNumber}` : ''} · ${data.projectName}`
               : ''
           }
         />
@@ -437,20 +450,20 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
         {/* Header */}
         <View style={s.header}>
           <View>
-            <Text style={s.h1}>Statement of Work</Text>
-            <Text style={s.meta}>{data.documentNumber ? `${data.documentNumber} · ` : ''}Version {data.version} · {data.projectName}</Text>
+            <Text style={s.h1}>{t.sow}</Text>
+            <Text style={s.meta}>{data.documentNumber ? `${data.documentNumber} · ` : ''}{t.version} {data.version} · {data.projectName}</Text>
             {data.msaReference && <Text style={[s.meta, { marginTop: 2 }]}>{data.msaReference}</Text>}
-            {data.signedAt && <Text style={[s.meta, { color: c, marginTop: 2 }]}>Signed {fmtDate(data.signedAt, data.timeZone)}</Text>}
+            {data.signedAt && <Text style={[s.meta, { color: c, marginTop: 2 }]}>{t.signed} {fmtDate(data.signedAt, data.timeZone)}</Text>}
           </View>
           <View style={{ alignItems: 'flex-end' }}>
             {logo
               ? <Image src={logo} style={s.logo} />
               : <Text style={s.agencyText}>{data.agencyName}</Text>}
-            <Text style={s.value}>{data.currency} {fmtMoney(data.contractValue)}{data.isRetainer ? ' / mo' : ''}</Text>
-            <Text style={s.valueLabel}>{data.isRetainer ? 'Monthly retainer fee' : 'Contract value'}</Text>
+            <Text style={s.value}>{data.currency} {fmtMoney(data.contractValue)}{data.isRetainer ? ` / ${t.perMonth}` : ''}</Text>
+            <Text style={s.valueLabel}>{data.isRetainer ? t.monthlyRetainer : t.contractValue}</Text>
             {data.isRetainer && (data.retainerMonths || 0) > 0 && (
               <Text style={[s.valueLabel, { marginTop: 2 }]}>
-                {data.retainerMonths} months · {data.currency} {fmtMoney(Math.round(data.contractValue * (data.retainerMonths as number) * 100) / 100)} total
+                {data.retainerMonths} {t.months} · {data.currency} {fmtMoney(Math.round(data.contractValue * (data.retainerMonths as number) * 100) / 100)} {t.total}
               </Text>
             )}
           </View>
@@ -459,21 +472,21 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
         {/* Parties */}
         <View style={s.partiesBox}>
           <View style={{ flex: 1 }}>
-            <Text style={s.partyLabel}>Agency (Service Provider)</Text>
+            <Text style={s.partyLabel}>{t.agencyProvider}</Text>
             <Text style={s.partyName}>{data.agencyName}</Text>
             {formatAddress(data.agencyAddress).map((l, i) => <Text key={i} style={s.partyLine}>{l}</Text>)}
             {(data.agencyTaxId || data.agencyPhone || data.agencyWebsite) && (
               <Text style={s.partyTax}>
-                {[data.agencyTaxId ? `Tax ID ${data.agencyTaxId}` : null, data.agencyPhone, data.agencyWebsite].filter(Boolean).join('  ·  ')}
+                {[data.agencyTaxId ? `${t.taxId} ${data.agencyTaxId}` : null, data.agencyPhone, data.agencyWebsite].filter(Boolean).join('  ·  ')}
               </Text>
             )}
           </View>
           <View style={{ flex: 1 }}>
-            <Text style={s.partyLabel}>Client</Text>
+            <Text style={s.partyLabel}>{t.client}</Text>
             <Text style={s.partyName}>{data.clientCompany || data.clientName}</Text>
             {data.clientCompany && <Text style={s.partyLine}>{data.clientName}</Text>}
             {formatAddress(data.clientBillingAddress).map((l, i) => <Text key={i} style={s.partyLine}>{l}</Text>)}
-            {data.clientVatNumber && <Text style={s.partyTax}>VAT {data.clientVatNumber}</Text>}
+            {data.clientVatNumber && <Text style={s.partyTax}>{t.vat} {data.clientVatNumber}</Text>}
           </View>
         </View>
 
@@ -569,34 +582,32 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
 
         <View style={s.sigBlock} wrap={false}>
           <View style={s.sigCol}>
-            <Text style={s.sigLabel}>Agency — {data.agencyName}</Text>
-            {data.agencySignatureData ? (
-              <Image src={data.agencySignatureData} style={s.sigImg} />
-            ) : (
-              <View style={s.sigLine} />
-            )}
-            <Text style={s.sigName}>{data.agencyName}</Text>
+            <Text style={s.sigLabel}>{t.agencyLabel} — {data.agencyName}</Text>
+            <View style={s.sigArea}>
+              {data.agencySignatureData ? <Image src={data.agencySignatureData} style={s.sigImg} /> : null}
+            </View>
+            <View style={s.sigRule} />
+            <Text style={s.sigName}>{[data.agencySignatoryName || data.agencyName, data.agencySignatoryTitle].filter(Boolean).join(', ')}</Text>
           </View>
           <View style={s.sigCol}>
-            <Text style={s.sigLabel}>Client — {data.clientName}</Text>
-            {data.clientSignatureData ? (
-              <Image src={data.clientSignatureData} style={s.sigImg} />
-            ) : (
-              <View style={[s.sigLine, data.signedBy ? { borderBottom: `2 solid ${c}` } : {}]} />
-            )}
+            <Text style={s.sigLabel}>{t.clientLabel} — {data.clientSignerCompany || data.clientCompany || data.clientName}</Text>
+            <View style={s.sigArea}>
+              {data.clientSignatureData ? <Image src={data.clientSignatureData} style={s.sigImg} /> : null}
+            </View>
+            <View style={[s.sigRule, data.signedBy ? { borderBottom: `1.5 solid ${c}` } : {}]} />
             {data.signedBy
               ? <>
-                  <Text style={[s.sigName, { color: c }]}>{data.signedBy}</Text>
+                  <Text style={[s.sigName, { color: c }]}>{[data.signedBy, data.clientSignerTitle].filter(Boolean).join(', ')}</Text>
                   {data.signedAt && <Text style={s.sigDate}>{fmtDate(data.signedAt, data.timeZone)}</Text>}
                 </>
-              : <Text style={[s.sigName, { color: '#B0B0B0' }]}>Not yet signed</Text>}
+              : <Text style={[s.sigName, { color: '#B0B0B0' }]}>{t.notYetSigned}</Text>}
           </View>
         </View>
 
         {/* Footer */}
         <View style={s.footer}>
-          <Text>Scope governance by <Link src={SCOPEGOV_URL} style={s.footerLink}>ScopeGov</Link></Text>
-          <Text>Generated {fmtDate(new Date().toISOString(), data.timeZone)}</Text>
+          <Text>{t.scopeGovBy} <Link src={SCOPEGOV_URL} style={s.footerLink}>ScopeGov</Link></Text>
+          <Text>{t.generated} {fmtDate(new Date().toISOString(), data.timeZone)}</Text>
         </View>
 
         {/* Page numbers — fixed, only shown once the document actually
@@ -605,7 +616,7 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
         <Text
           style={s.pageNum}
           fixed
-          render={({ pageNumber, totalPages }) => (totalPages > 1 ? `Page ${pageNumber} of ${totalPages}` : '')}
+          render={({ pageNumber, totalPages }) => (totalPages > 1 ? t.page(pageNumber, totalPages) : '')}
         />
       </Page>
     </Document>
@@ -661,7 +672,9 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
     sigCol:    { flex: 1 },
     sigLabel:  { fontSize: 8, color: '#909090', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 10 },
     sigLine:   { borderBottom: `1 solid #1A1A1A`, height: 26, marginBottom: 4 },
-    sigImg:    { height: 30, maxWidth: 150, marginBottom: 4, objectFit: 'contain' },
+    sigImg:    { width: 150, height: 40, objectFit: 'contain', objectPosition: 'left bottom' },
+    sigArea:   { height: 46, justifyContent: 'flex-end', alignItems: 'flex-start' },
+    sigRule:   { borderBottom: `1 solid #1A1A1A`, marginTop: 2, marginBottom: 5 },
     sigName:   { fontFamily: PDF_FONT.bold, fontSize: 10 },
     footer:    { flexDirection: 'row', justifyContent: 'space-between', marginTop: 24, paddingTop: 10, borderTop: `1 solid #E5E1D8`, fontSize: 8, color: '#B0B0B0' },
     footerLink:{ color: '#B0B0B0', textDecoration: 'none' },
@@ -872,23 +885,21 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
         <View style={s.sigBlock} wrap={false}>
           <View style={s.sigCol}>
             <Text style={s.sigLabel}>Agency — {data.agencyName}</Text>
-            {data.agencySignatureData ? (
-              <Image src={data.agencySignatureData} style={s.sigImg} />
-            ) : (
-              <View style={s.sigLine} />
-            )}
-            <Text style={s.sigName}>{data.agencyName}</Text>
+            <View style={s.sigArea}>
+              {data.agencySignatureData ? <Image src={data.agencySignatureData} style={s.sigImg} /> : null}
+            </View>
+            <View style={s.sigRule} />
+            <Text style={s.sigName}>{[data.agencySignatoryName || data.agencyName, data.agencySignatoryTitle].filter(Boolean).join(', ')}</Text>
           </View>
           <View style={s.sigCol}>
-            <Text style={s.sigLabel}>Client — {data.clientName}</Text>
-            {data.clientSignatureData ? (
-              <Image src={data.clientSignatureData} style={s.sigImg} />
-            ) : (
-              <View style={[s.sigLine, data.acceptedBy ? { borderBottom: `2 solid ${c}` } : {}]} />
-            )}
+            <Text style={s.sigLabel}>Client — {data.clientSignerCompany || data.clientName}</Text>
+            <View style={s.sigArea}>
+              {data.clientSignatureData ? <Image src={data.clientSignatureData} style={s.sigImg} /> : null}
+            </View>
+            <View style={[s.sigRule, data.acceptedBy ? { borderBottom: `1.5 solid ${c}` } : {}]} />
             {data.acceptedBy
               ? <>
-                  <Text style={[s.sigName, { color: c }]}>{data.acceptedBy}</Text>
+                  <Text style={[s.sigName, { color: c }]}>{[data.acceptedBy, data.clientSignerTitle].filter(Boolean).join(', ')}</Text>
                   {data.acceptedAt && <Text style={{ fontSize: 9, color: '#909090' }}>{fmtDate(data.acceptedAt, data.timeZone)}</Text>}
                 </>
               : <Text style={[s.sigName, { color: '#B0B0B0' }]}>Pending</Text>}

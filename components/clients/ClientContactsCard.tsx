@@ -234,7 +234,7 @@ function ContactForm({ clientId, initial, onDone, onCancel, busy = false }: {
       <div className="f2">
         <div className="fgrp">
           <label className="flbl">Name</label>
-          <input className="finp" value={name} autoFocus onChange={e => setName(e.target.value)} placeholder="Jane Mwangi" />
+          <input className="finp" value={name} autoFocus onChange={e => setName(e.target.value)} placeholder="Jane Doe" />
         </div>
         <div className="fgrp">
           <label className="flbl">Role <span className="fhint">— optional</span></label>

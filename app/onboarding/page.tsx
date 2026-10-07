@@ -1681,7 +1681,7 @@ function OnboardingWizard() {
               <label className="flbl">Governing law <span className="fhint">— the contract law that governs your SOWs</span></label>
               <input className="finp" value={governingLaw} maxLength={200}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => setGoverningLaw(e.target.value)}
-                placeholder="e.g. Republic of Kenya" />
+                placeholder="e.g. State of Delaware, United States" />
               {/* FIX (fresh independent audit, section 4 — feature gap): /api/sow/generate hard-
                   refuses to draft a SOW when this is empty — nothing on this step said so, and
                   "Skip for now" makes it easy to leave blank without realizing SOW generation is

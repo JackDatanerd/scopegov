@@ -25,6 +25,9 @@ vi.mock('@supabase/ssr', () => ({
 import { NextRequest } from 'next/server'
 import { middleware } from '../middleware'
 
+// These suites cover the ENFORCED path (MFA_ENFORCEMENT=required); the default is 'recommended' — see tests/mfa-recommended.test.ts.
+process.env.MFA_ENFORCEMENT = 'required'
+
 const call = (path: string) => middleware(new NextRequest('http://localhost' + path)) as Promise<any>
 
 beforeEach(() => {

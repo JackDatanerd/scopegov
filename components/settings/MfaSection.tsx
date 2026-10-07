@@ -11,7 +11,7 @@ interface Status {
   unusedBackupCodes: number
 }
 
-export default function MfaSection({ mandatory }: { mandatory: boolean }) {
+export default function MfaSection({ mandatory, recommended = false }: { mandatory: boolean; recommended?: boolean }) {
   const router = useRouter()
   const [status, setStatus] = useState<Status | null>(null)
   const [loading, setLoading] = useState(false)
@@ -88,6 +88,8 @@ export default function MfaSection({ mandatory }: { mandatory: boolean }) {
           <span style={{ fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 20, background: 'var(--green-lt)', color: 'var(--green)' }}>Enabled</span>
         ) : mandatory ? (
           <span style={{ fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 20, background: 'var(--red-lt)', color: 'var(--red)' }}>Required, not set up</span>
+        ) : recommended ? (
+          <span style={{ fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 20, background: 'var(--amber-lt, #FFFBEB)', color: 'var(--amber, #B45309)' }}>Recommended</span>
         ) : (
           <span style={{ fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 20, background: 'var(--bg-2, #F0F0EC)', color: 'var(--text-3)' }}>Off</span>
         )}
@@ -100,6 +102,8 @@ export default function MfaSection({ mandatory }: { mandatory: boolean }) {
           <p style={{ fontSize: 13, color: 'var(--text-2)', lineHeight: 1.6, margin: '0 0 14px' }}>
             {mandatory
               ? 'Your role requires an authenticator app to sign in. Set it up now.'
+              : recommended
+              ? 'Your role can see sensitive financial and client data, so we strongly recommend an authenticator app as a second sign-in step.'
               : 'Add an authenticator app as a second sign-in step for extra protection on your account.'}
           </p>
           <button className="btn btn-primary btn-sm" onClick={() => router.push('/mfa-setup?next=%2Fsettings%3Ftab%3Daccount')}>

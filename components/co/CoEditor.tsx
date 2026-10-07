@@ -6,6 +6,7 @@ import { formatCoAmount } from '@/lib/documents/co-money'
 import { hasVisibleText } from '@/lib/documents/visible-text'
 import { nanoid } from 'nanoid'
 import { roundCurrency } from '@/lib/utils/format'
+import ClientDetailsWarningModal, { type ClientDetailsInfo } from '@/components/documents/ClientDetailsWarningModal'
 import { MAX_UPLOAD_BYTES, MAX_UPLOAD_LABEL } from '@/lib/utils/upload-limits'
 
 // `kind: 'adjustment'` marks a system-written negotiation line ("Negotiated discount…") from an accepted
@@ -23,6 +24,7 @@ export default function CoEditor({ projId, coId }: Props) {
   const [loading,      setLoading]      = useState(!!coId)
   const [saving,       setSaving]       = useState(false)
   const [sending,      setSending]      = useState(false)
+  const [clientWarn,   setClientWarn]   = useState<{ info: ClientDetailsInfo; warnings: string[] } | null>(null)
   const [error,        setError]        = useState('')
   const [saveStatus,   setSaveStatus]   = useState<'idle'|'saving'|'saved'|'error'>('idle')
   const [title,        setTitle]        = useState('')
@@ -399,7 +401,7 @@ export default function CoEditor({ projId, coId }: Props) {
     } catch { /* shown by doSave via setError */ }
   }
 
-  async function handleSend() {
+  async function handleSend(alreadyAcknowledged = false) {
     if (!canSend) { setError("You don't have permission to send change orders. Save the draft and ask someone who can."); return }
     if (!title.trim() || !hasVisibleText(title)) { setError('Title is required'); return }
     if (lineItems.every(l => l.total === 0)) { setError('Add at least one line item with a value'); return }
@@ -420,9 +422,13 @@ export default function CoEditor({ projId, coId }: Props) {
       if (!id) throw new Error('Failed to save CO before sending')
       const res  = await fetch(`/api/co/${id}/send`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ expiresInDays: parseInt(expiresInDays, 10) || 30 }),
+        body: JSON.stringify({ expiresInDays: parseInt(expiresInDays, 10) || 30, ...(alreadyAcknowledged ? { acknowledgeWarnings: true } : {}) }),
       })
       const json = await res.json().catch(() => ({} as any))
+      if (res.status === 409 && json.needsAcknowledgement && json.clientDetails) {
+        setClientWarn({ info: json.clientDetails, warnings: Array.isArray(json.warnings) && json.warnings.length ? json.warnings : [json.error] })
+        return
+      }
       if (!res.ok) throw new Error(json.error || 'Send failed')
       if (json.pendingApproval) alert(json.message || 'Sent for approval — this change order will go to the client once it is signed off.')
       else if (json.emailSent === false)
@@ -761,7 +767,7 @@ export default function CoEditor({ projId, coId }: Props) {
         {!isLocked && (
           <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
             {canSend && !financialsHidden && (
-              <button className="btn btn-primary" onClick={handleSend} disabled={sending || !hasVisibleText(title)}>
+              <button className="btn btn-primary" onClick={() => handleSend()} disabled={sending || !hasVisibleText(title)}>
                 {sending ? <><span className="spin" /> Sending…</> : <><i className="ti ti-send" style={{ fontSize: 13 }} /> Send to client</>}
               </button>
             )}
@@ -779,6 +785,14 @@ export default function CoEditor({ projId, coId }: Props) {
           </div>
         )}
       </div>
+
+      {clientWarn && (
+        <ClientDetailsWarningModal
+          info={clientWarn.info} warnings={clientWarn.warnings} docLabel="change order" busy={sending}
+          onCancel={() => setClientWarn(null)}
+          onSendAnyway={async () => { await handleSend(true); setClientWarn(null) }}
+        />
+      )}
 
       {/* ── Right: summary card ── */}
       <div style={{ paddingTop: 50 }}>

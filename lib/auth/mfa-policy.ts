@@ -71,6 +71,14 @@ export const MFA_REQUIRED_PERMISSIONS: Permission[] = [
   // had.
 ]
 
+// PRODUCT DECISION (pre-launch polish): 2FA is RECOMMENDED, not forced, for the roles above.
+// Those permissions still define who is "sensitive" (nudges, roster badge, settings panel), but
+// middleware no longer blocks the account until it enrols, and the disable button stays available.
+// Flip MFA_ENFORCEMENT=required in the environment to restore the hard gate everywhere at once.
+export function mfaIsEnforced(): boolean {
+  return process.env.MFA_ENFORCEMENT === 'required'
+}
+
 export function permissionsRequireMfa(permissions: Record<string, boolean> | Permission[] | null | undefined): boolean {
   if (!permissions) return false
   if (Array.isArray(permissions)) {

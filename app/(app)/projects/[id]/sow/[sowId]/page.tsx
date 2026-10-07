@@ -2,6 +2,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import SowEditor from '@/components/sow/SowEditor'
+import ClientDetailsWarningModal, { type ClientDetailsInfo } from '@/components/documents/ClientDetailsWarningModal'
 import { sowStatusLabel, sowStatusColour, formatDate } from '@/lib/utils/format'
 
 export default function SowEditorPage() {
@@ -16,6 +17,7 @@ export default function SowEditorPage() {
   const [loadFailed, setLoadFailed] = useState(false)
   const [reloadKey,  setReloadKey]  = useState(0)
   const [sending,  setSending]  = useState(false)
+  const [clientWarn, setClientWarn] = useState<{ info: ClientDetailsInfo; warnings: string[] } | null>(null)
   const [error,    setError]    = useState('')
   const [isLocked, setIsLocked] = useState(false)
   // (approvals pass 16, B4) A draft waiting on (or approved-but-unsent from) an approval request is edit-locked server-side.
@@ -54,7 +56,7 @@ export default function SowEditorPage() {
     return () => { cancelled = true }
   }, [sowId, projId, reloadKey])
 
-  async function handleSend() {
+  async function handleSend(alreadyAcknowledged = false) {
     setSending(true); setError('')
     try {
       // Everything typed in the last moments must be stored BEFORE the server snapshots the
@@ -71,7 +73,11 @@ export default function SowEditorPage() {
         })
         return { res, json: await res.json().catch(() => ({} as any)) }
       }
-      let { res, json } = await post(false)
+      let { res, json } = await post(alreadyAcknowledged)
+      if (res.status === 409 && json.needsAcknowledgement && json.clientDetails) {
+        setClientWarn({ info: json.clientDetails, warnings: Array.isArray(json.warnings) && json.warnings.length ? json.warnings : [json.error] })
+        return
+      }
       if (res.status === 409 && json.needsAcknowledgement) {
         const list: string[] = Array.isArray(json.warnings) && json.warnings.length ? json.warnings : [json.error]
         if (!confirm(`${list.join('\n\n')}\n\nSend it anyway?`)) return
@@ -168,7 +174,7 @@ export default function SowEditorPage() {
             </a>
           )}
           {!isLocked && !approval && perms.canSend && (
-            <button className="btn btn-primary btn-sm" onClick={handleSend} disabled={sending}>
+            <button className="btn btn-primary btn-sm" onClick={() => handleSend()} disabled={sending}>
               {sending
                 ? <><span className="spin" style={{ width: 12, height: 12 }} /> Sending…</>
                 : <><i className="ti ti-send" style={{ fontSize: 12 }} /> Send to client</>}
@@ -240,6 +246,13 @@ export default function SowEditorPage() {
           registerFlush={registerFlush}
         />
       </div>
+      {clientWarn && (
+        <ClientDetailsWarningModal
+          info={clientWarn.info} warnings={clientWarn.warnings} docLabel="SOW" busy={sending}
+          onCancel={() => setClientWarn(null)}
+          onSendAnyway={async () => { await handleSend(true); setClientWarn(null) }}
+        />
+      )}
     </div>
   )
 }

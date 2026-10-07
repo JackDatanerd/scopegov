@@ -419,7 +419,7 @@ ${TABLE_END}` : ''
   // switches language.
   const languageName = sowLanguageName(input.language || 'en')
   const languageInstruction = languageName && languageName !== 'English'
-    ? `\n\nWrite ALL drafted section content and table row text in ${languageName}. Keep the section/table MARKER lines themselves exactly as specified below (in English, unchanged) — only the content after each marker is in ${languageName}.`
+    ? `\n\nWrite ALL drafted section content and table row text in ${languageName}. Keep the section/table MARKER lines themselves exactly as specified below (in English, unchanged) — only the content after each marker is in ${languageName}. Do NOT add English glosses in parentheses (no "(Statement of Work)", "(portfolio)", "(mobile-responsive)" and the like): translate each term fully, and keep an English word only when it is a brand or product name or has no common equivalent. Refer to the two parties with ONE consistent pair of terms throughout (the same word for the agency every time, and the same word for the client), and always call this document by the same name.`
     : ''
 
   return `You are a professional contract drafter for a creative/digital agency.

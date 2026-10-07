@@ -93,7 +93,7 @@ describe('B1 — a retainer states its value as monthly everywhere', () => {
       expect(src, f).toContain('retainer_duration_months')
       expect(src, f).toContain('sowRetainerTerms')
     }
-    expect(read('lib/pdf/renderer.tsx')).toContain('Monthly retainer fee')
+    expect(read('lib/pdf/chrome-labels.ts')).toContain('Monthly retainer fee')
     expect(read('app/portal/sow/[token]/page.tsx')).toContain('Monthly retainer fee')
     expect(read('lib/email/templates.ts')).toContain('Monthly retainer fee')
     expect(read('app/(app)/sow/page.tsx')).toContain("'/mo'")

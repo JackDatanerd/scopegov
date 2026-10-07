@@ -8,7 +8,7 @@ import { redirect } from 'next/navigation'
 import TeamClient from '@/components/team/TeamClient'
 import Link from 'next/link'
 import { PLAN_LIMITS } from '@/lib/utils/format'
-import { permissionsRequireMfa } from '@/lib/auth/mfa-policy'
+import { permissionsRequireMfa, mfaIsEnforced } from '@/lib/auth/mfa-policy'
 import { roleWithinCeiling } from '@/lib/utils/permission-ceiling'
 import { roleHolderCounts } from '@/lib/utils/role-holders'
 import { inviterGrantAllowed } from '@/lib/utils/invite-authority'
@@ -110,7 +110,7 @@ export default async function TeamPage() {
     const hasMfa = userId && mfaByUser.has(userId) ? mfaByUser.get(userId)! : undefined
     const mfa = hasMfa === undefined ? undefined
       : hasMfa ? 'enrolled'
-      : permissionsRequireMfa(m.effective_permissions) ? 'required_missing' : 'none'
+      : permissionsRequireMfa(m.effective_permissions) ? (mfaIsEnforced() ? 'required_missing' : 'recommended_missing') : 'none'
     return { ...stripPermissions(m), ...(mfa ? { mfa } : {}) }
   }
 

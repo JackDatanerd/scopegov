@@ -399,7 +399,7 @@ export default function InvitePage() {
                   </div>
                   <div className="fgrp">
                     <label className="flbl">Your name</label>
-                    <input className="finp" value={name} autoFocus placeholder="Jane Mwangi"
+                    <input className="finp" value={name} autoFocus placeholder="Jane Doe"
                       onChange={(e: React.ChangeEvent<HTMLInputElement>) => setName(e.target.value)} required />
                   </div>
                   <div className="fgrp">

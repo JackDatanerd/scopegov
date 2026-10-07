@@ -554,6 +554,12 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
                           <i className="ti ti-shield-check" style={{ fontSize: 11 }} /> Two-factor on
                         </div>
                       )}
+                      {m.mfa === 'recommended_missing' && (
+                        <div style={{ fontSize: 10.5, color: 'var(--amber, #B45309)', marginTop: 2 }}
+                          title="Their role handles sensitive data. Two-factor authentication is recommended, and they haven't set it up yet.">
+                          <i className="ti ti-shield-exclamation" style={{ fontSize: 11 }} /> Two-factor recommended &mdash; not set up
+                        </div>
+                      )}
                       {m.mfa === 'required_missing' && (
                         <div style={{ fontSize: 10.5, color: 'var(--amber, #B45309)', marginTop: 2 }}
                           title="Their role requires two-factor authentication, and they haven't set it up yet.">

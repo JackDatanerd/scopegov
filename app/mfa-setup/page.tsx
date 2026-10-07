@@ -1,6 +1,7 @@
 import { getSessionStrict, userHasAnyMfaMandatoryMembershipOrAssume } from '@/lib/auth/session'
 import { adminNeedsMfaEnrolment } from '@/lib/auth/admin'
 import { redirect } from 'next/navigation'
+import { mfaIsEnforced } from '@/lib/auth/mfa-policy'
 import MfaSetupClient from '@/components/mfa/MfaSetupClient'
 import StepUpHost from '@/components/auth/StepUpHost'
 // FIX (section-by-section re-audit): `next` used to be passed through raw.
@@ -37,7 +38,7 @@ export default async function MfaSetupPage({ searchParams }: Props) {
     : (sp.next && sp.next.startsWith('/admin') ? safeRedirectPath(sp.next) : '/admin')
   // An admin who arrived to open the admin panel can't "skip": /admin would just send
   // them straight back here.
-  const mandatory = (session ? await userHasAnyMfaMandatoryMembershipOrAssume(session.id) : false)
+  const mandatory = (mfaIsEnforced() && session ? await userHasAnyMfaMandatoryMembershipOrAssume(session.id) : false)
     || (!!adminPending && next.startsWith('/admin'))
   const userName = session ? session.name : adminPending!.name
 

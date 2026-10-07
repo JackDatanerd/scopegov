@@ -24,6 +24,9 @@ import { NextRequest } from 'next/server'
 import { AuthRetryableFetchError, AuthApiError } from '@supabase/supabase-js'
 import { middleware } from '../middleware'
 
+// These suites cover the ENFORCED path (MFA_ENFORCEMENT=required); the default is 'recommended' — see tests/mfa-recommended.test.ts.
+process.env.MFA_ENFORCEMENT = 'required'
+
 const call = (path: string, method = 'GET', headers: Record<string, string> = {}) =>
   middleware(new NextRequest('http://localhost' + path, { method, headers })) as Promise<any>
 

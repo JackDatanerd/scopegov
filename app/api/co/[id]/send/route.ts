@@ -1,6 +1,7 @@
 export const runtime = 'nodejs'
 
 import { isUuidString } from '@/lib/utils/uuid'
+import { loadClientDetailsWarning } from '@/lib/documents/client-details-gap'
 import { createServiceClient } from '@/lib/supabase/server'
 import { isRealLookupFailure } from '@/lib/documents/co-lookup'
 import { NextResponse, type NextRequest } from 'next/server'
@@ -33,7 +34,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const { data: co, error: coFetchErr } = await (service as any)
       .from('change_orders')
       .select(`id,title,status,total,line_items,version,root_co_id,project_id,is_retainer_renewal,renewal_term_months,is_credit,
-        projects(id,name,status,currency,type,retainer_duration_months)`)
+        projects(id,name,status,currency,type,retainer_duration_months,client_id)`)
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!co) {
@@ -117,6 +118,15 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // lib/approvals/engine.ts) can see the requester's chosen expiry too, instead of it
     // silently reverting to the 30-day default whenever this send goes through approval.
     const reqBody = await request.json().catch(() => ({} as any))
+
+    // Courtesy check: warn (acknowledgeable) when the client's billing address is empty.
+    if (reqBody?.acknowledgeWarnings !== true) {
+      const clientDetails = await loadClientDetailsWarning(service, session.workspaceId, project.client_id)
+      if (clientDetails) {
+        const msg = `${clientDetails.clientName} has no ${clientDetails.missing.join(' or ')} on file, so the change order will go out without it.`
+        return NextResponse.json({ error: msg, warnings: [msg], needsAcknowledgement: true, clientDetails }, { status: 409 })
+      }
+    }
 
     const gate = await evaluateApprovalGate(service, {
       workspaceId:  session.workspaceId,

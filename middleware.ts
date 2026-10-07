@@ -2,7 +2,7 @@ import { createServerClient, type CookieOptions } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
 import { sharedCookieOptions, domainScopedCookieOptions } from './lib/supabase/cookie-options'
 import { isAuthRetryableFetchError } from '@supabase/supabase-js'
-import { MFA_REQUIRED_PERMISSIONS } from './lib/auth/mfa-policy'
+import { MFA_REQUIRED_PERMISSIONS, mfaIsEnforced } from './lib/auth/mfa-policy'
 
 // State the middleware needs about the signed-in user, from ONE SECURITY DEFINER
 // RPC (migration 064). Replaces five session-bound reads of `workspace_members`
@@ -334,7 +334,7 @@ export async function middleware(request: NextRequest) {
 
   // ── Mandatory MFA enrolment: an account that holds governance-critical
   // permissions but has no verified factor may only reach the setup flow.
-  if (user && !isPublicRoute && !isMfaFlowRoute && !isAuthRoute && !isOnboarding && !isStepUpRoute) {
+  if (mfaIsEnforced() && user && !isPublicRoute && !isMfaFlowRoute && !isAuthRoute && !isOnboarding && !isStepUpRoute) {
     if (currentLevel === 'aal1' && nextLevel === 'aal1') {
       const gate = await loadGate()
       // Fail CLOSED (this check used to fail open whenever the lookup errored).

@@ -7,6 +7,7 @@
 import { getSessionStrict, hasPermission, userHasAnyMfaMandatoryMembershipOrAssume } from '@/lib/auth/session'
 import { createServiceClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
+import { mfaIsEnforced } from '@/lib/auth/mfa-policy'
 import SettingsClient from '@/components/settings/SettingsClient'
 
 export const metadata = { title: 'Settings' }
@@ -206,7 +207,9 @@ export default async function SettingsPage() {
     }
   }
 
-  const mfaMandatory = await userHasAnyMfaMandatoryMembershipOrAssume(session.id)
+  const mfaSensitiveRole = await userHasAnyMfaMandatoryMembershipOrAssume(session.id)
+  const mfaMandatory = mfaSensitiveRole && mfaIsEnforced()
+  const mfaRecommended = mfaSensitiveRole && !mfaIsEnforced()
 
   // FIX (deep audit, Settings section \u2014 the redaction above, not applied
   // to its neighbour): the `workspace` block directly above exists because
@@ -238,6 +241,7 @@ export default async function SettingsPage() {
       loadFailed={loadFailed}
       session={{ ...session, hasPasswordIdentity }}
       mfaMandatory={mfaMandatory}
+      mfaRecommended={mfaRecommended}
       permissions={{
         manageWorkspace: canManageWorkspace,
         manageBilling:   canManageBilling,

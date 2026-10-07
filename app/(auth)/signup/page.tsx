@@ -187,7 +187,7 @@ export default function SignupPage() {
           <form onSubmit={handleSignup}>
             <div className="fgrp">
               <label className="flbl">Your name</label>
-              <input className="finp" placeholder="Jane Mwangi" value={name} autoFocus autoComplete="name" maxLength={120}
+              <input className="finp" placeholder="Jane Doe" value={name} autoFocus autoComplete="name" maxLength={120}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => setName(e.target.value)} required />
             </div>
             <div className="fgrp">

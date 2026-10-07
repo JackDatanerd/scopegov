@@ -102,6 +102,10 @@ Create in Supabase Dashboard → Storage:
   PKCE `?code=` links only work in the requesting browser), use the token-hash form:
   - Confirm signup: `{{ .SiteURL }}/api/auth/callback?token_hash={{ .TokenHash }}&type=signup&next=/onboarding`
   - Reset password: `{{ .SiteURL }}/reset-password?token_hash={{ .TokenHash }}&type=recovery`
+- [ ] **Branded auth emails:** paste the HTML files from `supabase/email-templates/` (see its README) into the
+  templates above, and set the SMTP sender name to `ScopeGov`.
+- [ ] **Two-factor policy:** 2FA is *recommended* (not forced) for sensitive roles by default. Set
+  `MFA_ENFORCEMENT=required` in the environment to restore the hard gate (middleware, disable-lock, mfa-setup skip).
 - [ ] **Confirm email: ON** (Auth → Sign In / Providers → Email). Sign-up sends people to "check your email".
 - [ ] **Minimum password length ≥ 8** (Auth → Sign In / Providers → Email). Sign-up talks to Supabase Auth
   directly from the browser, so THIS setting — not the form — is the server-side rule for new accounts.

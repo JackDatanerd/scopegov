@@ -51,7 +51,7 @@ describe('CoEditor honours the server-reported permissions', () => {
     expect(src).toMatch(/loadFailed \|\| !canEdit/)
   })
   it('refuses to create-then-send for a member without SEND_CHANGE_ORDERS', () => {
-    expect(src).toMatch(/async function handleSend\(\) \{\s*if \(!canSend\)/)
+    expect(src).toMatch(/async function handleSend\((?:alreadyAcknowledged = false)?\) \{\s*if \(!canSend\)/)
   })
 })
 

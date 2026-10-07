@@ -38,9 +38,9 @@ export const SOW_LANGUAGES = [
 ] as const
 
 export const TIMEZONES = [
-  'UTC', 'Africa/Nairobi', 'Africa/Lagos', 'Africa/Accra', 'Africa/Johannesburg', 'Africa/Cairo',
-  'Europe/London', 'Europe/Paris', 'America/New_York', 'America/Los_Angeles',
-  'Asia/Dubai', 'Asia/Kolkata', 'Australia/Sydney',
+  'UTC', 'America/New_York', 'America/Chicago', 'America/Denver', 'America/Los_Angeles',
+  'Europe/London', 'Europe/Paris', 'Africa/Nairobi', 'Africa/Lagos', 'Africa/Accra',
+  'Africa/Johannesburg', 'Africa/Cairo', 'Asia/Dubai', 'Asia/Kolkata', 'Australia/Sydney',
 ] as const
 
 // FIX (Onboarding independent audit): the wizard hardcoded 'America/New_York' as its
