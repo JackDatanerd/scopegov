@@ -11,7 +11,7 @@ import { formatCurrency, formatCurrencyExact, roundCurrency, formatDate, invoice
 import RichTextField from '@/components/ui/RichTextField'
 import { baseContractValue } from '@/lib/reports/contract-position'
 import { isOpenEndedRetainer } from '@/lib/utils/contract-value'
-import ClientDetailsWarningModal, { type ClientDetailsInfo } from '@/components/documents/ClientDetailsWarningModal'
+import ClientDetailsWarningModal, { type ClientDetailsInfo, type AgencyDetailsInfo } from '@/components/documents/ClientDetailsWarningModal'
 import { isPaymentClaimOpen } from '@/lib/utils/invoice-registry'
 import { amountFieldForNet, buildInvoiceEditPatch, lineTotal, itemizedSubtotal, type EditFormState } from '@/lib/documents/invoice-form'
 
@@ -46,7 +46,7 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
   const [voidingId, setVoidingId] = useState<string | null>(null)
   const [paymentsOpenId, setPaymentsOpenId] = useState<string | null>(null)
   const [busyId, setBusyId]       = useState<string | null>(null)
-  const [clientWarn, setClientWarn] = useState<{ id: string; info: ClientDetailsInfo; warnings: string[] } | null>(null)
+  const [clientWarn, setClientWarn] = useState<{ id: string; info: ClientDetailsInfo | null; agency: AgencyDetailsInfo | null; warnings: string[] } | null>(null)
   const [error, setError]         = useState('')
 
   if (!permissions.viewFinancials) {
@@ -190,8 +190,8 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
         body: JSON.stringify(alreadyAcknowledged ? { acknowledgeWarnings: true } : {}),
       })
       const j = await res.json().catch(() => ({}))
-      if (res.status === 409 && j.needsAcknowledgement && j.clientDetails) {
-        setClientWarn({ id, info: j.clientDetails, warnings: Array.isArray(j.warnings) && j.warnings.length ? j.warnings : [j.error] })
+      if (res.status === 409 && j.needsAcknowledgement && (j.clientDetails || j.agencyDetails)) {
+        setClientWarn({ id, info: j.clientDetails || null, agency: j.agencyDetails || null, warnings: Array.isArray(j.warnings) && j.warnings.length ? j.warnings : [j.error] })
         return
       }
       if (!res.ok) throw new Error(j.error || 'Failed to send invoice')
@@ -316,7 +316,7 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
       {error && <div className="auth-error" style={{ marginBottom: 16 }}>{error}</div>}
       {clientWarn && (
         <ClientDetailsWarningModal
-          info={clientWarn.info} warnings={clientWarn.warnings} docLabel="invoice" busy={busyId === clientWarn.id}
+          info={clientWarn.info} agency={clientWarn.agency} warnings={clientWarn.warnings} docLabel="invoice" busy={busyId === clientWarn.id}
           onCancel={() => setClientWarn(null)}
           onSendAnyway={async () => { const id = clientWarn.id; await sendInvoice(id, true); setClientWarn(null) }}
         />

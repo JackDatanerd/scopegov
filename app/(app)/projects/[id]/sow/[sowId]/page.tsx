@@ -2,7 +2,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import SowEditor from '@/components/sow/SowEditor'
-import ClientDetailsWarningModal, { type ClientDetailsInfo } from '@/components/documents/ClientDetailsWarningModal'
+import ClientDetailsWarningModal, { type ClientDetailsInfo, type AgencyDetailsInfo } from '@/components/documents/ClientDetailsWarningModal'
 import { sowStatusLabel, sowStatusColour, formatDate } from '@/lib/utils/format'
 
 export default function SowEditorPage() {
@@ -17,7 +17,7 @@ export default function SowEditorPage() {
   const [loadFailed, setLoadFailed] = useState(false)
   const [reloadKey,  setReloadKey]  = useState(0)
   const [sending,  setSending]  = useState(false)
-  const [clientWarn, setClientWarn] = useState<{ info: ClientDetailsInfo; warnings: string[] } | null>(null)
+  const [clientWarn, setClientWarn] = useState<{ info: ClientDetailsInfo | null; agency: AgencyDetailsInfo | null; warnings: string[] } | null>(null)
   const [error,    setError]    = useState('')
   const [isLocked, setIsLocked] = useState(false)
   // (approvals pass 16, B4) A draft waiting on (or approved-but-unsent from) an approval request is edit-locked server-side.
@@ -74,8 +74,8 @@ export default function SowEditorPage() {
         return { res, json: await res.json().catch(() => ({} as any)) }
       }
       let { res, json } = await post(alreadyAcknowledged)
-      if (res.status === 409 && json.needsAcknowledgement && json.clientDetails) {
-        setClientWarn({ info: json.clientDetails, warnings: Array.isArray(json.warnings) && json.warnings.length ? json.warnings : [json.error] })
+      if (res.status === 409 && json.needsAcknowledgement && (json.clientDetails || json.agencyDetails)) {
+        setClientWarn({ info: json.clientDetails || null, agency: json.agencyDetails || null, warnings: Array.isArray(json.warnings) && json.warnings.length ? json.warnings : [json.error] })
         return
       }
       if (res.status === 409 && json.needsAcknowledgement) {
@@ -248,7 +248,7 @@ export default function SowEditorPage() {
       </div>
       {clientWarn && (
         <ClientDetailsWarningModal
-          info={clientWarn.info} warnings={clientWarn.warnings} docLabel="SOW" busy={sending}
+          info={clientWarn.info} agency={clientWarn.agency} warnings={clientWarn.warnings} docLabel="SOW" busy={sending}
           onCancel={() => setClientWarn(null)}
           onSendAnyway={async () => { await handleSend(true); setClientWarn(null) }}
         />

@@ -1,7 +1,7 @@
 export const runtime = 'nodejs'
 
 import { isUuidString } from '@/lib/utils/uuid'
-import { loadClientDetailsWarning } from '@/lib/documents/client-details-gap'
+import { loadSendDetailsWarnings } from '@/lib/documents/client-details-gap'
 import { createServiceClient } from '@/lib/supabase/server'
 import { isRealLookupFailure } from '@/lib/documents/co-lookup'
 import { NextResponse, type NextRequest } from 'next/server'
@@ -121,10 +121,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     // Courtesy check: warn (acknowledgeable) when the client's billing address is empty.
     if (reqBody?.acknowledgeWarnings !== true) {
-      const clientDetails = await loadClientDetailsWarning(service, session.workspaceId, project.client_id)
-      if (clientDetails) {
-        const msg = `${clientDetails.clientName} has no ${clientDetails.missing.join(' or ')} on file, so the change order will go out without it.`
-        return NextResponse.json({ error: msg, warnings: [msg], needsAcknowledgement: true, clientDetails }, { status: 409 })
+      const details = await loadSendDetailsWarnings(service, session.workspaceId, project.client_id, 'co')
+      if (details) {
+        return NextResponse.json({
+          error: details.messages[0], warnings: details.messages, needsAcknowledgement: true,
+          clientDetails: details.clientDetails, agencyDetails: details.agencyDetails,
+        }, { status: 409 })
       }
     }
 

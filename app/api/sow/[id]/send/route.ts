@@ -1,7 +1,7 @@
 export const runtime = 'nodejs'
 
 import { isUuidString } from '@/lib/utils/uuid'
-import { loadClientDetailsWarning } from '@/lib/documents/client-details-gap'
+import { loadSendDetailsWarnings } from '@/lib/documents/client-details-gap'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
@@ -76,11 +76,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const acknowledged = body?.acknowledgeWarnings === true
     // Courtesy check: the document prints the client's billing address. Warn (acknowledgeable) when it is empty.
     if (!acknowledged) {
-      const clientDetails = await loadClientDetailsWarning(service, session.workspaceId, project.client_id)
-      if (clientDetails) {
-        const msg = `${clientDetails.clientName} has no ${clientDetails.missing.join(' or ')} on file, so the SOW will go out without it.`
+      const details = await loadSendDetailsWarnings(service, session.workspaceId, project.client_id, 'sow')
+      if (details) {
         return NextResponse.json({
-          error: msg, warnings: [msg, ...validation.warnings], needsAcknowledgement: true, clientDetails,
+          error: details.messages[0], warnings: [...details.messages, ...validation.warnings], needsAcknowledgement: true,
+          clientDetails: details.clientDetails, agencyDetails: details.agencyDetails,
         }, { status: 409 })
       }
     }

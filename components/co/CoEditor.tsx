@@ -6,7 +6,7 @@ import { formatCoAmount } from '@/lib/documents/co-money'
 import { hasVisibleText } from '@/lib/documents/visible-text'
 import { nanoid } from 'nanoid'
 import { roundCurrency } from '@/lib/utils/format'
-import ClientDetailsWarningModal, { type ClientDetailsInfo } from '@/components/documents/ClientDetailsWarningModal'
+import ClientDetailsWarningModal, { type ClientDetailsInfo, type AgencyDetailsInfo } from '@/components/documents/ClientDetailsWarningModal'
 import { MAX_UPLOAD_BYTES, MAX_UPLOAD_LABEL } from '@/lib/utils/upload-limits'
 
 // `kind: 'adjustment'` marks a system-written negotiation line ("Negotiated discount…") from an accepted
@@ -24,7 +24,7 @@ export default function CoEditor({ projId, coId }: Props) {
   const [loading,      setLoading]      = useState(!!coId)
   const [saving,       setSaving]       = useState(false)
   const [sending,      setSending]      = useState(false)
-  const [clientWarn,   setClientWarn]   = useState<{ info: ClientDetailsInfo; warnings: string[] } | null>(null)
+  const [clientWarn,   setClientWarn]   = useState<{ info: ClientDetailsInfo | null; agency: AgencyDetailsInfo | null; warnings: string[] } | null>(null)
   const [error,        setError]        = useState('')
   const [saveStatus,   setSaveStatus]   = useState<'idle'|'saving'|'saved'|'error'>('idle')
   const [title,        setTitle]        = useState('')
@@ -425,8 +425,8 @@ export default function CoEditor({ projId, coId }: Props) {
         body: JSON.stringify({ expiresInDays: parseInt(expiresInDays, 10) || 30, ...(alreadyAcknowledged ? { acknowledgeWarnings: true } : {}) }),
       })
       const json = await res.json().catch(() => ({} as any))
-      if (res.status === 409 && json.needsAcknowledgement && json.clientDetails) {
-        setClientWarn({ info: json.clientDetails, warnings: Array.isArray(json.warnings) && json.warnings.length ? json.warnings : [json.error] })
+      if (res.status === 409 && json.needsAcknowledgement && (json.clientDetails || json.agencyDetails)) {
+        setClientWarn({ info: json.clientDetails || null, agency: json.agencyDetails || null, warnings: Array.isArray(json.warnings) && json.warnings.length ? json.warnings : [json.error] })
         return
       }
       if (!res.ok) throw new Error(json.error || 'Send failed')
@@ -788,7 +788,7 @@ export default function CoEditor({ projId, coId }: Props) {
 
       {clientWarn && (
         <ClientDetailsWarningModal
-          info={clientWarn.info} warnings={clientWarn.warnings} docLabel="change order" busy={sending}
+          info={clientWarn.info} agency={clientWarn.agency} warnings={clientWarn.warnings} docLabel="change order" busy={sending}
           onCancel={() => setClientWarn(null)}
           onSendAnyway={async () => { await handleSend(true); setClientWarn(null) }}
         />

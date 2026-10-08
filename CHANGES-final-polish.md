@@ -26,3 +26,6 @@
 - SOW PDF dates use the drafting language's month names (was "7 October 2026" in every language)
 - Portal SOW view: localized Owner / Yes cells, "to be defined", contract-value label; shows signer position + company once signed
 - tests/sow-language-completeness.test.ts guards every non-English language
+
+## Round 5
+- Pre-send warning for the agency's OWN details (business address; signature on SOW/CO) on SOW, CO and invoice sends, merged into the same modal as the client-details warning, with "Add business address" / "Add signature" buttons
