@@ -99,9 +99,11 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       // read-modify-write of the whole metadata object lost any other key written between the read and the write.
       // Falls back to the guarded whole-object write only when the function isn't installed yet.
       const { data: merged, error: mergeErr } = await (service as any)
-        .rpc('sow_set_metadata_key', { p_sow_id: id, p_key: 'msaReference', p_value: cleaned || null })
+        .rpc('sow_set_metadata_key', { p_sow_id: id, p_key: 'msaReference', p_value: cleaned || null, p_enforce_approval_lock: true })
+      // FIX (SOW lifecycle pass 24, B2): migration 156 makes the function refuse while an approval request is pending (under the row lock);
+      // a false result is either that or the send lock, so the answer names neither falsely.
       if (!mergeErr) {
-        if (!merged) return NextResponse.json({ error: LOCKED_MSG }, { status: 409 })
+        if (!merged) return NextResponse.json({ error: 'This SOW can no longer be edited (it was sent, or an approval request is pending).' }, { status: 409 })
         return NextResponse.json({ ok: true })
       }
       // FIX (SOW lifecycle independent pass 15, B2): only fall back when the function is not installed. Any other error

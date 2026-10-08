@@ -116,9 +116,15 @@ export async function sendSowDocument(service: any, params: {
     return { ok: false, error: validation.warnings[0], status: 409, warnings: validation.warnings }
 
   // One live SOW per project: refuse while another version is out for signature or signed.
-  const { data: liveOthers } = await (service as any)
+  // FIX (SOW lifecycle pass 24, B1): a failed read left `liveOthers` undefined, which passed this check (fail-open) and let a second
+  // live SOW go out. Fail closed, like api/sow/generate's own live-SOW check.
+  const { data: liveOthers, error: liveOthersErr } = await (service as any)
     .from('sow_documents').select('id, status, version')
     .eq('project_id', project.id).neq('id', sowId).in('status', ['awaiting_signature', 'signed']).limit(1)
+  if (liveOthersErr) {
+    console.error('SOW send: live-SOW check failed:', liveOthersErr.message)
+    return { ok: false, error: 'Could not check this project\u2019s other SOWs. Please try again.', status: 500 }
+  }
   if (liveOthers && liveOthers.length > 0) {
     return {
       ok: false, status: 409,
