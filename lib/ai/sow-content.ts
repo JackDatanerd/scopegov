@@ -810,6 +810,21 @@ const FALLBACK_STRINGS: Record<string, FallbackStrings> = {
   },
 }
 
+// Payment-structure wording for the fallback (non-AI) Payment Terms section, per drafting language.
+// The English labels live in app/api/sow/generate/route.ts and also feed the AI prompt; the fallback prints
+// the label directly into the document, so it must not be English inside a non-English SOW.
+const PAYMENT_STRUCTURE_WORDS: Record<string, Record<string, string>> = {
+  es: { '50_50': '50% al inicio, 50% a la entrega final', '100_upfront': '100% antes de comenzar el trabajo', milestones: 'Pagadero por hitos, según se define a continuación', monthly: 'Facturación mensual por adelantado', on_delivery: '100% a la entrega final y aprobación' },
+  fr: { '50_50': '50 % à la commande, 50 % à la livraison finale', '100_upfront': '100 % avant le début des travaux', milestones: 'Payable par jalons, comme défini ci-dessous', monthly: 'Facturé mensuellement à l\'avance', on_delivery: '100 % à la livraison finale et à l\'approbation' },
+  pt: { '50_50': '50% no início, 50% na entrega final', '100_upfront': '100% antes do início do trabalho', milestones: 'Pagável por marcos, conforme definido abaixo', monthly: 'Faturado mensalmente de forma antecipada', on_delivery: '100% na entrega final e aprovação' },
+  de: { '50_50': '50 % bei Beauftragung, 50 % bei Endabnahme', '100_upfront': '100 % vor Arbeitsbeginn', milestones: 'Zahlbar in Meilensteinen, wie unten festgelegt', monthly: 'Monatlich im Voraus abgerechnet', on_delivery: '100 % bei Endabnahme und Freigabe' },
+  sw: { '50_50': '50% mapema, 50% wakati wa uwasilishaji wa mwisho', '100_upfront': '100% kabla ya kazi kuanza', milestones: 'Italipwa kwa hatua muhimu kama ilivyoainishwa hapa chini', monthly: 'Hutozwa kila mwezi mapema', on_delivery: '100% wakati wa uwasilishaji wa mwisho na idhini' },
+}
+function localizedPaymentLabel(input: { language?: string; paymentStructure: string; paymentLabel: string }): string {
+  if (!isSowLanguage(input.language) || input.language === 'en') return input.paymentLabel
+  return PAYMENT_STRUCTURE_WORDS[input.language]?.[input.paymentStructure] ?? input.paymentLabel
+}
+
 export function buildFallbackSections(input: SowContentInput): Record<string, string> {
   const t = (isSowLanguage(input.language) ? FALLBACK_STRINGS[input.language] : undefined) || FALLBACK_STRINGS.en
 
@@ -831,8 +846,8 @@ export function buildFallbackSections(input: SowContentInput): Record<string, st
     payment: input.retainer
       ? `<p>${t.paymentMonthly}: <strong>${escapeHtml(String(input.currency))} ${escapeHtml(String(input.contractValue))}</strong> ${t.perMonth}. ${
           input.retainer.months ? t.paymentTerm(input.retainer.months, escapeHtml(retainerTotalText(input) || '')) : t.paymentOpenEnded
-        }. ${t.paymentStructure}: ${escapeHtml(input.paymentLabel)}.</p>`
-      : `<p>${t.paymentTotal}: <strong>${escapeHtml(String(input.currency))} ${escapeHtml(String(input.contractValue))}</strong>. ${t.paymentStructure}: ${escapeHtml(input.paymentLabel)}.</p>`,
+        }. ${t.paymentStructure}: ${escapeHtml(localizedPaymentLabel(input))}.</p>`
+      : `<p>${t.paymentTotal}: <strong>${escapeHtml(String(input.currency))} ${escapeHtml(String(input.contractValue))}</strong>. ${t.paymentStructure}: ${escapeHtml(localizedPaymentLabel(input))}.</p>`,
     revisions: `<p>${t.revisions(input.revisionRounds)}</p>`,
     ip: `<p>${t.ip(escapeHtml(input.agencyName))}</p>`,
     confidentiality: `<p>${t.confidentiality}</p>`,

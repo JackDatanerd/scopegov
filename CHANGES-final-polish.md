@@ -20,3 +20,9 @@
 - Governing-law warning now keys off the workspace setting (works for any drafting language)
 - AI drafting: Dispute Resolution no longer restates the governing law
 - Dashboard: dismissible 2FA nudge for sensitive roles without a second factor
+
+## Round 4 (non-English SOW completeness)
+- Fallback Payment Terms prints the payment structure in the drafting language (was English)
+- SOW PDF dates use the drafting language's month names (was "7 October 2026" in every language)
+- Portal SOW view: localized Owner / Yes cells, "to be defined", contract-value label; shows signer position + company once signed
+- tests/sow-language-completeness.test.ts guards every non-English language

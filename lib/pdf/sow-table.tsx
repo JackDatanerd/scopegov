@@ -11,7 +11,7 @@
 
 import React from 'react'
 import { View, Text } from '@react-pdf/renderer'
-import { SOW_TABLE_SCHEMAS, columnLabel, localizeFixedCell, parseTableAmount, type SowTableSectionId, type SowTableRow } from '@/lib/sow/table-schema'
+import { SOW_TABLE_SCHEMAS, columnLabel, localizeFixedCell, toBeDefinedLabel, parseTableAmount, type SowTableSectionId, type SowTableRow } from '@/lib/sow/table-schema'
 
 import { PDF_FONT } from '@/lib/pdf/fonts'
 // FIX (section-9 audit, 9-G7): column headers were hardcoded English and
@@ -59,7 +59,7 @@ export function SowTable({ sectionId, rows, language, lead, currency }: { sectio
       <>
         {lead}
         <View style={{ border: '1 dashed #D8D4C8', borderRadius: 4, padding: '10 12' }}>
-          <Text style={{ fontSize: 9, color: '#B0B0B0', fontFamily: PDF_FONT.italic }}>{language === 'sw' ? 'Itafafanuliwa' : language === 'es' ? 'Por definir' : language === 'fr' ? 'À définir' : language === 'pt' ? 'A definir' : language === 'de' ? 'Noch festzulegen' : 'To be defined'}</Text>
+          <Text style={{ fontSize: 9, color: '#B0B0B0', fontFamily: PDF_FONT.italic }}>{toBeDefinedLabel(language)}</Text>
         </View>
       </>
     )

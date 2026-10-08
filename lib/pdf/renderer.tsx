@@ -263,11 +263,13 @@ function stripHtml(html: string): string {
 // Calendar dates ('2026-10-05', or a UTC-midnight timestamp of one) have no zone: print them in UTC so they never
 // shift a day. Real instants (sent/accepted/signed/generated) print in the workspace's own timezone — the server
 // runs in UTC, so without this a document stamped 00:00–03:00 EAT printed the previous day.
-function fmtDate(iso: string, tz?: string | null) {
+// Month names follow the document's drafting language (a Swahili SOW must not print "7 October 2026").
+const DATE_LOCALES: Record<string, string> = { es: 'es', fr: 'fr', pt: 'pt', de: 'de', sw: 'sw' }
+function fmtDate(iso: string, tz?: string | null, language?: string | null) {
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return '—'
   const dateOnly = /^\d{4}-\d{2}-\d{2}(T00:00:00(\.0+)?(Z|\+00:00)?)?$/.test(String(iso))
-  return new Intl.DateTimeFormat('en-GB', {
+  return new Intl.DateTimeFormat((language && DATE_LOCALES[language]) || 'en-GB', {
     day: 'numeric', month: 'long', year: 'numeric',
     timeZone: dateOnly ? 'UTC' : resolveTimeZone(tz),
   }).format(d)
@@ -453,7 +455,7 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
             <Text style={s.h1}>{t.sow}</Text>
             <Text style={s.meta}>{data.documentNumber ? `${data.documentNumber} · ` : ''}{t.version} {data.version} · {data.projectName}</Text>
             {data.msaReference && <Text style={[s.meta, { marginTop: 2 }]}>{data.msaReference}</Text>}
-            {data.signedAt && <Text style={[s.meta, { color: c, marginTop: 2 }]}>{t.signed} {fmtDate(data.signedAt, data.timeZone)}</Text>}
+            {data.signedAt && <Text style={[s.meta, { color: c, marginTop: 2 }]}>{t.signed} {fmtDate(data.signedAt, data.timeZone, data.language)}</Text>}
           </View>
           <View style={{ alignItems: 'flex-end' }}>
             {logo
@@ -544,7 +546,7 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
                   </View>
                   <Text style={[s.td, s.mono, { width: 90, textAlign: 'right' }]}>{data.currency} {fmtMoney(m.amount)}</Text>
                   <Text style={[s.td, { width: 90, textAlign: 'right', color: '#909090', fontSize: 9 }]}>
-                    {m.dueDate ? fmtDate(m.dueDate, data.timeZone) : '—'}
+                    {m.dueDate ? fmtDate(m.dueDate, data.timeZone, data.language) : '—'}
                   </Text>
                 </View>
               )
@@ -588,7 +590,7 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
             </View>
             <View style={s.sigRule} />
             <Text style={s.sigName}>{[data.agencySignatoryName || data.agencyName, data.agencySignatoryTitle].filter(Boolean).join(', ')}</Text>
-            {data.signedAt && <Text style={s.sigDate}>{fmtDate(data.signedAt, data.timeZone)}</Text>}
+            {data.signedAt && <Text style={s.sigDate}>{fmtDate(data.signedAt, data.timeZone, data.language)}</Text>}
           </View>
           <View style={s.sigCol}>
             <Text style={s.sigLabel}>{t.clientLabel} — {data.clientSignerCompany || data.clientCompany || data.clientName}</Text>
@@ -599,7 +601,7 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
             {data.signedBy
               ? <>
                   <Text style={[s.sigName, { color: c }]}>{[data.signedBy, data.clientSignerTitle].filter(Boolean).join(', ')}</Text>
-                  {data.signedAt && <Text style={s.sigDate}>{fmtDate(data.signedAt, data.timeZone)}</Text>}
+                  {data.signedAt && <Text style={s.sigDate}>{fmtDate(data.signedAt, data.timeZone, data.language)}</Text>}
                 </>
               : <Text style={[s.sigName, { color: '#B0B0B0' }]}>{t.notYetSigned}</Text>}
           </View>
@@ -608,7 +610,7 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
         {/* Footer */}
         <View style={s.footer}>
           <Text>{t.scopeGovBy} <Link src={SCOPEGOV_URL} style={s.footerLink}>ScopeGov</Link></Text>
-          <Text>{t.generated} {fmtDate(new Date().toISOString(), data.timeZone)}</Text>
+          <Text>{t.generated} {fmtDate(new Date().toISOString(), data.timeZone, data.language)}</Text>
         </View>
 
         {/* Page numbers — fixed, only shown once the document actually

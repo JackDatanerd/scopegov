@@ -9,7 +9,7 @@ import { formatAddress } from '@/lib/utils/format'
 import { checkRevokedToken, verifySowJwt } from './_shared'
 import { isWorkspaceDeleted } from '@/lib/utils/workspace-secret'
 
-const SOW_COLUMNS = `id, version, status, sections, metadata, expires_at, signed_at, signed_by, client_signature_data, first_viewed_at,
+const SOW_COLUMNS = `id, version, status, sections, metadata, expires_at, signed_at, signed_by, signer_title, signer_company, client_signature_data, first_viewed_at,
   projects(id, name, disc, contract_value, currency, type, retainer_duration_months, client_id,
     clients(name, email, company_name, billing_address, vat_number),
     workspaces(id, agency_name, brand_colour, logo_storage_path, agency_signature_data,
@@ -134,6 +134,7 @@ async function buildSowResponse(sow: any, service: any, userAgent: string | null
       signedBy: sow.signed_by, signedAt: sow.signed_at,
       clientSignatureData: sow.client_signature_data || null,
       branding: await portalBranding(sow, service),
+      signerTitle: sow.signer_title || null, signerCompany: sow.signer_company || null,
     }
   }
   if (sow.status === 'withdrawn')  return { state: 'withdrawn', branding: await portalBranding(sow, service) }

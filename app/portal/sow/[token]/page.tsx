@@ -3,7 +3,8 @@ import { useState, useEffect, useRef } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import SignaturePad, { type SignaturePadHandle } from '@/components/ui/SignaturePad'
 import PortalLegalFooter from '@/components/portal/PortalLegalFooter'
-import { isTableSection, SOW_TABLE_SCHEMAS, columnLabel, type SowTableSectionId, type SowTableRow } from '@/lib/sow/table-schema'
+import { pdfChrome } from '@/lib/pdf/chrome-labels'
+import { isTableSection, SOW_TABLE_SCHEMAS, columnLabel, localizeFixedCell, toBeDefinedLabel, type SowTableSectionId, type SowTableRow } from '@/lib/sow/table-schema'
 // FIX (deep audit, client-facing/signing section): this page formatted money with raw
 // .toLocaleString() — no minimumFractionDigits, so a figure with cents (1234.50) could print as
 // "1,234.5", and one without (1500.00) as "1,500" — inconsistent, and on a contract figure reads
@@ -65,7 +66,7 @@ export default function SowPortalPage() {
   const [submitting, setSubmitting] = useState(false)
   const [error,     setError]     = useState('')
   const [activeSection, setActiveSection] = useState<string | null>(null)
-  const [signedInfo, setSignedInfo] = useState<{ signedBy: string | null; clientSignatureData: string | null } | null>(null)
+  const [signedInfo, setSignedInfo] = useState<{ signedBy: string | null; clientSignatureData: string | null; signerTitle?: string | null; signerCompany?: string | null } | null>(null)
   // Agency branding for terminal-state screens (signed / declined / ...), where the API returns
   // no `sow` object. Without this a revisit rendered "The team at undefined".
   const [branding, setBranding] = useState<{ agencyName: string | null; brandColour: string; logoUrl: string | null } | null>(null)
@@ -79,7 +80,7 @@ export default function SowPortalPage() {
         if (json.state) {
           setState(json.state as PortalState)
           if (json.branding) setBranding(json.branding)
-          if (json.state === 'signed') setSignedInfo({ signedBy: json.signedBy, clientSignatureData: json.clientSignatureData })
+          if (json.state === 'signed') setSignedInfo({ signedBy: json.signedBy, clientSignatureData: json.clientSignatureData, signerTitle: json.signerTitle, signerCompany: json.signerCompany })
           return
         }
         setSow(json.sow)
@@ -106,7 +107,7 @@ export default function SowPortalPage() {
       })
       const json = await res.json()
       if (!res.ok) throw new Error(json.error)
-      setSignedInfo({ signedBy: signerName.trim(), clientSignatureData: signatureData })
+      setSignedInfo({ signedBy: signerName.trim(), clientSignatureData: signatureData, signerTitle: signerTitle.trim() || null, signerCompany: signerCompany.trim() || null })
       setState('signed')
       // FIX (re-audit, portal section): the sign route reissues a fresh,
       // long-lived token for post-signature access (see sign/route.ts) and
@@ -227,7 +228,7 @@ export default function SowPortalPage() {
           {state === 'signed' && signedInfo?.clientSignatureData && (
             <div style={{ display: 'inline-block', background: '#fff', border: '1px solid #E5E5E0', borderRadius: 6, padding: '14px 22px', marginTop: 24 }}>
               <img src={signedInfo.clientSignatureData} alt="Your signature" style={{ height: 56, display: 'block', margin: '0 auto' }} />
-              <div style={{ fontSize: 11, color: '#909090', marginTop: 8, borderTop: '1px solid #F0F0EA', paddingTop: 6 }}>{signedInfo.signedBy}</div>
+              <div style={{ fontSize: 11, color: '#909090', marginTop: 8, borderTop: '1px solid #F0F0EA', paddingTop: 6 }}>{[signedInfo.signedBy, signedInfo.signerTitle].filter(Boolean).join(', ')}{signedInfo.signerCompany ? ` — ${signedInfo.signerCompany}` : ''}</div>
             </div>
           )}
           {/* FIX (audit): no client-facing SOW PDF route existed at all —
@@ -289,7 +290,7 @@ export default function SowPortalPage() {
                 <div style={{ fontSize: 22, fontFamily: 'Georgia,serif', color: accent, fontWeight: 400 }}>
                   {sow.currency} {formatAmount(sow.contractValue, sow.currency)}{sow.isRetainer ? ' / mo' : ''}
                 </div>
-                <div style={{ fontSize: 11, color: '#909090', marginTop: 2 }}>{sow.isRetainer ? 'Monthly retainer fee' : 'Contract value'}</div>
+                <div style={{ fontSize: 11, color: '#909090', marginTop: 2 }}>{sow.isRetainer ? pdfChrome(sow.language).monthlyRetainer : pdfChrome(sow.language).contractValue}</div>
                 {sow.isRetainer && (sow.retainerMonths || 0) > 0 && (
                   <div style={{ fontSize: 11, color: '#909090', marginTop: 1 }}>
                     {sow.retainerMonths} months · {sow.currency} {formatAmount(Math.round(sow.contractValue * (sow.retainerMonths as number) * 100) / 100, sow.currency)} total
@@ -610,7 +611,7 @@ function SowPortalTable({ sectionId, rows, language }: { sectionId: SowTableSect
       <div style={{
         border: '1px dashed #D8D4C8', borderRadius: 4, padding: '10px 12px', marginTop: 8,
       }}>
-        <span style={{ fontSize: 13, color: '#B0B0B0', fontStyle: 'italic' }}>To be defined</span>
+        <span style={{ fontSize: 13, color: '#B0B0B0', fontStyle: 'italic' }}>{toBeDefinedLabel(language)}</span>
       </div>
     )
   }
@@ -637,7 +638,7 @@ function SowPortalTable({ sectionId, rows, language }: { sectionId: SowTableSect
                 textAlign: col.align || 'left', padding: '8px 10px', color: '#333',
                 borderBottom: i === rows.length - 1 ? 'none' : '1px solid #F2F0EA',
               }}>
-                {row[col.key] || '—'}
+                {localizeFixedCell(col.key, row[col.key] || '', language) || '—'}
               </td>
             ))}
           </tr>

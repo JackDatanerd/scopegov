@@ -39,7 +39,7 @@ describe('PDF dates use the workspace timezone', () => {
   it('every fmtDate call passes the workspace timezone', () => {
     const lines = src.split('\n').filter(l => l.includes('fmtDate(') && !l.includes('function fmtDate'))
     expect(lines.length).toBeGreaterThan(5)
-    for (const l of lines) expect(l.match(/fmtDate\(/g)!.length).toBe((l.match(/data\.timeZone\)/g) ?? []).length)
+    for (const l of lines) expect(l.match(/fmtDate\(/g)!.length).toBe((l.match(/data\.timeZone(?:, data\.language)?\)/g) ?? []).length)
   })
   it.each([
     'app/api/pdf/invoice/[id]/route.ts', 'app/api/pdf/sow/[id]/route.ts', 'app/api/pdf/co/[id]/route.ts',

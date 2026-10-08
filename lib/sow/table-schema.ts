@@ -179,6 +179,17 @@ const YES_NO_WORDS: Record<string, { yes: string; no: string }> = {
   es: { yes: 'Sí', no: 'No' }, fr: { yes: 'Oui', no: 'Non' }, pt: { yes: 'Sim', no: 'Não' },
   de: { yes: 'Ja', no: 'Nein' }, sw: { yes: 'Ndiyo', no: 'Hapana' },
 }
+export function toBeDefinedLabel(language?: string): string {
+  switch (language) {
+    case 'sw': return 'Itafafanuliwa'
+    case 'es': return 'Por definir'
+    case 'fr': return 'À définir'
+    case 'pt': return 'A definir'
+    case 'de': return 'Noch festzulegen'
+    default: return 'To be defined'
+  }
+}
+
 export function localizeFixedCell(key: string, raw: string, language?: string): string {
   if (!language || language === 'en' || !raw) return raw
   if (key === 'owner') return OWNER_WORDS[language]?.[raw.trim()] ?? raw
