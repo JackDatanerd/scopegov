@@ -1,0 +1,10 @@
+AI draft — forced tool_choice rejected by newer models (base: b73f416)
+
+B1  app/api/co/draft/route.ts, app/api/invoices/draft/route.ts, lib/ai/tool-call.ts (new)
+    "Draft with AI" forced a tool call (tool_choice type 'tool'). With ANTHROPIC_MODEL pointed at a model that rejects
+    that (400 "tool_choice: type "tool" and "any" are not supported for this model") every CO draft returned a 500.
+    New createWithTool() keeps the forced call where it works; on that specific 400 it retries once with
+    tool_choice 'auto' and an explicit "call the tool" instruction, and remembers the model for the instance.
+    Both draft routes use it (the invoice route is hardcoded to Haiku today, so this is future-proofing).
+
+Tests: tests/ai-tool-call.test.ts (3). Related CO/trial suites pass; tsc --noEmit clean. No migration.

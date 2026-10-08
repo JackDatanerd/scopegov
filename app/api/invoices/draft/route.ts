@@ -18,6 +18,7 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { canReadProject } from '@/lib/utils/project-access'
 import { checkAiRateLimit, recordAiUsage } from '@/lib/utils/rate-limit'
 import Anthropic from '@anthropic-ai/sdk'
+import { createWithTool } from '@/lib/ai/tool-call'
 import { MAX_INVOICE_LINE_ITEMS, MAX_DESCRIPTION_LEN, MAX_QUANTITY } from '@/lib/documents/invoice-totals'
 
 let _client: Anthropic | null = null
@@ -133,13 +134,12 @@ Rules:
 - quantity should reflect a sensible unit (hours for T&M, 1 for a fixed-fee milestone or a flat expense reimbursement) — default to 1 if unclear.
 - Keep the title client-facing and professional — no internal jargon, no placeholder text like "TBD".`
 
-    const msg = await anthropicClient().messages.create({
+    const msg = await createWithTool(anthropicClient(), {
       model:       'claude-haiku-4-5-20251001',
       max_tokens:  1000,
       tools:       [DRAFT_INVOICE_TOOL],
-      tool_choice: { type: 'tool', name: 'draft_invoice' },
       messages:    [{ role: 'user', content: prompt }],
-    })
+    }, 'draft_invoice')
 
     const toolUse = msg.content.find((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use')
     if (!toolUse) {
