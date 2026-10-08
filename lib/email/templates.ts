@@ -66,6 +66,12 @@ const C = {
   surface:  '#FFFFFF',
 }
 
+// FIX (re-audit, notifications section): headerIcon was accepted and typed as a param, and four security-email senders
+// each passed a distinct icon (🔐/🔓/🔑) to tell MFA-enabled / MFA-disabled / password-changed apart at a glance, but it
+// was never interpolated anywhere, so every email rendered an identical header. It is interpolated below.
+// FIX (Notifications & email pass 19 — B1): that explanation lived in an HTML comment INSIDE the returned template, so
+// it was sent in the HTML of every email (client-facing ones included). Developer notes must stay in JS comments;
+// nothing inside the template literal may be an HTML comment carrying prose (tests/email-no-leaked-comments.test.ts).
 function baseTemplate({
   agencyName, headerColour = C.green, headerIcon = '⚖️',
   label, headline, body, cta, ctaUrl, ctaSecondary, footerNote,
@@ -100,14 +106,6 @@ function baseTemplate({
     <!-- Header -->
     <div style="background:${headerColour};border-radius:8px 8px 0 0;padding:22px 28px;">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:3px;">
-        <!-- FIX (re-audit, notifications section): headerIcon was accepted
-             and typed as a param, and four security-email senders each
-             passed a distinct icon (🔐/🔓/🔑) specifically to visually
-             differentiate MFA-enabled vs MFA-disabled vs password-changed
-             at a glance — but it was never actually interpolated anywhere
-             in this template. Every email using baseTemplate rendered an
-             identical header regardless of what was passed; the
-             differentiation those four senders were built for never shipped. -->
         <span style="font-size:15px;line-height:1;">${headerIcon}</span>
         <span style="font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:rgba(255,255,255,.6);">
           ${label}
