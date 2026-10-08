@@ -17,7 +17,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { canReadProject } from '@/lib/utils/project-access'
-import { checkAiRateLimit, recordAiUsage } from '@/lib/utils/rate-limit'
+import { claimAiRateSlot } from '@/lib/utils/rate-limit'
 import Anthropic from '@anthropic-ai/sdk'
 import { createWithTool } from '@/lib/ai/tool-call'
 import { aiModel, structuredJobParams, scaleMaxTokens } from '@/lib/ai/model'
@@ -106,7 +106,11 @@ export async function POST(request: NextRequest) {
     if (!(await canReadProject(service, session, projectId)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
-    const limited = await checkAiRateLimit(service, session.id, 'invoice.draft')
+    // FIX (SOW lifecycle pass 23, B1): the slot is CLAIMED here (insert, count, back out if over) instead of checked here and
+    // recorded after the model call. Check-then-record let a burst of parallel requests all read the same under-the-limit
+    // count and all make paid calls ; a call that threw after being billed was never counted at all.
+    // Same fix co/draft and guardian/check already have; see claimAiRateSlot. The slot stays used even if the call fails.
+    const limited = await claimAiRateSlot(service, session.workspaceId, session.id, 'invoice.draft')
     if (!limited.allowed) return NextResponse.json({ error: limited.message }, { status: 429 })
 
     const billingTypeGuidance: Record<string, string> = {
@@ -173,7 +177,6 @@ Rules:
       .slice(0, MAX_INVOICE_LINE_ITEMS)
     const title = typeof parsed.title === 'string' ? parsed.title.trim().slice(0, 200) : ''
 
-    await recordAiUsage(service, session.workspaceId, session.id, 'invoice.draft')
     return NextResponse.json({ title, lineItems })
   } catch (err) {
     console.error('Invoice draft error:', err)

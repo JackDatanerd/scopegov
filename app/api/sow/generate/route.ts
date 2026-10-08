@@ -23,7 +23,7 @@ import { applyAgencyStandards, ensureContractValueStated, type AgencyStandards }
 import { pickAgencyStandards } from '@/lib/utils/agency-standards'
 import { canReadProject } from '@/lib/utils/project-access'
 import { isTerminalStatus } from '@/lib/utils/project-status'
-import { checkAiRateLimit, recordAiUsage } from '@/lib/utils/rate-limit'
+import { claimAiRateSlot, recordAiUsage } from '@/lib/utils/rate-limit'
 import Anthropic from '@anthropic-ai/sdk'
 import { aiModel, structuredJobParams, scaleMaxTokens } from '@/lib/ai/model'
 import {
@@ -192,7 +192,12 @@ export async function POST(request: NextRequest) {
     }
 
     // FIX (audit round 3): no rate limiting existed on this route.
-    const limited = await checkAiRateLimit(service, session.id, 'sow.generate')
+    // FIX (SOW lifecycle pass 23, B1): the slot is CLAIMED here (insert, count, back out if over) instead of checked here and
+    // recorded after the model call. Check-then-record let a burst of parallel requests all read the same under-the-limit
+    // count and all make paid calls (generate: up to 3 each); a call that threw after being billed was never counted at all.
+    // Same fix co/draft and guardian/check already have; see claimAiRateSlot. The slot stays used even if the call fails.
+    // The claim covers the first model call; each retry below records one more, so usage still counts every call.
+    const limited = await claimAiRateSlot(service, session.workspaceId, session.id, 'sow.generate')
     if (!limited.allowed) return NextResponse.json({ error: limited.message }, { status: 429 })
 
     const agencyName    = project.workspaces?.agency_name || session.agencyName
@@ -295,13 +300,13 @@ export async function POST(request: NextRequest) {
     for (let attempt = 1; attempt <= MAX_ATTEMPTS && !aiSections; attempt++) {
       const prompt = buildSowContentPrompt(contentInput, { emphatic: attempt > 1 })
       try {
+        if (attempt > 1) await recordAiUsage(service, session.workspaceId, session.id, 'sow.generate')
         const msg = await anthropicClient().messages.create({
           model:      MODEL,
           max_tokens: scaleMaxTokens(MODEL, 8000),
           ...structuredJobParams(MODEL),
           messages:   [{ role: 'user', content: prompt }],
         })
-        await recordAiUsage(service, session.workspaceId, session.id, 'sow.generate')
         const raw = msg.content.filter(b => b.type === 'text').map((b: any) => b.text).join('')
         lastStopReason = msg.stop_reason
         // FIX (SOW lifecycle independent pass 13, B1): a reply cut off at max_tokens can end mid-sentence in the last prose
@@ -426,14 +431,17 @@ export async function POST(request: NextRequest) {
     // Check for existing draft SOW on this project
     // FIX (fresh independent audit, section 9): `sections` added to the select — see
     // the visible-flag preservation right below, in the existingSow branch.
-    const { data: existingSow } = await (service as any)
+    // FIX (SOW lifecycle pass 23, B2): the read's error was never looked at (and .single() errors on zero rows), so a transient failure
+    // looked like "no draft" and fell into the insert branch, which then answered a misleading "A draft SOW was just created".
+    const { data: existingSow, error: existingSowErr } = await (service as any)
       .from('sow_documents')
       .select('id,version,metadata,sections')
       .eq('project_id', projectId)
       .eq('status', 'draft')
       .order('version', { ascending: false })
       .limit(1)
-      .single()
+      .maybeSingle()
+    if (existingSowErr) throw new Error(`draft read failed: ${existingSowErr.message}`)
 
     let sowId: string
 

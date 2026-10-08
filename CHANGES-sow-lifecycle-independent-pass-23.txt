@@ -1,0 +1,7 @@
+SOW lifecycle independent pass 23
+B1 (medium) sow.generate / sow.regenerateSection / sow.parseBrief (+ traced: invoice.draft) used check-then-call-then-record rate limiting, so a parallel burst
+   bypassed the limit and a billed call that threw was never counted. Now claimAiRateSlot (atomic claim before the first paid call), as co/draft and guardian already do.
+   generate counts each retry attempt beyond the claimed first.
+B2 generate: existing-draft read checked its error (maybeSingle) instead of treating a failure as "no draft".
+B3 send-sow: failed project status move to Awaiting Signature is logged.
+Tests: tests/sow-lifecycle-independent-pass-23.test.ts (new); two source-scanning tests updated for the claim pattern.

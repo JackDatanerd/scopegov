@@ -218,10 +218,13 @@ export async function sendSowDocument(service: any, params: {
 
   // Only move projects that are still pre-signature. An Active/Complete/Archived project
   // must not be dragged back to "Awaiting Signature" by sending another version.
-  await (service as any).from('projects').update({
+  // FIX (SOW lifecycle pass 23, B3): the result was never read, so a failed write left the project at its old stage while the SOW was out
+  // for signature, with nothing logged. Not fatal (the SOW is already sent), but it must leave a trace.
+  const { error: projStatusErr } = await (service as any).from('projects').update({
     status:     'Awaiting Signature',
     updated_at: now,
   }).eq('id', project.id).in('status', ['Draft', 'Intake', 'Changes Requested', 'Stalled', 'Awaiting Signature'])
+  if (projStatusErr) console.error('SOW send: could not move the project to Awaiting Signature:', projStatusErr.message)
 
   const portalUrl = `${process.env.NEXT_PUBLIC_PORTAL_URL || process.env.NEXT_PUBLIC_APP_URL}/portal/sow/${token}`
   const replyTo = await resolveReplyTo(service, workspaceId, actorEmail)

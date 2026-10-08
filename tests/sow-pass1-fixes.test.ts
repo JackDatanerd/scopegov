@@ -97,10 +97,10 @@ describe('reopen only clears its own stall (B2)', () => {
 })
 
 describe('regenerate-section counts the empty-reply call (B3)', () => {
-  it('records usage before the empty-content return', () => {
+  it('claims its rate slot before the model call, so every outcome (empty reply included) is counted', () => {
     const src = read('app/api/sow/regenerate-section/route.ts')
-    const i = src.indexOf("'Regeneration produced empty content'")
-    expect(src.slice(src.lastIndexOf('recordAiUsage', i) - 10, i)).toContain('recordAiUsage')
+    expect(src.indexOf('claimAiRateSlot(service')).toBeGreaterThan(-1)
+    expect(src.indexOf('claimAiRateSlot(service')).toBeLessThan(src.indexOf('messages.create'))
   })
 })
 

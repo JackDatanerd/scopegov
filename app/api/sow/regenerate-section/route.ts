@@ -8,7 +8,7 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { stripAndParse, stripHtml, countWords } from '@/lib/utils/format'
 import { sanitizeRichText, truncateText } from '@/lib/utils/sanitize'
 import { canReadProject } from '@/lib/utils/project-access'
-import { checkAiRateLimit, recordAiUsage } from '@/lib/utils/rate-limit'
+import { claimAiRateSlot } from '@/lib/utils/rate-limit'
 import { getPendingApprovalForDocument } from '@/lib/approvals/engine'
 import { AI_SECTION_IDS, sowLanguageName, sectionTitle as canonicalSectionTitle } from '@/lib/ai/sow-content'
 import { MAX_SECTION_CONTENT_LENGTH } from '@/lib/sow/sections'
@@ -86,7 +86,11 @@ export async function POST(request: NextRequest) {
     }
 
     // FIX (audit round 3): no rate limiting existed on this route.
-    const limited = await checkAiRateLimit(service, session.id, 'sow.regenerateSection')
+    // FIX (SOW lifecycle pass 23, B1): the slot is CLAIMED here (insert, count, back out if over) instead of checked here and
+    // recorded after the model call. Check-then-record let a burst of parallel requests all read the same under-the-limit
+    // count and all make paid calls (generate: up to 3 each); a call that threw after being billed was never counted at all.
+    // Same fix co/draft and guardian/check already have; see claimAiRateSlot. The slot stays used even if the call fails.
+    const limited = await claimAiRateSlot(service, session.workspaceId, session.id, 'sow.regenerateSection')
     if (!limited.allowed) return NextResponse.json({ error: limited.message }, { status: 429 })
 
     // Word ceiling. The model now sees the WHOLE current section (it used to see the first 800
@@ -129,7 +133,6 @@ No preamble, no explanation, no markdown fences. Just the HTML content.`
     // A cut-off answer is a partial section. Never hand that back to be autosaved over the
     // real one — keep the current content and say so.
     if (msg.stop_reason === 'max_tokens') {
-      await recordAiUsage(service, session.workspaceId, session.id, 'sow.regenerateSection')
       return NextResponse.json({
         content: sanitizeRichText(currentContent || ''), wordCount: currentWords, truncated: true,
       })
@@ -144,7 +147,6 @@ No preamble, no explanation, no markdown fences. Just the HTML content.`
     if (!raw || stripHtml(raw).length < 10) {
       // FIX (SOW lifecycle pass, B3): the model call already happened — count it, like every other
       // post-call exit in this route, so empty replies can't be retried past the rate limit for free.
-      await recordAiUsage(service, session.workspaceId, session.id, 'sow.regenerateSection')
       return NextResponse.json({ error: 'Regeneration produced empty content' }, { status: 500 })
     }
 
@@ -164,7 +166,6 @@ No preamble, no explanation, no markdown fences. Just the HTML content.`
     const newWords = countWords(raw)
     if (newWords > wordLimit * 1.1) {
       console.warn(`Section regeneration exceeded word limit (${newWords} > ${wordLimit}) — falling back to current content`)
-      await recordAiUsage(service, session.workspaceId, session.id, 'sow.regenerateSection')
       return NextResponse.json({
         content: sanitizeRichText(currentContent || ''),
         wordCount: currentWords,
@@ -175,7 +176,6 @@ No preamble, no explanation, no markdown fences. Just the HTML content.`
     // B6 (pass 10): see lib/sow/figures.ts — a rewrite may not silently change or drop amounts / round counts.
     if (!figuresPreserved(currentContent || '', raw, instruction)) {
       console.warn('Section regeneration changed the figures in the section — keeping current content', { sowId, sectionId })
-      await recordAiUsage(service, session.workspaceId, session.id, 'sow.regenerateSection')
       return NextResponse.json({
         content: sanitizeRichText(currentContent || ''),
         wordCount: currentWords,
@@ -183,8 +183,6 @@ No preamble, no explanation, no markdown fences. Just the HTML content.`
         figuresChanged: true,
       })
     }
-
-    await recordAiUsage(service, session.workspaceId, session.id, 'sow.regenerateSection')
     return NextResponse.json({ content: sanitizeRichText(raw), wordCount: newWords })
   } catch (err) {
     console.error('Section regeneration error:', err)

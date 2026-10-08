@@ -5,7 +5,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { stripAndParse } from '@/lib/utils/format'
 import { truncateText } from '@/lib/utils/sanitize'
-import { checkAiRateLimit, recordAiUsage } from '@/lib/utils/rate-limit'
+import { claimAiRateSlot } from '@/lib/utils/rate-limit'
 import { createServiceClient } from '@/lib/supabase/server'
 import Anthropic from '@anthropic-ai/sdk'
 import { aiModel, structuredJobParams, scaleMaxTokens } from '@/lib/ai/model'
@@ -39,7 +39,11 @@ export async function POST(request: NextRequest) {
     // FIX (audit round 3): no rate limiting existed on this or any other
     // AI-cost route. See lib/utils/rate-limit.ts.
     const service = createServiceClient()
-    const limited = await checkAiRateLimit(service, session.id, 'sow.parseBrief')
+    // FIX (SOW lifecycle pass 23, B1): the slot is CLAIMED here (insert, count, back out if over) instead of checked here and
+    // recorded after the model call. Check-then-record let a burst of parallel requests all read the same under-the-limit
+    // count and all make paid calls (generate: up to 3 each); a call that threw after being billed was never counted at all.
+    // Same fix co/draft and guardian/check already have; see claimAiRateSlot. The slot stays used even if the call fails.
+    const limited = await claimAiRateSlot(service, session.workspaceId, session.id, 'sow.parseBrief')
     if (!limited.allowed) return NextResponse.json({ error: limited.message }, { status: 429 })
 
     // Carry-forward §1.4: Haiku for brief parsing — fast, reliable extraction
@@ -76,15 +80,8 @@ Rules:
       messages:   [{ role: 'user', content: prompt }],
     })
 
-    // FIX (SOW lifecycle re-audit): this used to record usage AFTER
-    // stripAndParse — so a call that reached the model (the actual cost,
-    // and the thing checkAiRateLimit exists to bound) but then failed to
-    // parse as JSON never counted against the rate limit at all. Record
-    // the instant a real response comes back, before anything that can
-    // throw on this call's behalf, so a string of malformed replies can't
-    // be retried past the limit for free.
+    // (Usage is counted by the slot claimed before the call above, so a malformed or cut-off reply is never a free retry.)
     const raw = msg.content.filter(b => b.type === 'text').map((b: any) => b.text).join('')
-    await recordAiUsage(service, session.workspaceId, session.id, 'sow.parseBrief')
 
     // FIX (SOW lifecycle independent pass 15, B3): a reply cut off at max_tokens is incomplete JSON; say so instead of a
     // generic parse failure.

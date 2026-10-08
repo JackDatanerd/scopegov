@@ -122,7 +122,7 @@ describe('B6 — a refused regenerate costs nothing', () => {
     const src = read('app/api/sow/generate/route.ts')
     const probe = src.indexOf('draftProbe')
     expect(probe).toBeGreaterThan(-1)
-    expect(probe).toBeLessThan(src.indexOf('checkAiRateLimit(service'))
+    expect(probe).toBeLessThan(src.indexOf('claimAiRateSlot(service'))
     expect(probe).toBeLessThan(src.indexOf('recordAiUsage(service'))
     // the authoritative check against the freshly read draft is still there
     expect(src).toContain("getPendingApprovalForDocument(service, 'sow', existingSow.id)")
