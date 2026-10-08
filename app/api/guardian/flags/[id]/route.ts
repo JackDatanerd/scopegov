@@ -344,7 +344,10 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
           if (member.users.id !== session.id) {
             const canOpen = await filterToProjectAccess(
               service, flag.project_id, [{ id: member.users.id }],
-              new Map([[member.users.id, member.effective_permissions || {}]])
+              new Map([[member.users.id, member.effective_permissions || {}]]),
+              // strict: an unreadable project-member list must surface as the outer catch's retryable 500,
+              // not as "{name} doesn't have access to this project" (matches the CO escalate route).
+              { strict: true }
             )
             if (canOpen.length === 0)
               return NextResponse.json({
