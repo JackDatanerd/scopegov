@@ -29,3 +29,8 @@
 
 ## Round 5
 - Pre-send warning for the agency's OWN details (business address; signature on SOW/CO) on SOW, CO and invoice sends, merged into the same modal as the client-details warning, with "Add business address" / "Add signature" buttons
+
+## Round 6
+- Signatory name/position moved from Settings > Workspace into Settings > Branding, inside the (renamed) "Agency signature" card with its own Save signatory button
+- Card copy clarifies the signature belongs to the agency and applies to every SOW/CO the workspace sends
+- Pre-send warning also asks for a signatory name when a signature exists without one; button reads "Add agency signature"

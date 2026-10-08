@@ -43,7 +43,7 @@ export interface AgencyDetailsInfo {
 
 export type SendDocKind = 'sow' | 'co' | 'invoice'
 
-export function agencyDetailsGaps(ws: { legal_address?: LegalAddress | null; agency_signature_data?: string | null } | null | undefined, kind: SendDocKind): AgencyDetailsInfo | null {
+export function agencyDetailsGaps(ws: { legal_address?: LegalAddress | null; agency_signature_data?: string | null; agency_signatory_name?: string | null } | null | undefined, kind: SendDocKind): AgencyDetailsInfo | null {
   const a = (ws?.legal_address || null) as LegalAddress | null
   const missing: string[] = []
   const fixes: { label: string; url: string }[] = []
@@ -52,8 +52,12 @@ export function agencyDetailsGaps(ws: { legal_address?: LegalAddress | null; age
     fixes.push({ label: 'Add business address', url: '/settings?tab=workspace' })
   }
   if (kind !== 'invoice' && !filled(ws?.agency_signature_data)) {
-    missing.push('signature')
-    fixes.push({ label: 'Add signature', url: '/settings?tab=branding' })
+    missing.push('agency signature')
+    fixes.push({ label: 'Add agency signature', url: '/settings?tab=branding' })
+  } else if (kind !== 'invoice' && !filled(ws?.agency_signatory_name)) {
+    // A drawn signature with no name under it prints the agency name beneath a hand-drawn scribble.
+    missing.push('signatory name')
+    fixes.push({ label: 'Add signatory name', url: '/settings?tab=branding' })
   }
   return missing.length ? { missing, fixes } : null
 }
@@ -64,7 +68,7 @@ export async function loadSendDetailsWarnings(service: any, workspaceId: string,
   const clientDetails = await loadClientDetailsWarning(service, workspaceId, clientId)
   let agencyDetails: AgencyDetailsInfo | null = null
   const { data: ws, error } = await service
-    .from('workspaces').select('legal_address, agency_signature_data').eq('id', workspaceId).maybeSingle()
+    .from('workspaces').select('legal_address, agency_signature_data, agency_signatory_name').eq('id', workspaceId).maybeSingle()
   if (!error && ws) agencyDetails = agencyDetailsGaps(ws, kind)
   if (!clientDetails && !agencyDetails) return null
   const doc = DOC_NAME[kind]

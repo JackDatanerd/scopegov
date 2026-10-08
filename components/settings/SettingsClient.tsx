@@ -120,8 +120,6 @@ function workspaceToForm(ws: any) {
     taxId:                      ws?.tax_id || '',
     phone:                      ws?.phone || '',
     website:                    ws?.website || '',
-    agencySignatoryName:        ws?.agency_signatory_name || '',
-    agencySignatoryTitle:       ws?.agency_signatory_title || '',
     replyToEmail:               ws?.reply_to_email || '',
     defaultPaymentInstructions: ws?.default_payment_instructions || '',
     defaultTaxRate:             String(ws?.default_tax_rate ?? 0),
@@ -171,6 +169,8 @@ function toServerValue(key: string, value: any): unknown {
 function workspaceSnapshot(ws: any): Record<string, unknown> {
   const snap: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(workspaceToForm(ws))) snap[k] = toServerValue(k, v)
+  snap.agencySignatoryName        = trimText(ws?.agency_signatory_name || '')
+  snap.agencySignatoryTitle       = trimText(ws?.agency_signatory_title || '')
   snap.guardianSensitivityTier    = ws?.guardian_sensitivity_tier || 'medium'
   snap.proactiveRiskAlertsEnabled = ws?.proactive_risk_alerts_enabled ?? true
   snap.proactiveRiskThreshold     = Number(ws?.proactive_risk_threshold ?? 10000)
@@ -378,6 +378,8 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
     hasSignature:    !!workspace?.agency_signature_data,
   })
   const [brandColour, setBrandColour] = useState(() => workspace?.brand_colour || '#1A5C3A')
+  // Who signs for the agency (printed under the agency signature). Lives here so it survives tab switches.
+  const [signatory, setSignatory] = useState({ name: String(workspace?.agency_signatory_name || ''), title: String(workspace?.agency_signatory_title || '') })
   const [logoPreview, setLogoPreview] = useState<string | null>(logoUrl)
   // FIX (Settings independent pass, bug 2): the picked-but-unsaved File lives here next to its preview. It used to be
   // BrandingTab-local while the preview was lifted, so leaving the tab and coming back kept a preview of a logo whose
@@ -550,6 +552,7 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
             preview={logoPreview} setPreview={setLogoPreview}
             logoFile={logoFile} setLogoFile={setLogoFile} savedLogoPreviewRef={savedLogoPreviewRef}
             sigSaved={sigSaved} setSigSaved={setSigSaved}
+            signatory={signatory} setSignatory={setSignatory} signatoryBase={baseRef} onSaveWorkspace={patchWorkspace}
             baseRef={brandingBase}
             loadFailed={loadFailed.workspace}
             permissions={permissions} onSave={patch} saving={saving}
@@ -1040,16 +1043,6 @@ function WorkspaceTab({ form, setForm, permissions, onSave, saving, slugChangedA
             <input className="finp" value={form.phone} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set('phone', e.target.value)} />
           </div>
         </div>
-        <div className="f2">
-          <div className="fgrp">
-            <label className="flbl">Signatory name <InfoTip text="The person who signs for your agency. Printed under your signature on SOW and change order PDFs. Leave blank to print the agency name." /></label>
-            <input className="finp" maxLength={120} value={form.agencySignatoryName} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set('agencySignatoryName', e.target.value)} placeholder="Jane Doe" />
-          </div>
-          <div className="fgrp">
-            <label className="flbl">Signatory position</label>
-            <input className="finp" maxLength={120} value={form.agencySignatoryTitle} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set('agencySignatoryTitle', e.target.value)} placeholder="Managing Director" />
-          </div>
-        </div>
         <div className="fgrp">
           <label className="flbl">Website <span className="fhint">— optional</span></label>
           <input className="finp" value={form.website} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set('website', e.target.value)} placeholder="acme.com" />
@@ -1097,7 +1090,16 @@ function WorkspaceTab({ form, setForm, permissions, onSave, saving, slugChangedA
 }
 
 // ── BRANDING ──────────────────────────────────────────────────
-function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, logoFile, setLogoFile, savedLogoPreviewRef, sigSaved, setSigSaved, baseRef, loadFailed, permissions, onSave, saving }: any) {
+function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, logoFile, setLogoFile, savedLogoPreviewRef, sigSaved, setSigSaved, signatory, setSignatory, signatoryBase, onSaveWorkspace, baseRef, loadFailed, permissions, onSave, saving }: any) {
+  const [savingSignatory, setSavingSignatory] = useState(false)
+  const signatoryDirty = trimText(signatory.name) !== String(signatoryBase.current.agencySignatoryName ?? '')
+    || trimText(signatory.title) !== String(signatoryBase.current.agencySignatoryTitle ?? '')
+  async function saveSignatory() {
+    setSavingSignatory(true)
+    try { await onSaveWorkspace('/api/workspace/settings', { agencySignatoryName: signatory.name, agencySignatoryTitle: signatory.title }) }
+    finally { setSavingSignatory(false) }
+  }
+
   const [uploading, setUploading] = useState(false)
   const [fileError, setFileError] = useState('')
   const [removingLogo, setRemovingLogo] = useState(false)
@@ -1341,9 +1343,9 @@ function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, logo
       </div>
 
       <div className="settings-section" style={{ marginTop: 16 }}>
-        <div className="settings-section-title">Your signature</div>
+        <div className="settings-section-title">Agency signature</div>
         <p style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 14, lineHeight: 1.6 }}>
-          Draw and save your signature once — it&apos;s applied automatically to every SOW and change order you send from here on. This doesn&apos;t change documents already sent or signed.
+          This is the agency&apos;s signature, not yours personally. It is applied to every SOW and change order this workspace sends, whoever sends it. Draw it once, then add who it belongs to below. This doesn&apos;t change documents already sent or signed.
         </p>
         {sigSaved ? (
           <div>
@@ -1373,6 +1375,29 @@ function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, logo
             </div>
           </div>
         )}
+
+        <div style={{ borderTop: '1px solid var(--border)', marginTop: 18, paddingTop: 16 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>Signatory</div>
+          <p style={{ fontSize: 12, color: 'var(--text-3)', margin: '0 0 10px', lineHeight: 1.6 }}>
+            Printed under the signature as &ldquo;Name, Position&rdquo;. If left blank, the agency name is printed instead.
+          </p>
+          <div className="f2">
+            <div className="fgrp">
+              <label className="flbl">Signatory name</label>
+              <input className="finp" maxLength={120} value={signatory.name} placeholder="Jane Doe"
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSignatory((x: any) => ({ ...x, name: e.target.value }))} />
+            </div>
+            <div className="fgrp">
+              <label className="flbl">Signatory position</label>
+              <input className="finp" maxLength={120} value={signatory.title} placeholder="Managing Director"
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSignatory((x: any) => ({ ...x, title: e.target.value }))} />
+            </div>
+          </div>
+          <button className="btn btn-primary btn-sm" onClick={saveSignatory}
+            disabled={!signatoryDirty || savingSignatory || saving || !!loadFailed}>
+            {savingSignatory ? <span className="spin" /> : 'Save signatory'}
+          </button>
+        </div>
       </div>
     </div>
   )

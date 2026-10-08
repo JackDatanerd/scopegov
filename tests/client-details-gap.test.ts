@@ -73,17 +73,22 @@ describe('agencyDetailsGaps (the sender\'s own details)', () => {
   const addr = { line1: '244 Franklin Blvd', city: 'St George Island', country: 'United States' }
   it('flags a new workspace with no address and no signature on a SOW', () => {
     const g = agencyDetailsGaps({ legal_address: null, agency_signature_data: null }, 'sow')!
-    expect(g.missing).toEqual(['business address', 'signature'])
+    expect(g.missing).toEqual(['business address', 'agency signature'])
     expect(g.fixes.map(f => f.url)).toEqual(['/settings?tab=workspace', '/settings?tab=branding'])
   })
   it('does not ask for a signature on an invoice', () => {
     expect(agencyDetailsGaps({ legal_address: null }, 'invoice')!.missing).toEqual(['business address'])
     expect(agencyDetailsGaps({ legal_address: addr }, 'invoice')).toBeNull()
   })
-  it('passes once address and signature exist', () => {
-    expect(agencyDetailsGaps({ legal_address: addr, agency_signature_data: 'data:image/png;base64,AAAA' }, 'co')).toBeNull()
+  it('passes once address, signature and signatory name exist', () => {
+    expect(agencyDetailsGaps({ legal_address: addr, agency_signature_data: 'data:image/png;base64,AAAA', agency_signatory_name: 'Jane Doe' }, 'co')).toBeNull()
+  })
+  it('asks for a signatory name when a signature exists without one', () => {
+    const g = agencyDetailsGaps({ legal_address: addr, agency_signature_data: 'data:image/png;base64,AAAA' }, 'sow')!
+    expect(g.missing).toEqual(['signatory name'])
+    expect(agencyDetailsGaps({ legal_address: addr, agency_signature_data: 'x' }, 'invoice')).toBeNull()
   })
   it('treats a street-only address as incomplete', () => {
-    expect(agencyDetailsGaps({ legal_address: { line1: 'x' }, agency_signature_data: 'd' }, 'sow')!.missing).toEqual(['business address'])
+    expect(agencyDetailsGaps({ legal_address: { line1: 'x' }, agency_signature_data: 'd', agency_signatory_name: 'J' }, 'sow')!.missing).toEqual(['business address'])
   })
 })
