@@ -21,6 +21,7 @@ import { formatRenewalTerm } from '@/lib/documents/co-renewal-term'
 import { coWatermarkLabel, CO_STATUS_LABEL } from '@/lib/pdf/co-watermark'
 import { invoiceSingleLineAmount } from '@/lib/pdf/invoice-line'
 import { formatRate } from '@/lib/utils/money'
+import { dateStyleForCountry, englishDateLocale } from '@/lib/utils/date-style'
 
 // Phase 11: the ScopeGov credit in the footer of every document is a real
 // hyperlink now, not plain text — same URL everywhere so it's one place to
@@ -91,6 +92,9 @@ export interface SowPdfData {
   // contract value.
   isRetainer?: boolean
   retainerMonths?: number | null
+  // How tax applies to the contract value, frozen at drafting (sow_documents.metadata.taxRate / taxInclusive). Absent = no tax statement in the header.
+  taxRate?: number | null
+  taxInclusive?: boolean | null
 }
 
 export interface CoPdfData {
@@ -204,7 +208,7 @@ export interface InvoicePdfData {
   sentAt?:      string | null
   paymentInstructions?: string | null
   payments:     Array<{ amount: number; paidAt: string; method: string; referenceNote?: string | null }>
-  contractPosition?: { contractedValue: number; invoicedToDate: number; paidToDate: number } | null
+  contractPosition?: { contractedValue: number; invoicedToDate: number; paidToDate: number; excludesTax?: boolean } | null
   // Cross-references (doc-quality audit round 2) — the underlying
   // sow_id/co_id FKs already existed on `invoices`, just weren't being
   // read into the PDF. Mirrors Meridian sample's "For services rendered
@@ -265,21 +269,27 @@ function stripHtml(html: string): string {
 // runs in UTC, so without this a document stamped 00:00–03:00 EAT printed the previous day.
 // Month names follow the document's drafting language (a Swahili SOW must not print "7 October 2026").
 const DATE_LOCALES: Record<string, string> = { es: 'es', fr: 'fr', pt: 'pt', de: 'de', sw: 'sw' }
-function fmtDate(iso: string, tz?: string | null, language?: string | null) {
+function fmtDate(iso: string, tz?: string | null, language?: string | null, country?: string | null) {
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return '—'
   const dateOnly = /^\d{4}-\d{2}-\d{2}(T00:00:00(\.0+)?(Z|\+00:00)?)?$/.test(String(iso))
-  return new Intl.DateTimeFormat((language && DATE_LOCALES[language]) || 'en-GB', {
+  // English documents print "June 16, 2026" for a US agency and "16 June 2026" otherwise — the same rule the SOW prompt
+  // gives the model (lib/utils/date-style.ts), so prose dates and printed dates never use two styles on one document.
+  return new Intl.DateTimeFormat((language && DATE_LOCALES[language]) || englishDateLocale(dateStyleForCountry(country)), {
     day: 'numeric', month: 'long', year: 'numeric',
     timeZone: dateOnly ? 'UTC' : resolveTimeZone(tz),
   }).format(d)
 }
 
-// Whole amounts print without decimals ("1,500"); anything with cents always prints BOTH digits
-// ("1,500.50", not "1,500.5" — a contract figure reading as 1,500.5 looks like a typo).
-function fmtMoney(n: number) {
-  const whole = Math.round(n * 100) % 100 === 0
-  return n.toLocaleString('en-US', { minimumFractionDigits: whole ? 0 : 2, maximumFractionDigits: 2 })
+// Every contract figure prints with the currency's full decimals ("4,000.00", never "4,000" next to "57.75") so a
+// document never mixes two money formats. Zero-decimal currencies (JPY, ...) print none.
+function currencyDigits(currency?: string | null): number {
+  try { return new Intl.NumberFormat('en-US', { style: 'currency', currency: currency || 'USD' }).resolvedOptions().maximumFractionDigits ?? 2 }
+  catch { return 2 }
+}
+function fmtMoneyIn(n: number, currency?: string | null) {
+  const d = currencyDigits(currency)
+  return (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d })
 }
 
 const hasRichText = (html?: string | null) => !!html && html.replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').trim().length > 0
@@ -291,7 +301,7 @@ const hasRichText = (html?: string | null) => !!html && html.replace(/<[^>]*>/g,
 // and it's bigger than available page height" and draws the overflow on top of itself / off the
 // page, so text was silently lost from the PDF, including the copy frozen at signing. Short sections
 // still render as one visual block; anything long is allowed to flow across pages.
-const KEEP_TOGETHER_MAX_CHARS  = 1200
+const KEEP_TOGETHER_MAX_CHARS  = 700
 const KEEP_TOGETHER_MAX_BLOCKS = 12
 function fitsOnOnePage(html: string | null | undefined): boolean {
   const h = html || ''
@@ -307,7 +317,9 @@ function fitsOnOnePage(html: string | null | undefined): boolean {
 // wrappable sibling — verified by sweeping section lengths), and a table section was never kept together at all.
 // Short sections are one unsplittable block (heading + content). Long ones, which must be free to flow across pages,
 // hand the heading to the content as `lead`, which puts it inside the unsplittable first paragraph / list item / row.
-const TABLE_KEEP_TOGETHER_MAX_ROWS = 12
+// Only genuinely short tables stay as one block: a taller one flows across pages, its heading travelling with its first row
+// (the `lead` mechanism), instead of jumping whole to the next page and leaving half a page blank.
+const TABLE_KEEP_TOGETHER_MAX_ROWS = 4
 function SectionShell({ s, keepTogether, title, content }: { s: any; keepTogether: boolean; title: React.ReactNode; content: (lead?: React.ReactNode) => React.ReactNode }) {
   const heading = <Text style={s.secTitle}>{title}</Text>
   if (keepTogether) {
@@ -338,6 +350,8 @@ function SowSection({ sec, num, s, language, currency }: { sec: SowPdfData['sect
 function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) {
   const t = pdfChrome(data.language)
   const c = data.brandColour || '#1A5C3A'
+  const fd = (iso: string) => fmtDate(iso, data.timeZone, data.language, data.agencyAddress?.country)
+  const fm = (n: number) => fmtMoneyIn(n, data.currency)
 
   const s = StyleSheet.create({
     page:       { fontFamily: PDF_FONT.sans, fontSize: 10, color: '#1A1A1A', padding: '40 48' },
@@ -458,17 +472,20 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
             <Text style={s.h1}>{t.sow}</Text>
             <Text style={s.meta}>{data.documentNumber ? `${data.documentNumber} · ` : ''}{t.version} {data.version} · {data.projectName}</Text>
             {data.msaReference && <Text style={[s.meta, { marginTop: 2 }]}>{data.msaReference}</Text>}
-            {data.signedAt && <Text style={[s.meta, { color: c, marginTop: 2 }]}>{t.signed} {fmtDate(data.signedAt, data.timeZone, data.language)}</Text>}
+            {data.signedAt && <Text style={[s.meta, { color: c, marginTop: 2 }]}>{t.signed} {fd(data.signedAt)}</Text>}
           </View>
           <View style={{ alignItems: 'flex-end' }}>
             {logo
               ? <Image src={logo} style={s.logo} />
               : <Text style={s.agencyText}>{data.agencyName}</Text>}
-            <Text style={s.value}>{data.currency} {fmtMoney(data.contractValue)}{data.isRetainer ? ` / ${t.perMonth}` : ''}</Text>
+            <Text style={s.value}>{data.currency} {fm(data.contractValue)}{data.isRetainer ? ` / ${t.perMonth}` : ''}</Text>
             <Text style={s.valueLabel}>{data.isRetainer ? t.monthlyRetainer : t.contractValue}</Text>
+            {!data.isRetainer && (data.taxRate || 0) > 0 && (
+              <Text style={[s.valueLabel, { marginTop: 2 }]}>{data.taxInclusive ? t.inclTax(data.taxRate as number) : t.exclTax(data.taxRate as number)}</Text>
+            )}
             {data.isRetainer && (data.retainerMonths || 0) > 0 && (
               <Text style={[s.valueLabel, { marginTop: 2 }]}>
-                {data.retainerMonths} {t.months} · {data.currency} {fmtMoney(Math.round(data.contractValue * (data.retainerMonths as number) * 100) / 100)} {t.total}
+                {data.retainerMonths} {t.months} · {data.currency} {fm(Math.round(data.contractValue * (data.retainerMonths as number) * 100) / 100)} {t.total}
               </Text>
             )}
           </View>
@@ -547,9 +564,9 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
                     <Text style={s.td}>{m.title}</Text>
                     <Text style={s.tdSub}>{m.trigger}{m.percentage ? ` · ${m.percentage}%` : ''}</Text>
                   </View>
-                  <Text style={[s.td, s.mono, { width: 90, textAlign: 'right' }]}>{data.currency} {fmtMoney(m.amount)}</Text>
+                  <Text style={[s.td, s.mono, { width: 90, textAlign: 'right' }]}>{data.currency} {fm(m.amount)}</Text>
                   <Text style={[s.td, { width: 90, textAlign: 'right', color: '#909090', fontSize: 9 }]}>
-                    {m.dueDate ? fmtDate(m.dueDate, data.timeZone, data.language) : '—'}
+                    {m.dueDate ? fd(m.dueDate) : '—'}
                   </Text>
                 </View>
               )
@@ -595,7 +612,7 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
             </View>
             <View style={s.sigRule} />
             <Text style={s.sigName}>{[data.agencySignatoryName || data.agencyName, data.agencySignatoryTitle].filter(Boolean).join(', ')}</Text>
-            {data.signedAt && <Text style={s.sigDate}>{fmtDate(data.signedAt, data.timeZone, data.language)}</Text>}
+            {data.signedAt && <Text style={s.sigDate}>{fd(data.signedAt)}</Text>}
           </View>
           <View style={s.sigCol}>
             <Text style={s.sigLabel}>{t.clientLabel} — {data.clientSignerCompany || data.clientCompany || data.clientName}</Text>
@@ -606,7 +623,7 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
             {data.signedBy
               ? <>
                   <Text style={[s.sigName, { color: c }]}>{[data.signedBy, data.clientSignerTitle].filter(Boolean).join(', ')}</Text>
-                  {data.signedAt && <Text style={s.sigDate}>{fmtDate(data.signedAt, data.timeZone, data.language)}</Text>}
+                  {data.signedAt && <Text style={s.sigDate}>{fd(data.signedAt)}</Text>}
                 </>
               : <Text style={[s.sigName, { color: '#B0B0B0' }]}>{t.notYetSigned}</Text>}
           </View>
@@ -616,7 +633,7 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
         {/* Footer */}
         <View style={s.footer}>
           <Text>{t.scopeGovBy} <Link src={SCOPEGOV_URL} style={s.footerLink}>ScopeGov</Link></Text>
-          <Text>{t.generated} {fmtDate(new Date().toISOString(), data.timeZone, data.language)}</Text>
+          <Text>{t.generated} {fd(new Date().toISOString())}</Text>
         </View>
 
         {/* Page numbers — fixed, only shown once the document actually
@@ -646,6 +663,8 @@ const CO_STATUS_LOUD = new Set(['awaiting_response', 'awaiting_countersignature'
 
 function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
   const c = data.brandColour || '#1A5C3A'
+  const fd = (iso: string) => fmtDate(iso, data.timeZone, null, data.agencyAddress?.country)
+  const fm = (n: number) => fmtMoneyIn(n, data.currency)
   const statusLabel = data.status ? (CO_STATUS_LABEL[data.status] || data.status) : null
   const statusLoud  = data.status ? CO_STATUS_LOUD.has(data.status) : false
 
@@ -724,9 +743,15 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
   // value block, which needs a known "before" figure) and is enough on its own to produce the Impact Analysis section.
   const renewalTerm = data.isRetainerRenewal && (data.renewalTermMonths || 0) > 0 ? Number(data.renewalTermMonths) : null
   const impactSecNum = (hasScopeImpact || hasTimelineImpact || hasValueImpact || renewalTerm != null) ? ++secN : null
+  // Contract values are always stated NET of tax (tax is never part of what was scoped — see lib/reports/contract-position.ts),
+  // so the impact block adds this change order's net subtotal, not its tax-inclusive total. Mixing the two printed a
+  // "revised contract value" that was neither the net nor the gross figure.
+  const taxApplies = data.taxRate > 0
+  const netChange = taxApplies ? data.subtotal : data.total
+  const exTax = taxApplies ? ' (excl. tax)' : ''
   const revisedValue = data.revisedContractValue != null
     ? data.revisedContractValue
-    : data.contractValueBefore != null ? data.contractValueBefore + data.total : null
+    : data.contractValueBefore != null ? data.contractValueBefore + netChange : null
   const isRenewalDoc = !!data.isRetainerRenewal
 
   return (
@@ -741,7 +766,7 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
             <Text style={s.meta}>{data.documentNumber ? `${data.documentNumber} · ` : ''}{data.coTitle}{data.version && data.version > 1 ? ` · v${data.version}` : ''}</Text>
             <Text style={s.meta}>{data.projectName}</Text>
             {data.sowNumber && <Text style={[s.meta, { marginTop: 2 }]}>Amends SOW No. {data.sowNumber}</Text>}
-            {data.acceptedAt && <Text style={[s.meta, { color: c, marginTop: 2 }]}>Accepted {fmtDate(data.acceptedAt, data.timeZone)}</Text>}
+            {data.acceptedAt && <Text style={[s.meta, { color: c, marginTop: 2 }]}>Accepted {fd(data.acceptedAt)}</Text>}
           </View>
           <View style={{ alignItems: 'flex-end' }}>
             {logo
@@ -760,7 +785,7 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
         {/* Parties */}
         <View style={s.partiesBox}>
           <View style={{ flex: 1 }}>
-            <Text style={s.partyLabel}>Agency (Service Provider)</Text>
+            <Text style={s.partyLabel}>Provider</Text>
             <Text style={s.partyName}>{data.agencyName}</Text>
             {formatAddress(data.agencyAddress).map((l, i) => <Text key={i} style={s.partyLine}>{l}</Text>)}
             {(data.agencyTaxId || data.agencyPhone || data.agencyWebsite) && (
@@ -799,8 +824,8 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
             <View key={i} style={s.row}>
               <Text style={[s.td, { flex: 1 }]}>{item.description}</Text>
               <Text style={[s.td, s.mono, { width: 40, textAlign: 'center' }]}>{item.quantity}</Text>
-              <Text style={[s.td, s.mono, { width: 80, textAlign: 'right' }]}>{data.currency} {fmtMoney(item.rate)}</Text>
-              <Text style={[s.td, s.mono, { width: 80, textAlign: 'right' }]}>{data.currency} {fmtMoney(item.total)}</Text>
+              <Text style={[s.td, s.mono, { width: 80, textAlign: 'right' }]}>{data.currency} {fm(item.rate)}</Text>
+              <Text style={[s.td, s.mono, { width: 80, textAlign: 'right' }]}>{data.currency} {fm(item.total)}</Text>
             </View>
           ))}
 
@@ -808,17 +833,17 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
           <View style={s.totals}>
             <View style={s.totalRow}>
               <Text>Subtotal</Text>
-              <Text style={s.mono}>{data.currency} {fmtMoney(data.subtotal)}</Text>
+              <Text style={s.mono}>{data.currency} {fm(data.subtotal)}</Text>
             </View>
             {tax !== 0 && (
               <View style={s.totalRow}>
                 <Text>Tax ({data.taxRate}%){data.taxInclusive ? ' — included' : ''}</Text>
-                <Text style={s.mono}>{data.currency} {fmtMoney(tax)}</Text>
+                <Text style={s.mono}>{data.currency} {fm(tax)}</Text>
               </View>
             )}
             <View style={s.grandRow}>
               <Text>Total</Text>
-              <Text style={[s.mono, { color: c }]}>{data.currency} {fmtMoney(data.total)}</Text>
+              <Text style={[s.mono, { color: c }]}>{data.currency} {fm(data.total)}</Text>
             </View>
           </View>
         </View>
@@ -832,7 +857,7 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
             for Change" note, indistinguishable from general prose. Each
             row is independent and optional; a CO can carry any subset. */}
         {impactSecNum && (
-          <View style={s.section}>
+          <View style={s.section} wrap={false}>
             <Text style={s.secTitle}><Text style={s.secNum}>{impactSecNum}. </Text>Impact Analysis</Text>
             <View style={s.impactBox}>
               {hasScopeImpact && (
@@ -856,11 +881,11 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
               {hasValueImpact && revisedValue != null && (
                 <View style={(hasScopeImpact || hasTimelineImpact || renewalTerm != null) ? { marginTop: 6, paddingTop: 6, borderTop: '1 solid #F2F0EA' } : undefined}>
                   <View style={s.impactRow}>
-                    <Text style={{ color: '#909090' }}>{isRenewalDoc ? 'Current Monthly Rate' : 'Original Contract Value'}</Text>
-                    <Text style={s.mono}>{data.currency} {fmtMoney(data.contractValueBefore!)}</Text>
+                    <Text style={{ color: '#909090' }}>{isRenewalDoc ? 'Current Monthly Rate' : `Original Contract Value${exTax}`}</Text>
+                    <Text style={s.mono}>{data.currency} {fm(data.contractValueBefore!)}</Text>
                   </View>
                   <View style={s.impactRow}>
-                    <Text style={{ color: '#909090' }}>{isRenewalDoc ? 'Rate Change' : data.isCredit ? 'This Credit' : 'This Change Order'}</Text>
+                    <Text style={{ color: '#909090' }}>{isRenewalDoc ? 'Rate Change' : `${data.isCredit ? 'This Credit' : 'This Change Order'}${exTax}`}</Text>
                     {/* FIX (section-10 audit, 10-B4): the '+' was
                         hardcoded, so a CO with a negative total printed
                         "+USD -5,000". Negative line items are refused at
@@ -870,21 +895,28 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
                         derived rather than assumed. */}
                     <Text style={s.mono}>
                       {(() => {
-                        const delta = isRenewalDoc ? revisedValue - data.contractValueBefore! : data.total
+                        const delta = isRenewalDoc ? revisedValue - data.contractValueBefore! : netChange
                         // ASCII hyphen, not U+2212: this row is Courier (WinAnsi), which has no glyph for U+2212, so the sign was dropped
                         // and a credit / rate decrease printed as an unsigned (apparent increase) amount.
-                        return `${delta < 0 ? '-' : '+'}${data.currency} ${fmtMoney(Math.abs(delta))}`
+                        return `${delta < 0 ? '-' : '+'}${data.currency} ${fm(Math.abs(delta))}`
                       })()}
                     </Text>
                   </View>
                   <View style={s.impactGrand}>
-                    <Text>{isRenewalDoc ? 'New Monthly Rate' : 'Revised Contract Value'}</Text>
-                    <Text style={{ fontFamily: 'Courier-Bold', color: c }}>{data.currency} {fmtMoney(revisedValue)}</Text>
+                    <Text>{isRenewalDoc ? 'New Monthly Rate' : `Revised Contract Value${exTax}`}</Text>
+                    <Text style={{ fontFamily: 'Courier-Bold', color: c }}>{data.currency} {fm(revisedValue)}</Text>
                   </View>
                 </View>
               )}
             </View>
           </View>
+        )}
+
+        {/* The change order amends one agreement and nothing else: say so on the document the client signs. */}
+        {data.sowNumber && (
+          <Text style={{ fontSize: 9, color: '#555', lineHeight: 1.5, marginTop: 4 }}>
+            This change order amends SOW No. {data.sowNumber}. Except as expressly amended here, all terms of that SOW remain unchanged and in full force.
+          </Text>
         )}
 
         {/* Signature block. FIX (doc-quality audit round 3): same
@@ -893,16 +925,16 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
             on a near-empty trailing page. */}
         <View style={s.sigBlock} wrap={false}>
           <View style={s.sigCol}>
-            <Text style={s.sigLabel}>Agency — {data.agencyName}</Text>
+            <Text style={s.sigLabel}>Provider — {data.agencyName}</Text>
             <View style={s.sigArea}>
               {data.agencySignatureData ? <Image src={data.agencySignatureData} style={s.sigImg} /> : null}
             </View>
             <View style={s.sigRule} />
             <Text style={s.sigName}>{[data.agencySignatoryName || data.agencyName, data.agencySignatoryTitle].filter(Boolean).join(', ')}</Text>
-            {data.acceptedAt && <Text style={{ fontSize: 9, color: '#909090' }}>{fmtDate(data.acceptedAt, data.timeZone)}</Text>}
+            {data.acceptedAt && <Text style={{ fontSize: 9, color: '#909090' }}>{fd(data.acceptedAt)}</Text>}
           </View>
           <View style={s.sigCol}>
-            <Text style={s.sigLabel}>Client — {data.clientSignerCompany || data.clientName}</Text>
+            <Text style={s.sigLabel}>Client — {data.clientSignerCompany || data.clientCompany || data.clientName}</Text>
             <View style={s.sigArea}>
               {data.clientSignatureData ? <Image src={data.clientSignatureData} style={s.sigImg} /> : null}
             </View>
@@ -910,7 +942,7 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
             {data.acceptedBy
               ? <>
                   <Text style={[s.sigName, { color: c }]}>{[data.acceptedBy, data.clientSignerTitle].filter(Boolean).join(', ')}</Text>
-                  {data.acceptedAt && <Text style={{ fontSize: 9, color: '#909090' }}>{fmtDate(data.acceptedAt, data.timeZone)}</Text>}
+                  {data.acceptedAt && <Text style={{ fontSize: 9, color: '#909090' }}>{fd(data.acceptedAt)}</Text>}
                 </>
               : <Text style={[s.sigName, { color: '#B0B0B0' }]}>Pending</Text>}
           </View>
@@ -918,7 +950,7 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
 
         <View style={s.footer}>
           <Text>Scope governance by <Link src={SCOPEGOV_URL} style={s.footerLink}>ScopeGov</Link></Text>
-          <Text>Generated {fmtDate(new Date().toISOString(), data.timeZone)}</Text>
+          <Text>Generated {fd(new Date().toISOString())}</Text>
         </View>
 
         <Text
@@ -949,6 +981,7 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
   // rounded independently, so subtotal + tax could disagree with the total by a
   // cent. Invoices print the currency's own minor units on every line (2 for USD/EUR/KES,
   // 0 for JPY, 3 for KWD), from figures rounded once.
+  const fd = (iso: string) => fmtDate(iso, data.timeZone, null, data.agencyAddress?.country)
   const r2 = (n: number) => roundCurrency(Number(n) || 0)
   const digits = (() => {
     try { return new Intl.NumberFormat('en-US', { style: 'currency', currency: data.currency }).resolvedOptions().maximumFractionDigits ?? 2 }
@@ -990,12 +1023,12 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
     totals:    { marginTop: 4 },
     totalRow:  { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 3, fontSize: 10 },
     grandRow:  { flexDirection: 'row', justifyContent: 'space-between', paddingTop: 8, marginTop: 6, borderTop: '1 solid #1A1A1A', fontSize: 14, fontFamily: PDF_FONT.bold },
-    section:   { marginTop: 20 },
+    section:   { marginTop: 16 },
     secTitle:  { fontSize: 8, fontFamily: PDF_FONT.bold, color: '#909090', textTransform: 'uppercase', letterSpacing: 0.6, marginBottom: 6, borderBottom: '1 solid #E5E1D8', paddingBottom: 3 },
-    body:      { fontSize: 10, color: '#333', lineHeight: 1.6 },
+    body:      { fontSize: 10, color: '#333', lineHeight: 1.5 },
     payRow:    { flexDirection: 'row', justifyContent: 'space-between', fontSize: 9.5, color: '#555', paddingVertical: 3, borderBottom: '1 solid #F2F0EA' },
     cpRow:     { flexDirection: 'row', justifyContent: 'space-between', fontSize: 9.5, color: '#555', paddingVertical: 3 },
-    footer:    { marginTop: 28, paddingTop: 10, borderTop: '1 solid #E5E1D8', fontSize: 8, color: '#B0B0B0' },
+    footer:    { marginTop: 18, paddingTop: 10, borderTop: '1 solid #E5E1D8', fontSize: 8, color: '#B0B0B0' },
     footerRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 4 },
     footerLink:{ color: '#B0B0B0', textDecoration: 'none' },
     pageNum:   { position: 'absolute', bottom: 18, right: 48, fontSize: 8, color: '#C0C0C0' },
@@ -1014,7 +1047,7 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
           <View>
             <Text style={s.h1}>Invoice</Text>
             <Text style={s.meta}>{data.invoiceNumber ? `${data.invoiceNumber} · ` : ''}{data.projectName}</Text>
-            {data.sentAt && <Text style={[s.meta, { marginTop: 2 }]}>Issued {fmtDate(data.sentAt, data.timeZone)}{data.dueDate ? ` · Due ${fmtDate(data.dueDate, data.timeZone)}` : ''}</Text>}
+            {data.sentAt && <Text style={[s.meta, { marginTop: 2 }]}>Issued {fd(data.sentAt)}{data.dueDate ? ` · Due ${fd(data.dueDate)}` : ''}</Text>}
             {data.poNumber && <Text style={[s.meta, { marginTop: 2 }]}>PO {data.poNumber}</Text>}
             {(data.sowNumber || data.coNumber) && (
               <Text style={[s.meta, { marginTop: 2 }]}>
@@ -1145,7 +1178,7 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
           </Text>
         )}
 
-        {data.paymentInstructions && (
+        {data.paymentInstructions && !(data.status === 'paid' && balanceDue === 0) && (
           <View style={s.section}>
             <Text style={s.secTitle}>Payment instructions</Text>
             <RichText html={data.paymentInstructions} style={s.body} />
@@ -1164,7 +1197,7 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
             <Text style={s.secTitle}>Payments received</Text>
             {data.payments.map((p, i) => (
               <View key={i} style={s.payRow}>
-                <Text>{fmtDate(p.paidAt, data.timeZone)} · {INVOICE_METHOD_LABEL[p.method] || p.method}{p.referenceNote ? ` · ${p.referenceNote}` : ''}</Text>
+                <Text>{fd(p.paidAt)} · {INVOICE_METHOD_LABEL[p.method] || p.method}{p.referenceNote ? ` · ${p.referenceNote}` : ''}</Text>
                 <Text style={{ fontFamily: 'Courier' }}>{data.currency} {fmtInv(p.amount)}</Text>
               </View>
             ))}
@@ -1179,19 +1212,19 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
           <View style={s.section}>
             <Text style={s.secTitle}>Contract position</Text>
             <View style={s.cpRow}>
-              <Text>Contracted value</Text>
+              <Text>Contracted value{data.contractPosition.excludesTax ? ' (excl. tax)' : ''}</Text>
               <Text style={{ fontFamily: 'Courier' }}>{data.currency} {fmtInv(data.contractPosition.contractedValue)}</Text>
             </View>
             <View style={s.cpRow}>
-              <Text>Invoiced to date (incl. this invoice)</Text>
+              <Text>Invoiced to date (incl. this invoice{data.contractPosition.excludesTax ? ', excl. tax' : ''})</Text>
               <Text style={{ fontFamily: 'Courier' }}>{data.currency} {fmtInv(data.contractPosition.invoicedToDate)}</Text>
             </View>
             <View style={s.cpRow}>
-              <Text>Paid to date</Text>
+              <Text>Paid to date{data.contractPosition.excludesTax ? ' (excl. tax)' : ''}</Text>
               <Text style={{ fontFamily: 'Courier' }}>{data.currency} {fmtInv(data.contractPosition.paidToDate)}</Text>
             </View>
             <View style={[s.cpRow, { borderTop: '1 solid #F2F0EA', paddingTop: 6, marginTop: 2 }]}>
-              <Text style={{ color: '#1A1A1A' }}>Remaining contract value</Text>
+              <Text style={{ color: '#1A1A1A' }}>Remaining contract value{data.contractPosition.excludesTax ? ' (excl. tax)' : ''}</Text>
               <Text style={{ fontFamily: 'Courier-Bold', color: '#1A1A1A' }}>
                 {data.currency} {fmtInv(Math.max(0, data.contractPosition.contractedValue - data.contractPosition.invoicedToDate))}
               </Text>
@@ -1200,10 +1233,10 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
         )}
 
         <View style={s.footer}>
-          <Text>This is a payment record, not a payment portal — pay per the instructions above.</Text>
+          <Text>{data.status === 'paid' && balanceDue === 0 ? 'Paid in full — no further payment is due on this invoice.' : 'This is a payment record, not a payment portal — pay per the instructions above.'}</Text>
           <View style={s.footerRow}>
             <Text>Scope governance by <Link src={SCOPEGOV_URL} style={s.footerLink}>ScopeGov</Link></Text>
-            <Text>Generated {fmtDate(new Date().toISOString(), data.timeZone)}</Text>
+            <Text>Generated {fd(new Date().toISOString())}</Text>
           </View>
         </View>
 

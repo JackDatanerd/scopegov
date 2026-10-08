@@ -96,3 +96,14 @@ export async function getContractValueBefore(
 
   return Math.max(0, start + amendmentImpact(amendments, projectShape.type))
 }
+
+/**
+ * What an accepted change order adds to the CONTRACT VALUE: its net-of-tax subtotal. Contract values are net everywhere
+ * (lib/reports/contract-position.ts: "tax is never part of what was scoped"), so recording the tax-inclusive total here
+ * made the contracted value, the CO's own "revised contract value" and every report that sums amendments mix net and
+ * gross. A CO written before subtotal existed falls back to its total (no tax then).
+ */
+export function coNetImpact(co: { subtotal?: number | string | null; total?: number | string | null }): number {
+  const sub = co.subtotal == null || co.subtotal === '' ? NaN : Number(co.subtotal)
+  return Number.isFinite(sub) ? sub : Number(co.total) || 0
+}

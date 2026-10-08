@@ -125,6 +125,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       // createSowMilestones() defaults a missing structure to 50_50; mirror that so the milestone block is only
       // used when the agreement really is a milestone one (renderer.tsx, SOW lifecycle round 8 B3).
       paymentStructure: sow.metadata?.paymentStructure || '50_50',
+      taxRate:       Number(sow.metadata?.taxRate) > 0 ? Number(sow.metadata.taxRate) : null,
+      taxInclusive:  typeof sow.metadata?.taxInclusive === 'boolean' ? sow.metadata.taxInclusive : null,
       paymentSchedule: (milestones || []).map((m: any) => ({
         title: m.title, amount: m.amount, percentage: m.percentage,
         trigger: m.trigger, dueDate: m.due_date, status: m.status,

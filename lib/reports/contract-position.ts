@@ -31,6 +31,10 @@ export interface ContractPosition {
   contractedValue: number
   invoicedToDate: number
   paidToDate: number
+  /** Cash received expressed NET of tax (each payment scaled by its invoice's subtotal/amount) — the basis `contractedValue` and `invoicedToDate` are on. */
+  paidToDateNet?: number
+  /** True when any billed invoice carries tax, i.e. gross cash and the net contract figures differ. */
+  hasTax?: boolean
   atRiskValue: number
 }
 
@@ -91,6 +95,11 @@ export async function computeContractPositions(
         contractedValue: Math.max(0, baseContractValue(project, monthsBilled.get(id)) + amendmentTotal),
         invoicedToDate:  billed.reduce((s: number, inv: any) => s + (Number(inv.subtotal ?? inv.amount) || 0), 0),
         paidToDate:      paidEligible.reduce((s: number, inv: any) => s + (Number(inv.amount_paid) || 0), 0),
+        paidToDateNet:   paidEligible.reduce((s: number, inv: any) => {
+          const gross = Number(inv.amount) || 0, net = Number(inv.subtotal ?? inv.amount) || 0, paid = Number(inv.amount_paid) || 0
+          return s + (gross > 0 && net !== gross ? paid * (net / gross) : paid)
+        }, 0),
+        hasTax:          billed.some((inv: any) => inv.subtotal != null && Number(inv.subtotal) !== Number(inv.amount)),
         atRiskValue:     openCos.filter((c: any) => c.project_id === id).reduce((s: number, c: any) => s + (Number(c.total) || 0), 0),
       })
     }

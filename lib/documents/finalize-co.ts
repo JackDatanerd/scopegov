@@ -27,7 +27,7 @@ import { computeContentHash, storeExecutedPdf } from '@/lib/documents/executed-p
 import { isAdjustmentLine } from '@/lib/utils/rescale-line-items'
 import { parseStoredLineItems } from '@/lib/documents/co-totals'
 import { coPdfFilename } from '@/lib/documents/co-pdf-name'
-import { getContractValueBefore } from '@/lib/documents/co-contract-value'
+import { getContractValueBefore, coNetImpact } from '@/lib/documents/co-contract-value'
 import { createHash } from 'node:crypto'
 import { isTerminalStatus } from '@/lib/utils/project-status'
 import { findSignedSow, SIGNED_SOW_LOOKUP_FAILED } from '@/lib/documents/signed-sow'
@@ -241,7 +241,7 @@ export async function finalizeCoAcceptance(service: any, params: {
       : source === 'countersignature' ? `Amendment — ${co.title} (counter accepted)` : `Amendment — ${co.title}`,
     added_deliverables:   deliverables,
     removed_deliverables: removedDeliverables,
-    financial_impact:     isRenewal ? 0 : co.total,
+    financial_impact:     isRenewal ? 0 : coNetImpact(co),
     effective_at:         now,
     pdf_path:             '',
   }

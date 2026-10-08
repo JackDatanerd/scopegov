@@ -74,10 +74,13 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     // reconciliation hasn't run) just omits the block.
     // Computed LIVE (lib/reports/contract-position.ts), not read from the nightly snapshot: the snapshot
     // can never include the invoice being rendered right now, and mis-stated retainers.
-    let contractPosition: { contractedValue: number; invoicedToDate: number; paidToDate: number } | null = null
+    let contractPosition: { contractedValue: number; invoicedToDate: number; paidToDate: number; excludesTax?: boolean } | null = null
     if (invoice.project_id) {
       const position = await computeContractPosition(service, invoice.project_id)
-      if (position) contractPosition = { contractedValue: position.contractedValue, invoicedToDate: position.invoicedToDate, paidToDate: position.paidToDate }
+      if (position) contractPosition = position.hasTax
+        // Contract figures are net of tax; show cash on the same basis and say so (a net "invoiced" beside a gross "paid" read as paid > invoiced).
+        ? { contractedValue: position.contractedValue, invoicedToDate: position.invoicedToDate, paidToDate: position.paidToDateNet ?? position.paidToDate, excludesTax: true }
+        : { contractedValue: position.contractedValue, invoicedToDate: position.invoicedToDate, paidToDate: position.paidToDate }
     }
 
     const pdfBuffer = await renderInvoicePdf({

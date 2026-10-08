@@ -1205,6 +1205,10 @@ function GenerateSowModal({ project, existingSow, onClose, onDone }: any) {
     const n = Number(existingSow?.metadata?.revisionRounds)
     return Number.isInteger(n) && n >= 1 && n <= 10 ? String(n) : '2'
   })
+  // Who the contract is with. The named contact signs; when they act for a company, that company is the legal Client and must be
+  // known before drafting so the Parties clause, PDFs and signature block all name the same party.
+  const [clientCompany,    setClientCompany]     = useState<string>(project?.clients?.company_name || existingSow?.metadata?.clientCompany || '')
+  const [signerTitle,      setSignerTitle]       = useState<string>(existingSow?.metadata?.clientRepresentativeTitle || '')
   const [generating,       setGenerating]        = useState(false)
   const [error,            setError]             = useState('')
 
@@ -1270,6 +1274,7 @@ function GenerateSowModal({ project, existingSow, onClose, onDone }: any) {
         body: JSON.stringify({
           projectId: project.id, projectType: project.type,
           objective, deliverables, outOfScope, timeline,
+          clientCompany: clientCompany.trim(), clientRepresentativeTitle: signerTitle.trim(),
           paymentStructure: effStructure, revisionRounds: parseInt(revisionRounds) || 2,
           contractValue: project.contract_value || 0, currency: project.currency || 'USD',
         }),
@@ -1315,6 +1320,20 @@ function GenerateSowModal({ project, existingSow, onClose, onDone }: any) {
               </div>
             )}
             {error && <p className="ferr">{error}</p>}
+            <div>
+              <label className="flbl">Contracting company <span className="fhint">(optional)</span></label>
+              <input className="finp" value={clientCompany} maxLength={160} placeholder={`Leave blank if ${project?.clients?.name || 'the client'} is contracting personally`}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setClientCompany(e.target.value)} />
+              {clientCompany.trim() && (
+                <>
+                  <p className="fhint" style={{ margin: '6px 0 4px' }}>
+                    The SOW is made with {clientCompany.trim()}, signed by {project?.clients?.name || 'the client contact'}. This is saved on the client record so every document names the same party.
+                  </p>
+                  <input className="finp" value={signerTitle} maxLength={120} placeholder="Signer's title (optional), e.g. Branding Lead"
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSignerTitle(e.target.value)} />
+                </>
+              )}
+            </div>
             <div className="fgrp">
               <label className="flbl">Objective</label>
               <textarea className="finp" style={{ minHeight: 50 }} value={objective}

@@ -115,6 +115,15 @@ export interface SowContentInput {
   // an agency's own standard exclusions / assumptions / revision and payment wording
   // never reached a SOW unless the model happened to repeat them.
   standards?: AgencyStandards | null
+  // The person who signs for the client when the client is a company (clientName is then the company).
+  // Collected before generation so the Parties clause and every prompt rule name the right legal party.
+  clientRepresentative?: string | null
+  clientRepresentativeTitle?: string | null
+  // The workspace's tax setting at generation time. Without it the model never learned that tax applies, so the
+  // Payment Terms stated a net figure while every invoice added tax on top.
+  tax?: { rate: number; inclusive: boolean } | null
+  // Calendar-date style for drafted prose; must match how the PDF prints dates (see lib/pdf/renderer.tsx).
+  dateStyle?: 'us' | 'intl'
 }
 
 export interface AgencyStandards {
@@ -273,6 +282,144 @@ export function sowLanguageName(code: unknown): string | undefined {
   return isSowLanguage(code) ? SOW_LANGUAGE_NAMES[code] : undefined
 }
 
+
+// ── Money / tax / wording helpers shared by the prompt, the fallbacks and the Payment Schedule ──
+
+/** "USD 4,000.00" — the one format every contract figure is written in. */
+export function formatMoneyText(currency: string, value: unknown): string {
+  const n = Number(value)
+  const body = Number.isFinite(n) ? n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : String(value)
+  return `${currency} ${body}`
+}
+
+/** "State of Texas, United States" -> "the State of Texas, United States"; "Kenya" stays "Kenya". */
+export function lawWithArticle(law: string): string {
+  const t = String(law || '').trim()
+  if (!t || /^the\s/i.test(t)) return t
+  return /^(state|commonwealth|republic|kingdom|province|federation|united|district|territory|city|people'?s|principality|duchy|emirate|sultanate)\b/i.test(t) ? `the ${t}` : t
+}
+
+export interface TaxSplit { net: number; tax: number; gross: number }
+
+/** Net / tax / gross for an amount entered the way the workspace enters it (net when tax is exclusive, gross when inclusive). */
+export function splitTax(entered: number, tax: SowContentInput['tax']): TaxSplit {
+  const amount = roundCurrency(entered)
+  const rate = tax && tax.rate > 0 ? tax.rate : 0
+  if (!rate) return { net: amount, tax: 0, gross: amount }
+  if (tax!.inclusive) {
+    const net = roundCurrency(amount / (1 + rate / 100))
+    return { net, tax: roundCurrency(amount - net), gross: amount }
+  }
+  const gross = roundCurrency(amount * (1 + rate / 100))
+  return { net: amount, tax: roundCurrency(gross - amount), gross }
+}
+
+export interface PaymentInstalment { title: string; trigger: string; amount: number }
+
+/** The instalments a NON-milestone structure bills — same split createSowMilestones uses (first half rounded, remainder last). */
+export function structureInstalments(structure: string, contractValue: number): PaymentInstalment[] {
+  const cv = roundCurrency(contractValue)
+  if (structure === '50_50') {
+    const upfront = roundCurrency(cv * 0.5)
+    return [
+      { title: 'Upfront payment (50%)', trigger: 'Before work commences', amount: upfront },
+      { title: 'Final payment (50%)', trigger: 'Final delivery approval', amount: roundCurrency(cv - upfront) },
+    ]
+  }
+  if (structure === '100_upfront') return [{ title: 'Full payment', trigger: 'Before work commences', amount: cv }]
+  if (structure === 'on_delivery') return [{ title: 'Full payment', trigger: 'Final delivery approval', amount: cv }]
+  if (structure === 'monthly') return [{ title: 'Monthly retainer', trigger: 'Monthly — first of month', amount: cv }]
+  return []
+}
+
+/** Prompt lines stating how tax applies, with the exact figures the Payment Terms must carry. Empty when no tax applies. */
+export function taxPromptBlock(input: SowContentInput): string {
+  const tax = input.tax
+  if (!tax || !(tax.rate > 0) || input.retainer) return ''
+  const cv = Number(input.contractValue)
+  if (!Number.isFinite(cv) || cv <= 0) return ''
+  const whole = splitTax(cv, tax)
+  const money = (n: number) => formatMoneyText(input.currency, n)
+  const lines = [
+    tax.inclusive
+      ? `Sales tax: ${tax.rate}% is INCLUDED in the contract value. Contract value ${money(whole.gross)} includes ${money(whole.tax)} of tax (net ${money(whole.net)}).`
+      : `Sales tax: ${tax.rate}% is charged IN ADDITION to the contract value. Contract value (excluding tax) ${money(whole.net)}; tax ${money(whole.tax)}; total payable including tax ${money(whole.gross)}.`,
+  ]
+  const instalments = structureInstalments(input.paymentStructure, cv)
+  if (instalments.length > 1) {
+    lines.push('Instalments (use exactly these figures):')
+    for (const it of instalments) {
+      const sp = splitTax(it.amount, tax)
+      lines.push(tax.inclusive
+        ? `  - ${it.title}: ${money(sp.gross)} (includes ${money(sp.tax)} tax)`
+        : `  - ${it.title}: ${money(sp.net)} plus ${money(sp.tax)} tax = ${money(sp.gross)}`)
+    }
+  }
+  return lines.join('\n')
+}
+
+/** One deterministic sentence for the Payment Terms: how tax applies. Empty when no tax applies. */
+export function taxSentenceHtml(input: SowContentInput): string {
+  const tax = input.tax
+  if (!tax || !(tax.rate > 0) || input.retainer) return ''
+  const cv = Number(input.contractValue)
+  if (!Number.isFinite(cv) || cv <= 0) return ''
+  const sp = splitTax(cv, tax)
+  const money = (n: number) => escapeHtml(formatMoneyText(input.currency, n))
+  return tax.inclusive
+    ? `<p>All amounts include sales tax at ${tax.rate}% (${money(sp.tax)} of the ${money(sp.gross)} contract value).</p>`
+    : `<p>All amounts are stated exclusive of sales tax. Sales tax at ${tax.rate}% (${money(sp.tax)} on the ${money(sp.net)} contract value) is added to each invoice, for a total payable of ${money(sp.gross)}.</p>`
+}
+
+/** Backstop for the model: if the Payment Terms never mention the tax rate, append the deterministic sentence. */
+export function ensureTaxStated(paymentHtml: string, input: SowContentInput): string {
+  // The appended sentence is English; a drafted-in-another-language SOW relies on the prompt rule instead.
+  if (input.language && input.language !== 'en') return paymentHtml
+  const sentence = taxSentenceHtml(input)
+  if (!sentence) return paymentHtml
+  const rate = String(input.tax!.rate).replace('.', '\\.')
+  if (new RegExp(`${rate}\\s*%`).test(norm(paymentHtml))) return paymentHtml
+  return `${paymentHtml}${sentence}`
+}
+
+const SCHEDULE_WORDS: Record<string, { upfront: string; final: string; full: string; monthly: string; kickoff: string; beforeWork: string; finalApproval: string; monthlyTrig: string; tax: string }> = {
+  en: { upfront: 'Upfront payment (50%)', final: 'Final payment (50%)', full: 'Full payment', monthly: 'Monthly retainer', kickoff: 'Before work commences', beforeWork: 'Before work commences', finalApproval: 'Final delivery approval', monthlyTrig: 'Monthly — first of month', tax: 'tax' },
+  es: { upfront: 'Pago inicial (50%)', final: 'Pago final (50%)', full: 'Pago total', monthly: 'Iguala mensual', kickoff: 'Antes de comenzar el trabajo', beforeWork: 'Antes de comenzar el trabajo', finalApproval: 'Aprobación de la entrega final', monthlyTrig: 'Mensual — primer día del mes', tax: 'impuesto' },
+  fr: { upfront: 'Acompte (50 %)', final: 'Paiement final (50 %)', full: 'Paiement intégral', monthly: 'Forfait mensuel', kickoff: 'Avant le début des travaux', beforeWork: 'Avant le début des travaux', finalApproval: 'Approbation de la livraison finale', monthlyTrig: 'Mensuel — le premier du mois', tax: 'taxe' },
+  pt: { upfront: 'Pagamento inicial (50%)', final: 'Pagamento final (50%)', full: 'Pagamento integral', monthly: 'Retainer mensal', kickoff: 'Antes do início do trabalho', beforeWork: 'Antes do início do trabalho', finalApproval: 'Aprovação da entrega final', monthlyTrig: 'Mensal — primeiro dia do mês', tax: 'imposto' },
+  de: { upfront: 'Anzahlung (50 %)', final: 'Schlusszahlung (50 %)', full: 'Gesamtzahlung', monthly: 'Monatlicher Retainer', kickoff: 'Vor Arbeitsbeginn', beforeWork: 'Vor Arbeitsbeginn', finalApproval: 'Freigabe der Endlieferung', monthlyTrig: 'Monatlich — zum Ersten', tax: 'Steuer' },
+  sw: { upfront: 'Malipo ya awali (50%)', final: 'Malipo ya mwisho (50%)', full: 'Malipo kamili', monthly: 'Huduma endelevu ya kila mwezi', kickoff: 'Kabla ya kazi kuanza', beforeWork: 'Kabla ya kazi kuanza', finalApproval: 'Idhini ya uwasilishaji wa mwisho', monthlyTrig: 'Kila mwezi — mwanzo wa mwezi', tax: 'kodi' },
+}
+
+/**
+ * The Payment Schedule rows for every structure that is not an authored milestone list, so the section is always
+ * present and always shows the real instalments (amounts net of tax, tax stated per row). Display only: what is
+ * actually billed is still created from the structure at signing (lib/documents/post-signing.ts).
+ */
+export function derivedScheduleRows(input: SowContentInput): SowTableRow[] {
+  if (input.paymentStructure === 'milestones') return []
+  const w = (isSowLanguage(input.language) ? SCHEDULE_WORDS[input.language] : undefined) || SCHEDULE_WORDS.en
+  const tax = input.tax && input.tax.rate > 0 && !input.retainer ? input.tax : null
+  const cv = Number(input.contractValue)
+  if (!Number.isFinite(cv) || cv <= 0) return []
+  const instalments = structureInstalments(input.paymentStructure, cv)
+  const label = (it: PaymentInstalment) =>
+    it.title === 'Upfront payment (50%)' ? w.upfront
+    : it.title === 'Final payment (50%)' ? w.final
+    : it.title === 'Monthly retainer' ? w.monthly : w.full
+  const trig = (it: PaymentInstalment) =>
+    it.title === 'Final payment (50%)' || (it.title === 'Full payment' && input.paymentStructure === 'on_delivery') ? w.finalApproval
+    : it.title === 'Monthly retainer' ? w.monthlyTrig : w.beforeWork
+  return instalments.map(it => {
+    const sp = splitTax(it.amount, tax)
+    const taxNote = tax
+      ? ` · ${tax.inclusive ? '' : '+ '}${tax.rate}% ${w.tax} (${formatMoneyText(input.currency, sp.tax)})${tax.inclusive ? ' incl.' : ''}`
+      : ''
+    // Amount shown is net of tax when tax is exclusive, and the gross figure when it is inclusive — the figure the contract value is expressed in.
+    return { milestone: label(it), amount: String(tax && tax.inclusive ? sp.gross : sp.net), trigger: `${trig(it)}${taxNote}` }
+  })
+}
+
 // ── 1. Boilerplate sections — deterministic, never asked of the model ──
 //
 // These three sections are never sent to the AI (see AI_SECTION_IDS
@@ -281,34 +428,38 @@ export function sowLanguageName(code: unknown): string | undefined {
 // SOW_LANGUAGE_NAMES are supported; an unrecognized code falls back to
 // English rather than emitting a mixed-language document.
 
+const REPRESENTED_BY: Record<string, string> = {
+  en: 'represented by', es: 'representado por', fr: 'représenté par', pt: 'representado por', de: 'vertreten durch', sw: 'anayewakilishwa na',
+}
+
 const BOILERPLATE_TEMPLATES: Record<string, (agency: string, client: string, law: string) => Record<string, string>> = {
   en: (agency, client, law) => ({
-    parties: `<p>This Statement of Work is entered into between <strong>${agency}</strong> ("Agency") and <strong>${client}</strong> ("Client").</p>`,
-    governing_law: `<p>This Agreement is governed by the laws of ${law}.</p>`,
+    parties: `<p>This Statement of Work ("SOW") is entered into between <strong>${agency}</strong> ("Provider") and ${client} ("Client").</p>`,
+    governing_law: `<p>This SOW is governed by the laws of ${law}.</p>`,
     signature: `<p>By signing below, both parties agree to the terms of this Statement of Work.</p>`,
   }),
   es: (agency, client, law) => ({
-    parties: `<p>Este Acuerdo de Alcance de Trabajo se celebra entre <strong>${agency}</strong> ("la Agencia") y <strong>${client}</strong> ("el Cliente").</p>`,
+    parties: `<p>Este Acuerdo de Alcance de Trabajo se celebra entre <strong>${agency}</strong> ("la Agencia") y ${client} ("el Cliente").</p>`,
     governing_law: `<p>Este Acuerdo se rige por las leyes de ${law}.</p>`,
     signature: `<p>Al firmar a continuación, ambas partes aceptan los términos de este Acuerdo de Alcance de Trabajo.</p>`,
   }),
   fr: (agency, client, law) => ({
-    parties: `<p>Le présent Énoncé des travaux est conclu entre <strong>${agency}</strong> (l'« Agence ») et <strong>${client}</strong> (le « Client »).</p>`,
+    parties: `<p>Le présent Énoncé des travaux est conclu entre <strong>${agency}</strong> (l'« Agence ») et ${client} (le « Client »).</p>`,
     governing_law: `<p>Le présent Accord est régi par les lois de ${law}.</p>`,
     signature: `<p>En signant ci-dessous, les deux parties acceptent les termes du présent Énoncé des travaux.</p>`,
   }),
   pt: (agency, client, law) => ({
-    parties: `<p>Este Termo de Abertura de Escopo é celebrado entre <strong>${agency}</strong> ("Agência") e <strong>${client}</strong> ("Cliente").</p>`,
+    parties: `<p>Este Termo de Abertura de Escopo é celebrado entre <strong>${agency}</strong> ("Agência") e ${client} ("Cliente").</p>`,
     governing_law: `<p>Este Acordo é regido pelas leis de ${law}.</p>`,
     signature: `<p>Ao assinar abaixo, ambas as partes concordam com os termos deste Termo de Abertura de Escopo.</p>`,
   }),
   de: (agency, client, law) => ({
-    parties: `<p>Diese Leistungsbeschreibung wird zwischen <strong>${agency}</strong> ("Agentur") und <strong>${client}</strong> ("Kunde") geschlossen.</p>`,
+    parties: `<p>Diese Leistungsbeschreibung wird zwischen <strong>${agency}</strong> ("Agentur") und ${client} ("Kunde") geschlossen.</p>`,
     governing_law: `<p>Diese Vereinbarung unterliegt den Gesetzen von ${law}.</p>`,
     signature: `<p>Mit der nachstehenden Unterschrift stimmen beide Parteien den Bedingungen dieser Leistungsbeschreibung zu.</p>`,
   }),
   sw: (agency, client, law) => ({
-    parties: `<p>Hati hii ya Wigo wa Kazi imeingiwa kati ya <strong>${agency}</strong> ("Wakala") na <strong>${client}</strong> ("Mteja").</p>`,
+    parties: `<p>Hati hii ya Wigo wa Kazi imeingiwa kati ya <strong>${agency}</strong> ("Wakala") na ${client} ("Mteja").</p>`,
     governing_law: `<p>Makubaliano haya yanaongozwa na sheria za ${law}.</p>`,
     signature: `<p>Kwa kutia sahihi hapa chini, pande zote mbili zinakubali masharti ya Hati hii ya Wigo wa Kazi.</p>`,
   }),
@@ -380,13 +531,16 @@ export function sectionTitle(id: string, language?: string): string {
 
 export function buildBoilerplateSections(input: SowContentInput): Record<string, string> {
   const agency = escapeHtml(input.agencyName)
-  const client = escapeHtml(input.clientName)
-  const law    = escapeHtml(input.governingLaw)
-  const template = (isSowLanguage(input.language) ? BOILERPLATE_TEMPLATES[input.language] : undefined) || BOILERPLATE_TEMPLATES.en
+  const lang   = isSowLanguage(input.language) ? input.language : 'en'
+  const rep    = input.clientRepresentative && !isBlankText(input.clientRepresentative) && input.clientRepresentative.trim() !== input.clientName.trim()
+    ? `, ${REPRESENTED_BY[lang] || REPRESENTED_BY.en} ${escapeHtml(input.clientRepresentative.trim())}${input.clientRepresentativeTitle && !isBlankText(input.clientRepresentativeTitle) ? `, ${escapeHtml(input.clientRepresentativeTitle.trim())}` : ''}`
+    : ''
+  // The legal name is the bold part; the representative clause follows it in plain text.
+  const client = `<strong>${escapeHtml(input.clientName)}</strong>${rep}`
+  const law    = lang === 'en' ? escapeHtml(lawWithArticle(input.governingLaw)) : escapeHtml(input.governingLaw)
+  const template = BOILERPLATE_TEMPLATES[lang] || BOILERPLATE_TEMPLATES.en
   return template(agency, client, law)
 }
-
-// ── 2. Prompt — plain delimited content only, never JSON ───────────────
 
 const SECTION_MARKER = (id: string) => `<<<SECTION:${id}>>>`
 const TABLE_MARKER   = (id: string) => `<<<TABLE:${id}>>>`
@@ -413,11 +567,11 @@ function retainerTotalPretty(input: SowContentInput): string | null {
 }
 
 function retainerPromptLines(input: SowContentInput): string {
-  if (!input.retainer) return `Contract value: ${input.currency} ${input.contractValue}`
+  if (!input.retainer) return `Contract value${input.tax && input.tax.rate > 0 ? (input.tax.inclusive ? ' (tax included)' : ' (excluding tax)') : ''}: ${formatMoneyText(input.currency, input.contractValue)}`
   const total = retainerTotalText(input)
-  return `Monthly retainer fee: ${input.currency} ${input.contractValue} per month (this is a recurring monthly fee, NOT a one-off contract total)\n` +
+  return `Monthly retainer fee: ${formatMoneyText(input.currency, input.contractValue)} per month (this is a recurring monthly fee, NOT a one-off contract total)\n` +
     (input.retainer.months
-      ? `Retainer term: ${input.retainer.months} month${input.retainer.months === 1 ? '' : 's'} (total commitment ${total})`
+      ? `Retainer term: ${input.retainer.months} month${input.retainer.months === 1 ? '' : 's'} (total commitment ${retainerTotalPretty(input) || total})`
       : 'Retainer term: open-ended — billed monthly until either party ends it in writing')
 }
 
@@ -457,8 +611,8 @@ ${TABLE_END}` : ''
   return `You are a professional contract drafter for a creative/digital agency.
 Draft the content for a Statement of Work. Use ONLY the exact figures provided below. Never invent payment amounts, fees, rates, or revision counts.
 
-Agency: ${input.agencyName}
-Client: ${input.clientName}
+Provider (the agency): ${input.agencyName}
+Client (the contracting party): ${input.clientName}${input.clientRepresentative && !isBlankText(input.clientRepresentative) && input.clientRepresentative.trim() !== input.clientName.trim() ? `\nClient's authorised representative (signs for the Client): ${input.clientRepresentative.trim()}${input.clientRepresentativeTitle && !isBlankText(input.clientRepresentativeTitle) ? `, ${input.clientRepresentativeTitle.trim()}` : ''}` : ''}
 Project: ${input.projectName}${input.projectDisc ? ` (${input.projectDisc})` : ''}
 Project type: ${input.projectType}
 ${retainerPromptLines(input)}
@@ -474,7 +628,7 @@ ${input.outOfScope || 'To be defined'}
 Timeline: ${input.timeline || 'To be agreed'}
 Payment structure: ${input.paymentLabel}
 Revision rounds: ${input.revisionRounds}
-Governing law: ${input.governingLaw}
+Governing law: ${input.governingLaw}${taxPromptBlock(input) ? `\n${taxPromptBlock(input)}` : ''}
 
 Output format — this is plain text, NOT JSON.
 
@@ -503,14 +657,20 @@ Do not add any other commentary before, between, or after sections/tables.
 
 Rules:
 - Every prose section's content must be proper HTML (use <p>, <ul>, <li>, <strong>). No raw text outside tags.
-- Payment section must state exactly "${input.currency} ${input.contractValue}"${input.retainer ? ' as the MONTHLY retainer fee ("per month"), never as a one-off total,' : ''} and the exact payment structure above.${input.retainer ? ' State the retainer term exactly as given above.' : ''} Do NOT invent percentages or amounts beyond what's stated.
+- Payment section must state exactly "${formatMoneyText(input.currency, input.contractValue)}"${input.retainer ? ' as the MONTHLY retainer fee ("per month"), never as a one-off total,' : ''} and the exact payment structure above.${input.retainer ? ' State the retainer term exactly as given above.' : ''} Do NOT invent percentages or amounts beyond what's stated.${taxPromptBlock(input) ? ' It must also say how sales tax applies, using exactly the tax rate and figures given under "Sales tax" above (including each instalment where listed), and must not state any amount that is not given.' : ''}
+- Always write money as the currency code, a space, thousands separators and two decimals (for example ${formatMoneyText(input.currency, 1234.5)}) — never "${input.currency}1234.5" or "${input.currency} 1234".
+- Refer to the two parties only as "Provider" (${input.agencyName}) and "Client" (${input.clientName}). Never use "Agency", "Customer", "Company" or "Vendor" as a defined term, and name the Client only by the exact legal name given above.
+- Do NOT restate the parties preamble ("entered into between …") or the governing law in any section: both have their own sections. Project Overview covers the objective, a short summary of what is delivered, the timeline and the contract value (written once, in the format above) and nothing else.
+- Timeline and Deliverables must agree. Use the SAME phase names in the Timeline table and in each deliverable's Target date cell, and make each deliverable's Target date exactly the end date of the Timeline phase in which it is delivered. Timeline phases must be consecutive with exact start–end dates covering the whole project period from the brief without gaps or overlaps, and each duration label must match its own dates. If the brief gives no dates, use durations only and write "To be confirmed" as the date — never invent dates.
+- If a deliverable is a website or app, state in Assumptions who is responsible for hosting, domain registration and going live; do not assume the Provider does unless the brief says so.
+- The Revision Policy must say that work beyond the included revision rounds, or outside the listed deliverables, requires a written change order signed by both parties before it begins.
 - Out of scope section must list every item from the out-of-scope brief as explicit exclusions. Be specific.
 - Revision policy must reference exactly ${input.revisionRounds} revision round(s).
 - Deliverables table rows must cover every item in the deliverables brief above — one row per deliverable, not grouped.
 - Roles table must reflect that ${input.agencyName} is the Provider and ${input.clientName} is the Client.
 - Write with professional, authoritative language appropriate for a legal document.
 - Never add a "late fee rate" or "revision fee" unless explicitly provided.
-- Whenever you write a calendar date, include the year (e.g. "June 16, 2026"). Never print a date without it.
+- Whenever you write a calendar date, include the year and use this style: ${input.dateStyle === 'us' ? '"June 16, 2026" (month day, year)' : '"16 June 2026" (day month year)'}. Never print a date without the year and never mix the two styles.
 - The Dispute Resolution section covers only the escalation steps (negotiation, mediation, courts). Do NOT restate or name the governing law there: it has its own Governing Law section.${standardsPromptBlock(input.standards)}${wantsPaymentSchedule ? '\n- Payment Schedule table: propose sensible milestone titles and trigger conditions based on the deliverables/timeline above. Amount must be exactly 0 on every row — never write a dollar figure or percentage there.' : ''}${languageInstruction}${reminder}`
 }
 
@@ -881,7 +1041,7 @@ export function buildFallbackSections(input: SowContentInput): Record<string, st
       ? `<p>${t.paymentMonthly}: <strong>${escapeHtml(String(input.currency))} ${escapeHtml(prettyAmount(input.contractValue))}</strong> ${t.perMonth}. ${
           input.retainer.months ? t.paymentTerm(input.retainer.months, escapeHtml(retainerTotalPretty(input) || '')) : t.paymentOpenEnded
         }. ${t.paymentStructure}: ${escapeHtml(localizedPaymentLabel(input))}.</p>`
-      : `<p>${t.paymentTotal}: <strong>${escapeHtml(String(input.currency))} ${escapeHtml(prettyAmount(input.contractValue))}</strong>. ${t.paymentStructure}: ${escapeHtml(localizedPaymentLabel(input))}.</p>`,
+      : `<p>${t.paymentTotal}: <strong>${escapeHtml(String(input.currency))} ${escapeHtml(prettyAmount(input.contractValue))}</strong>. ${t.paymentStructure}: ${escapeHtml(localizedPaymentLabel(input))}.</p>${!input.language || input.language === 'en' ? taxSentenceHtml(input) : ''}`,
     revisions: `<p>${t.revisions(input.revisionRounds)}</p>`,
     ip: `<p>${t.ip(escapeHtml(input.agencyName))}</p>`,
     confidentiality: `<p>${t.confidentiality}</p>`,
@@ -898,7 +1058,7 @@ const FALLBACK_TABLE_STRINGS: Record<string, {
   msKickoff: string; msMid: string; msFinal: string
   trigSigning: string; trigMid: string; trigFinal: string
 }> = {
-  en: { tbc: 'To be confirmed', approvedByClient: 'Reviewed and approved by Client', phase: 'Phase', genericDeliverable: 'Project deliverable as discussed with the Agency', delivery: 'Delivery',
+  en: { tbc: 'To be confirmed', approvedByClient: 'Reviewed and approved by Client', phase: 'Phase', genericDeliverable: 'Project deliverable as discussed with the Provider', delivery: 'Delivery',
         roleDelivery: 'Delivery of contracted work', roleFeedback: 'Timely feedback and approvals', roleMaterials: 'Provision of required materials and access', rolePayment: 'Payment per the schedule below',
         msKickoff: 'Kickoff & Discovery', msMid: 'Mid-project delivery', msFinal: 'Final delivery & sign-off',
         trigSigning: 'Upon signing', trigMid: 'Upon delivery of key deliverables', trigFinal: 'Upon final acceptance' },

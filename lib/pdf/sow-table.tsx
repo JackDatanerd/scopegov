@@ -33,8 +33,7 @@ function cellText(sectionId: string, key: string, raw: string, currency?: string
   if (sectionId !== 'payment_schedule' || key !== 'amount' || !currency) return raw
   const n = parseTableAmount(raw)
   if (n === null) return raw
-  const whole = Math.round(Math.abs(n) * 100) % 100 === 0
-  const body = Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: whole ? 0 : 2, maximumFractionDigits: 2 })
+  const body = Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
   // FIX (SOW lifecycle pass 21, B1): sign goes after the currency code, like the signed milestone block ("USD -500"), not before it.
   return `${currency} ${n < 0 ? '-' : ''}${body}`
 }

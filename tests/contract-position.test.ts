@@ -41,7 +41,7 @@ describe('computeContractPositions', () => {
       change_orders: [{ id: 'c1', project_id: 'p1', total: 300 }],
     })
     const out = await computeContractPositions(svc, [{ id: 'p1', contract_value: 4000, type: 'fixed' }])
-    expect(out.get('p1')).toEqual({ contractedValue: 4500, invoicedToDate: 1500, paidToDate: 1100, atRiskValue: 300 })
+    expect(out.get('p1')).toMatchObject({ contractedValue: 4500, invoicedToDate: 1500, paidToDate: 1100, atRiskValue: 300 })
   })
   it('keeps a voided invoice out of invoiced-to-date but still counts money it actually collected', async () => {
     // FIX (section-12 audit): void/route.ts requires acknowledging any payments
@@ -59,7 +59,7 @@ describe('computeContractPositions', () => {
       change_orders: [],
     })
     const out = await computeContractPositions(svc, [{ id: 'p1', contract_value: 4000, type: 'fixed' }])
-    expect(out.get('p1')).toEqual({ contractedValue: 4000, invoicedToDate: 1000, paidToDate: 1500, atRiskValue: 0 })
+    expect(out.get('p1')).toMatchObject({ contractedValue: 4000, invoicedToDate: 1000, paidToDate: 1500, atRiskValue: 0 })
   })
   it("does not add a retainer-renewal amendment on top of the rate it replaced", async () => {
     const svc = fakeService({
@@ -71,5 +71,31 @@ describe('computeContractPositions', () => {
     })
     const out = await computeContractPositions(svc, [{ id: 'r1', contract_value: 6000, type: 'retainer', retainer_duration_months: 12 }])
     expect(out.get('r1')!.contractedValue).toBe(6000 * 12 + 1000)
+  })
+})
+
+describe('contract position: net basis', () => {
+  it('scales cash received to net of tax and flags taxed projects', async () => {
+    const svc = fakeService({
+      amendments: [],
+      invoices: [{ id: 'i1', project_id: 'p1', amount: 2165, subtotal: 2000, amount_paid: 2165, status: 'paid' }],
+      change_orders: [],
+    })
+    const out = await computeContractPositions(svc, [{ id: 'p1', contract_value: 4000, type: 'fixed' }])
+    const p = out.get('p1')!
+    expect(p.invoicedToDate).toBe(2000)
+    expect(p.paidToDate).toBe(2165)
+    expect(p.paidToDateNet).toBeCloseTo(2000, 2)
+    expect(p.hasTax).toBe(true)
+  })
+  it('leaves untaxed projects untouched', async () => {
+    const svc = fakeService({
+      amendments: [],
+      invoices: [{ id: 'i1', project_id: 'p1', amount: 2000, subtotal: 2000, amount_paid: 2000, status: 'paid' }],
+      change_orders: [],
+    })
+    const out = await computeContractPositions(svc, [{ id: 'p1', contract_value: 4000, type: 'fixed' }])
+    expect(out.get('p1')!.hasTax).toBe(false)
+    expect(out.get('p1')!.paidToDateNet).toBe(2000)
   })
 })

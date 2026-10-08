@@ -27,7 +27,7 @@ interface InvoiceData {
   invoiceNumber: string | null
   poNumber: string | null
   milestoneTrigger: string | null
-  contractPosition: { contractedValue: number; invoicedToDate: number; paidToDate: number } | null
+  contractPosition: { contractedValue: number; invoicedToDate: number; paidToDate: number; excludesTax?: boolean } | null
   // FIX (section-12 audit, flagship finding): the API now sends these
   // (see the matching route fix) — added here so the page can render
   // the itemized breakdown and SOW/CO cross-reference the PDF already
@@ -360,19 +360,19 @@ export default function InvoicePortalPage() {
               <div style={{ marginTop: 20 }}>
                 <div className="portal-section-title">Contract position</div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5, color: '#555', padding: '5px 0' }}>
-                  <span>Contracted value</span>
+                  <span>Contracted value{invoice.contractPosition.excludesTax ? ' (excl. tax)' : ''}</span>
                   <span style={{ fontFamily: 'IBM Plex Mono, monospace' }}>{invoice.currency} {formatAmount(invoice.contractPosition.contractedValue, invoice.currency)}</span>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5, color: '#555', padding: '5px 0' }}>
-                  <span>Invoiced to date (incl. this invoice)</span>
+                  <span>Invoiced to date (incl. this invoice{invoice.contractPosition.excludesTax ? ', excl. tax' : ''})</span>
                   <span style={{ fontFamily: 'IBM Plex Mono, monospace' }}>{invoice.currency} {formatAmount(invoice.contractPosition.invoicedToDate, invoice.currency)}</span>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5, color: '#555', padding: '5px 0' }}>
-                  <span>Paid to date</span>
+                  <span>Paid to date{invoice.contractPosition.excludesTax ? ' (excl. tax)' : ''}</span>
                   <span style={{ fontFamily: 'IBM Plex Mono, monospace' }}>{invoice.currency} {formatAmount(invoice.contractPosition.paidToDate, invoice.currency)}</span>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, fontWeight: 600, padding: '8px 0 0', marginTop: 2, borderTop: '1px solid #E5E1D8' }}>
-                  <span>Remaining contract value</span>
+                  <span>Remaining contract value{invoice.contractPosition.excludesTax ? ' (excl. tax)' : ''}</span>
                   <span style={{ fontFamily: 'IBM Plex Mono, monospace', color: accent }}>
                     {invoice.currency} {formatAmount(Math.max(0, invoice.contractPosition.contractedValue - invoice.contractPosition.invoicedToDate), invoice.currency)}
                   </span>

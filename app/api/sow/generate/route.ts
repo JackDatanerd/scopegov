@@ -17,9 +17,11 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { getPendingApprovalForDocument } from '@/lib/approvals/engine'
 import { logAudit } from '@/lib/utils/audit'
-import { sanitizeRichText, truncateText } from '@/lib/utils/sanitize'
+import { sanitizeRichText, sanitizePlainText, truncateText } from '@/lib/utils/sanitize'
 import { isBlankText } from '@/lib/utils/client-input'
-import { applyAgencyStandards, ensureContractValueStated, type AgencyStandards } from '@/lib/ai/sow-content'
+import { applyAgencyStandards, ensureContractValueStated, ensureTaxStated, derivedScheduleRows, type AgencyStandards } from '@/lib/ai/sow-content'
+import { workspaceTaxDefaults } from '@/lib/documents/tax-defaults'
+import { sowDateStyle } from '@/lib/utils/date-style'
 import { pickAgencyStandards } from '@/lib/utils/agency-standards'
 import { canReadProject } from '@/lib/utils/project-access'
 import { isTerminalStatus } from '@/lib/utils/project-status'
@@ -46,7 +48,7 @@ import { REQUIRED_SECTION_IDS, sanitizeTableRows } from '@/lib/sow/sections'
 // could push an arbitrary amount of text through the model (cost/latency)
 // and crowd out the actual drafting instructions. Generous enough that no
 // real brief is ever truncated.
-const FIELD_LIMITS = { objective: 4000, deliverables: 8000, outOfScope: 4000, timeline: 2000, projectType: 120 }
+const FIELD_LIMITS = { objective: 4000, deliverables: 8000, outOfScope: 4000, timeline: 2000, projectType: 120, clientCompany: 160, clientRepresentativeTitle: 120 }
 
 function capped(value: unknown, max: number): string {
   return typeof value === 'string' ? truncateText(value, max) : ''
@@ -92,6 +94,10 @@ export async function POST(request: NextRequest) {
     // FIX (section-9 audit, 9-B11): every one of these went into the AI
     // prompt — and, for paymentStructure, straight into the drafted
     // contract text — completely unvalidated.
+    // The contracting party. When the person signing is acting for a company, that company is the legal Client — it has to be
+    // known BEFORE the document is drafted so the Parties clause, the PDF parties box and the signature block all agree.
+    const requestedCompany = sanitizePlainText(capped(body.clientCompany, FIELD_LIMITS.clientCompany)).trim()
+    const clientRepresentativeTitle = sanitizePlainText(capped(body.clientRepresentativeTitle, FIELD_LIMITS.clientRepresentativeTitle)).trim()
     const projectType   = capped(body.projectType,   FIELD_LIMITS.projectType)
     const objective     = capped(body.objective,     FIELD_LIMITS.objective)
     const deliverables  = capped(body.deliverables,  FIELD_LIMITS.deliverables)
@@ -120,7 +126,7 @@ export async function POST(request: NextRequest) {
     // Fetch project + client + workspace for context
     const { data: project, error: projectErr } = await (service as any)
       .from('projects')
-      .select('id,name,disc,type,retainer_duration_months,status,contract_value,currency,clients(name,email,company_name),workspaces(agency_name,governing_law,sow_language)')
+      .select('id,name,disc,type,retainer_duration_months,status,contract_value,currency,client_id,clients(name,email,company_name),workspaces(agency_name,governing_law,sow_language,legal_address)')
       .eq('id', projectId).eq('workspace_id', session.workspaceId).is('deleted_at', null).maybeSingle()
     // SOW lifecycle pass 17, B5: a failed read is not "not found" — fail into the route's 500 handler.
     if (projectErr) throw new Error(`project read failed: ${projectErr.message}`)
@@ -201,7 +207,30 @@ export async function POST(request: NextRequest) {
     if (!limited.allowed) return NextResponse.json({ error: limited.message }, { status: 429 })
 
     const agencyName    = project.workspaces?.agency_name || session.agencyName
-    const clientName    = project.clients?.company_name || project.clients?.name || 'Client'
+    // Save a newly supplied contracting company on the client record, so every later document (CO, invoice, PDFs)
+    // names the same party. A blank request keeps whatever is already on file; a person who can't edit clients
+    // can't change it from here.
+    const storedCompany = String(project.clients?.company_name || '').trim()
+    if (requestedCompany && requestedCompany !== storedCompany) {
+      if (!hasPermission(session, 'CREATE_PROJECTS'))
+        return NextResponse.json({ error: 'You need permission to edit client details to change the contracting company. Ask a workspace admin, or leave the company as it is on the client record.' }, { status: 403 })
+      const { error: companyErr } = await (service as any).from('clients')
+        .update({ company_name: requestedCompany }).eq('id', project.client_id).eq('workspace_id', session.workspaceId)
+      if (companyErr) throw new Error(`client company update failed: ${companyErr.message}`)
+      project.clients = { ...(project.clients || {}), company_name: requestedCompany }
+      await logAudit(service, {
+        workspaceId: session.workspaceId, actorId: session.id,
+        actorEmail: session.email, actorName: session.name,
+        eventType: 'client.updated', entityType: 'client',
+        entityId: project.client_id, entityName: project.clients?.name || null,
+        metadata: { company_name: requestedCompany, previous_company_name: storedCompany || null, via: 'sow.generate' },
+      }).catch(() => {})
+    }
+    const clientCompany = String(project.clients?.company_name || '').trim()
+    const clientName    = clientCompany || project.clients?.name || 'Client'
+    // When the Client is a company, the named contact is the person who signs for it.
+    const clientRepresentative = clientCompany ? (project.clients?.name || null) : null
+    const taxDefaults   = await workspaceTaxDefaults(service, session.workspaceId)
     // FIX (SOW-lifecycle fix round — headline finding): contractValue and
     // currency used to come straight from the request body — every other
     // legally-material field in this route is validated against a closed
@@ -289,6 +318,10 @@ export async function POST(request: NextRequest) {
       // instruction and translated boilerplate this now drives.
       language: project.workspaces?.sow_language || 'en',
       standards,
+      clientRepresentative,
+      clientRepresentativeTitle: clientRepresentative ? (clientRepresentativeTitle || null) : null,
+      tax: taxDefaults.taxRate > 0 ? { rate: taxDefaults.taxRate, inclusive: taxDefaults.taxInclusive } : null,
+      dateStyle: sowDateStyle(project.workspaces?.legal_address),
     }
 
     const MAX_ATTEMPTS = 3
@@ -360,7 +393,9 @@ export async function POST(request: NextRequest) {
       deliverables: aiTables?.deliverables?.length ? aiTables.deliverables : fallbackTables.deliverables,
       timeline:     aiTables?.timeline?.length     ? aiTables.timeline     : fallbackTables.timeline,
       roles:        aiTables?.roles?.length        ? aiTables.roles        : fallbackTables.roles,
-      payment_schedule: paymentStructure !== 'milestones' ? [] :
+      // Always populated: a milestone SOW proposes (and foots) its own schedule; every other structure shows the
+      // real instalments, derived from the structure and the contract value, so the section is never empty or hidden.
+      payment_schedule: paymentStructure !== 'milestones' ? derivedScheduleRows(contentInput) :
         aiTables?.payment_schedule?.length ? withComputedAmounts(aiTables.payment_schedule) : fallbackTables.payment_schedule,
     }
 
@@ -372,6 +407,7 @@ export async function POST(request: NextRequest) {
     const allContent: Record<string, string> = applyAgencyStandards({ ...boilerplate, ...aiSections }, standards, revisionRounds)
     // The contract value is data, the payment prose is model-written: never let them disagree.
     allContent.payment = ensureContractValueStated(allContent.payment || '', contractValue, curr, contentInput.retainer)
+    allContent.payment = ensureTaxStated(allContent.payment, contentInput)
 
     const parsed: { sections: any[]; metadata: any } = {
       sections: SOW_SECTION_DEFS.map(def => ({

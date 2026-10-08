@@ -37,9 +37,11 @@ describe('roundCurrency — exact decimal half-up', () => {
 describe('PDF dates use the workspace timezone', () => {
   const src = readFileSync('lib/pdf/renderer.tsx', 'utf8')
   it('every fmtDate call passes the workspace timezone', () => {
-    const lines = src.split('\n').filter(l => l.includes('fmtDate(') && !l.includes('function fmtDate'))
-    expect(lines.length).toBeGreaterThan(5)
-    for (const l of lines) expect(l.match(/fmtDate\(/g)!.length).toBe((l.match(/data\.timeZone(?:, data\.language)?\)/g) ?? []).length)
+    // fmtDate is only ever called through each document's `fd` wrapper, which is the one place the workspace timezone is passed.
+    const raw = src.split('\n').filter(l => l.includes('fmtDate(') && !l.includes('function fmtDate'))
+    expect(raw.length).toBe(3) // Sow / Co / Invoice wrappers
+    for (const l of raw) expect(l).toContain('data.timeZone')
+    expect((src.match(/\bfd\(/g) ?? []).length).toBeGreaterThan(5)
   })
   it.each([
     'app/api/pdf/invoice/[id]/route.ts', 'app/api/pdf/sow/[id]/route.ts', 'app/api/pdf/co/[id]/route.ts',

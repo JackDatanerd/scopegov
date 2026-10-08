@@ -22,7 +22,10 @@ vi.mock('@/lib/email/delivery', () => ({ checkedSend: vi.fn(() => Promise.resolv
 vi.mock('@/lib/email/reply-to', () => ({ resolveReplyTo: vi.fn(() => Promise.resolve(null)) }))
 vi.mock('@/lib/utils/client-contacts', () => ({ withPrimaryContactCc: vi.fn(() => Promise.resolve([])) }))
 vi.mock('@/lib/utils/workspace-secret', () => ({ getWorkspaceJwtSecret: vi.fn(() => Promise.resolve(null)) }))
-vi.mock('@/lib/documents/co-contract-value', () => ({ getContractValueBefore: vi.fn(() => Promise.resolve(null)) }))
+vi.mock('@/lib/documents/co-contract-value', () => ({
+  getContractValueBefore: vi.fn(() => Promise.resolve(null)),
+  coNetImpact: (c: any) => Number(c?.subtotal ?? c?.total) || 0,
+}))
 vi.mock('@/lib/documents/executed-pdf', () => ({
   computeContentHash: vi.fn(() => 'fake-hash'),
   storeExecutedPdf: vi.fn(() => Promise.resolve(null)),

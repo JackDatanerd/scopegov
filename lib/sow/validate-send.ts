@@ -197,6 +197,15 @@ export function validateSowForSend(input: {
     }
   }
 
+  // Tax: when the workspace charges tax, the invoices will carry it. A Payment Terms section that never mentions the rate
+  // leaves the client to discover it on the first invoice, and SOWs usually say "no other amounts apply".
+  const taxRate = Number(input.metadata?.taxRate)
+  if (paymentText && Number.isFinite(taxRate) && taxRate > 0) {
+    const rate = String(taxRate).replace('.', '\\.')
+    if (!new RegExp(`${rate}\\s*%`).test(paymentText))
+      warnings.push(`Invoices will add ${taxRate}% tax, but the Payment Terms text never mentions it. State how tax applies so the signed SOW and the invoices agree.`)
+  }
+
   // Milestone structure: the schedule is part of the agreement and has to foot.
   if (input.metadata?.paymentStructure === 'milestones') {
     const schedule = byId('payment_schedule')
