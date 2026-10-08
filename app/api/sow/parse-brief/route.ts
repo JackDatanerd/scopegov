@@ -1,4 +1,5 @@
 export const runtime = 'nodejs'
+export const maxDuration = 60
 
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
@@ -7,6 +8,7 @@ import { truncateText } from '@/lib/utils/sanitize'
 import { checkAiRateLimit, recordAiUsage } from '@/lib/utils/rate-limit'
 import { createServiceClient } from '@/lib/supabase/server'
 import Anthropic from '@anthropic-ai/sdk'
+import { aiModel, structuredJobParams, scaleMaxTokens } from '@/lib/ai/model'
 
 // FIX (re-audit — build-blocking): was constructed at module scope, so an
 // unset ANTHROPIC_API_KEY turns importing this route into a hard build
@@ -66,9 +68,11 @@ Rules:
 - revisionRounds must be an integer between 1 and 5. Default 2 if not mentioned.
 - Never invent payment amounts or deadlines.`
 
+    const model = aiModel()
     const msg = await anthropicClient().messages.create({
-      model:      'claude-haiku-4-5-20251001',
-      max_tokens: 3000,
+      model,
+      max_tokens: scaleMaxTokens(model, 3000),
+      ...structuredJobParams(model),
       messages:   [{ role: 'user', content: prompt }],
     })
 

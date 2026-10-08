@@ -1,10 +1,21 @@
-AI draft — forced tool_choice rejected by newer models (base: b73f416)
+AI: move every model call to Claude Sonnet 5.5 + make CO/invoice drafting work on it (base: b73f416)
 
-B1  app/api/co/draft/route.ts, app/api/invoices/draft/route.ts, lib/ai/tool-call.ts (new)
-    "Draft with AI" forced a tool call (tool_choice type 'tool'). With ANTHROPIC_MODEL pointed at a model that rejects
-    that (400 "tool_choice: type "tool" and "any" are not supported for this model") every CO draft returned a 500.
-    New createWithTool() keeps the forced call where it works; on that specific 400 it retries once with
-    tool_choice 'auto' and an explicit "call the tool" instruction, and remembers the model for the instance.
-    Both draft routes use it (the invoice route is hardcoded to Haiku today, so this is future-proofing).
+B1  "Draft with AI" (CO, invoice) forced tool_choice type 'tool'; Sonnet 5.5 rejects that with a 400
+    (tool_choice: type "tool" and "any" are not supported for this model), so every CO draft was a 500.
+    lib/ai/tool-call.ts createWithTool(): forced call where allowed, one retry with tool_choice 'auto' + an explicit
+    "call the tool" instruction on that specific 400, model remembered per instance.
 
-Tests: tests/ai-tool-call.test.ts (3). Related CO/trial suites pass; tsc --noEmit clean. No migration.
+M1  lib/ai/model.ts (new): ONE model setting. aiModel() = ANTHROPIC_MODEL || 'claude-sonnet-5-5'. All six call sites use
+    it: co/draft, invoices/draft, sow/generate, sow/regenerate-section, sow/parse-brief, lib/ai/guardian.ts (the last
+    three/four were hardcoded to Haiku 4.5).
+M2  Sonnet 5.5 request rules handled in structuredJobParams()/scaleMaxTokens():
+    - thinking is ON by default and counts against max_tokens (Guardian's 400-token budget could be consumed with no
+      verdict left) -> thinking: { type: 'between_tools' } (the lowest setting; { type: 'disabled' } is a 400 on 5.5),
+      sent only to Sonnet 5.5;
+    - non-default temperature is a 400 on 5.x -> Guardian's temperature: 0 is only sent to models that accept it;
+    - tokenizer counts ~30% more -> output budgets x1.5 on 5.x models.
+M3  maxDuration = 60 on co/draft, invoices/draft, sow/parse-brief, sow/regenerate-section (they had none).
+M4  .env.local.example and README: ANTHROPIC_MODEL=claude-sonnet-5-5.
+
+Tests: tests/ai-tool-call.test.ts (3), tests/ai-model.test.ts (5). tsc --noEmit clean; 505 related tests pass. No migration.
+Deploy: set ANTHROPIC_MODEL=claude-sonnet-5-5 in Vercel (or delete it - that is now the default) and redeploy.

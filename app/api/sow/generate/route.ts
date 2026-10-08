@@ -25,6 +25,7 @@ import { canReadProject } from '@/lib/utils/project-access'
 import { isTerminalStatus } from '@/lib/utils/project-status'
 import { checkAiRateLimit, recordAiUsage } from '@/lib/utils/rate-limit'
 import Anthropic from '@anthropic-ai/sdk'
+import { aiModel, structuredJobParams, scaleMaxTokens } from '@/lib/ai/model'
 import {
   SOW_SECTION_DEFS, buildBoilerplateSections,
   buildSowContentPrompt, parseDelimitedSections, parseTableSections,
@@ -60,7 +61,7 @@ function anthropicClient(): Anthropic {
   if (!_client) _client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
   return _client
 }
-const MODEL  = process.env.ANTHROPIC_MODEL || 'claude-haiku-4-5-20251001'
+const MODEL  = aiModel()
 
 const PAYMENT_STRUCTURE_LABELS: Record<string, string> = {
   '50_50':       '50% due upfront, 50% due upon final delivery',
@@ -296,7 +297,8 @@ export async function POST(request: NextRequest) {
       try {
         const msg = await anthropicClient().messages.create({
           model:      MODEL,
-          max_tokens: 8000,
+          max_tokens: scaleMaxTokens(MODEL, 8000),
+          ...structuredJobParams(MODEL),
           messages:   [{ role: 'user', content: prompt }],
         })
         await recordAiUsage(service, session.workspaceId, session.id, 'sow.generate')

@@ -1,5 +1,6 @@
 // app/api/co/draft/route.ts
 export const runtime = 'nodejs'
+export const maxDuration = 60
 
 import { MAX_DESCRIPTION_LEN } from '@/lib/documents/co-totals'
 import { isRealLookupFailure } from '@/lib/documents/co-lookup'
@@ -11,6 +12,7 @@ import { claimAiRateSlot } from '@/lib/utils/rate-limit'
 import { isTerminalStatus } from '@/lib/utils/project-status'
 import Anthropic from '@anthropic-ai/sdk'
 import { createWithTool } from '@/lib/ai/tool-call'
+import { aiModel, structuredJobParams, scaleMaxTokens } from '@/lib/ai/model'
 import { sanitizePlainText, truncateText, stripUnstorableText } from '@/lib/utils/sanitize'
 import { MIN_CO_TIMELINE_DAYS, MAX_CO_TIMELINE_DAYS } from '@/lib/documents/co-input'
 
@@ -161,9 +163,11 @@ Rules:
 
     // createWithTool: some models (e.g. a newer ANTHROPIC_MODEL) reject a forced tool_choice with a 400 — it retries
     // once with tool_choice 'auto' instead of failing every draft (see lib/ai/tool-call.ts).
+    const model = aiModel()
     const msg = await createWithTool(anthropicClient(), {
-      model:       process.env.ANTHROPIC_MODEL || 'claude-haiku-4-5-20251001',
-      max_tokens:  1200,
+      model,
+      max_tokens:  scaleMaxTokens(model, 1200),
+      ...structuredJobParams(model),
       tools:       [DRAFT_CO_TOOL],
       messages:    [{ role: 'user', content: prompt }],
     }, 'draft_change_order')

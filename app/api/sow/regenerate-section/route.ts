@@ -1,4 +1,5 @@
 export const runtime = 'nodejs'
+export const maxDuration = 60
 
 import { isUuidString } from '@/lib/utils/uuid'
 import { createServiceClient } from '@/lib/supabase/server'
@@ -13,6 +14,7 @@ import { AI_SECTION_IDS, sowLanguageName, sectionTitle as canonicalSectionTitle 
 import { MAX_SECTION_CONTENT_LENGTH } from '@/lib/sow/sections'
 import { figuresPreserved } from '@/lib/sow/figures'
 import Anthropic from '@anthropic-ai/sdk'
+import { aiModel, structuredJobParams, scaleMaxTokens } from '@/lib/ai/model'
 
 // FIX (re-audit — build-blocking): was constructed at module scope, so an
 // unset ANTHROPIC_API_KEY turns importing this route into a hard build
@@ -116,9 +118,11 @@ Keep EVERY amount, percentage, number of days and number of revision rounds exac
 Return ONLY the new section content as valid HTML (use <p>, <ul>, <li>, <strong>).
 No preamble, no explanation, no markdown fences. Just the HTML content.`
 
+    const model = aiModel()
     const msg = await anthropicClient().messages.create({
-      model:       process.env.ANTHROPIC_MODEL || 'claude-haiku-4-5-20251001',
-      max_tokens:  Math.min(4000, Math.ceil(wordLimit * 2.5) + 300),
+      model,
+      max_tokens:  scaleMaxTokens(model, Math.min(4000, Math.ceil(wordLimit * 2.5) + 300)),
+      ...structuredJobParams(model),
       messages:    [{ role: 'user', content: prompt }],
     })
 

@@ -1,6 +1,7 @@
 export const runtime = 'nodejs'
 
 import Anthropic from '@anthropic-ai/sdk'
+import { aiModel, structuredJobParams, scaleMaxTokens } from '@/lib/ai/model'
 import { randomUUID } from 'crypto'
 import { stripAndParse } from '@/lib/utils/format'
 import { stripUnstorableText, truncateText } from '@/lib/utils/sanitize'
@@ -423,10 +424,14 @@ Rules:
 - An item that appears under explicitly excluded clauses AND is also listed under ACCEPTED CHANGE ORDERS has since been bought by the client: treat it as covered by the change order (matchedAgainst \"amendment\"), never as out of scope.
 - When in doubt, lean BORDERLINE rather than OUT_OF_SCOPE to minimise false positives.`
 
+  const model = aiModel()
   const msg = await anthropicClient().messages.create({
-    model:       'claude-haiku-4-5-20251001', // Haiku acceptable for classification (carry-forward §1.5)
-    max_tokens:  400,
-    temperature: 0,                            // Classification prompt contract §1.6.2
+    model,
+    max_tokens:  scaleMaxTokens(model, 400),
+    // Classification prompt contract §1.6.2 asks for temperature 0; Claude 5.x models reject non-default sampling
+    // parameters, so it is only sent to models that accept it (structuredJobParams). No up-front thinking either: on
+    // Sonnet 5.5 thinking counts against max_tokens and would crowd out the verdict.
+    ...structuredJobParams(model, { temperature: 0 }),
     system,
     messages:    [{ role: 'user', content: prompt }],
   })
