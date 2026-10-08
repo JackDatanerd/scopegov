@@ -253,7 +253,7 @@ export async function sendInvoiceDocument(service: any, params: {
     attachments: pdfAttachment ? [pdfAttachment] : undefined,
     replyTo,
     log:         { workspaceId, kind: 'invoice.send', entityType: 'invoice', entityId: invoiceId, projectId: project.id, actorId },
-  }), 'Invoice send email')
+  }), 'Invoice send email', { requireRecipient: true })
 
   await logAudit(service, {
     workspaceId, actorId, actorEmail, actorName,

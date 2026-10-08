@@ -1,0 +1,28 @@
+Notifications & email — independent pass 18 (base: 41fefd0)
+
+B1  lib/auth/session-seen.ts
+    Every error from the session_seen insert was read as "a concurrent request registered it first". Only a unique
+    violation (23505) means that. Any other failure left the in-memory marker set, so the session was never retried on
+    that instance and, because the alert only fires within 15 minutes of sign-in, the new-device alert was lost for
+    good. Now clears the marker and logs for every non-23505 error so the next request retries.
+
+B2  lib/email/delivery.ts, lib/documents/send-sow.ts, send-co.ts, send-invoice.ts, accept-co-counter.ts,
+    app/api/sow/[id]/remind, app/api/co/[id]/remind, app/api/invoices/[id]/remind
+    sendEmail() resolves { ok: true, skipped: true } when there is no deliverable recipient (nothing is sent), and
+    checkedSend() flattened that to a plain success. checkedSend() now keeps the `skipped` flag and takes an opt-in
+    { requireRecipient: true } that turns a skipped send into a failure. The seven client-facing send / remind callers
+    use it, so "sent" is never reported for a message that reached nobody. Internal fan-outs keep the old behaviour.
+
+B3  lib/email/templates.ts (sendPaymentFailedEmail)
+    The body said "You have a N-day grace period" where N is the days REMAINING: the first email passes the full
+    period and every cron reminder passes what is left, so a reminder read as a fresh, shorter grace period. Now says
+    "N days remain" / "1 day remains".
+
+B4  lib/email/send.ts
+    A provider rate limit (rate_limit_exceeded) was treated like any other rejection, so crons that send one email per
+    row lost every message past the per-second cap (stall / expiry / overdue notices are not retried later). A 429 means
+    the message was not accepted, so sendEmail now retries it up to twice (600 ms, 1.5 s). Quota errors and every other
+    rejection are not retried.
+
+Tests: tests/notifications-email-independent-pass-18.test.ts (new, 10 tests; 8 fail without the fixes).
+Full suite: 325 files / 3174 tests pass (1 file skipped); tsc --noEmit clean.

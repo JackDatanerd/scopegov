@@ -1205,6 +1205,9 @@ export async function sendPaymentFailedEmail(params: {
   const name       = escapeHtml(nameRaw)
   const agencyName = escapeHtml(agencyNameRaw)
   // "1 days" read wrongly on the last day of the grace period (the reminder cron clamps to a minimum of 1).
+  // FIX (Notifications & email pass 18 — B3): the body said "You have a N-day grace period" while N is the days
+  // REMAINING (the first email passes the full period, every cron reminder passes what is left), so a reminder with
+  // 2 days left read as a fresh 2-day period after the first email promised 5. It now says how many days remain.
   const daysLabel  = `${graceDaysLeft} day${graceDaysLeft === 1 ? '' : 's'}`
 
   const html = baseTemplate({
@@ -1216,7 +1219,7 @@ export async function sendPaymentFailedEmail(params: {
       <p style="font-size:14px;color:${C.text};line-height:1.7;margin:0 0 16px;">Hi ${name},</p>
       <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
         We were unable to process the payment for <strong>${agencyName}</strong>&apos;s ScopeGov subscription.
-        You have a <strong>${graceDaysLeft}-day grace period</strong> to update your payment details.
+        Your account is in a payment grace period: <strong>${daysLabel} remain${graceDaysLeft === 1 ? 's' : ''}</strong> to update your payment details.
       </p>
       <p style="font-size:13px;color:${C.text2};">
         If the payment is not resolved within ${daysLabel}, the workspace becomes <strong>read-only</strong>: you and your

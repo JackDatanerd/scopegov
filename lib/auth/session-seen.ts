@@ -79,7 +79,18 @@ export async function registerSessionSeen(args: {
     const { error } = await service.from('session_seen').insert({
       session_id: sessionKey, user_id: user.id, ip, user_agent: (ua || '').slice(0, 300), device_key: key,
     })
-    if (error) return // a concurrent request registered it first
+    // FIX (Notifications & email pass 18 — B1): every insert error was read as "a concurrent request registered it
+    // first". Only a unique violation means that. Any other failure (connection reset, timeout) left the in-memory
+    // marker set, so this session was never retried on this instance and — because the alert only fires within
+    // ALERT_IF_SIGNED_IN_WITHIN_SECONDS of sign-in — the new-device alert was lost for good. Forget the marker so the
+    // next request retries.
+    if (error) {
+      if (error.code !== '23505') {
+        seen.delete(sessionKey)
+        console.error('registerSessionSeen: could not register session (will retry):', error.message)
+      }
+      return // 23505: a concurrent request registered it first
+    }
 
     const hadPrior = rows.length > 0
     const knownDevice = rows.some(r => r.device_key === key)

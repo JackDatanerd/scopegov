@@ -177,7 +177,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         <a href="https://scopegov.app" style="color:#1A5C3A;">ScopeGov</a>
       </p>
       </body></html>`,
-    }, { workspaceId: session.workspaceId, kind: 'co.reminder', entityType: 'change_order', entityId: id, projectId: project?.id, actorId: session.id }), 'CO reminder')
+    }, { workspaceId: session.workspaceId, kind: 'co.reminder', entityType: 'change_order', entityId: id, projectId: project?.id, actorId: session.id }), 'CO reminder', { requireRecipient: true })
 
     if (!delivery.ok) {
       await logAudit(service, {

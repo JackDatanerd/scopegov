@@ -240,7 +240,7 @@ export async function sendSowDocument(service: any, params: {
     expiresAt:     expiresAt.toISOString(),
     replyTo,
     log:           { workspaceId, kind: 'sow.send', entityType: 'sow', entityId: sowId, projectId: project.id, actorId },
-  }), 'SOW send email')
+  }), 'SOW send email', { requireRecipient: true })
 
   await logAudit(service, {
     workspaceId,

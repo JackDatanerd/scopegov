@@ -230,7 +230,7 @@ export async function sendCoDocument(service: any, params: {
     renewalTermMonths: renewalTermForDocument(co, project),
     replyTo,
     log:         { workspaceId, kind: 'co.send', entityType: 'change_order', entityId: coId, projectId: project.id, actorId },
-  }), 'CO send email')
+  }), 'CO send email', { requireRecipient: true })
 
   await logAudit(service, {
     workspaceId, actorId,

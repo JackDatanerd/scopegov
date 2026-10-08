@@ -54,6 +54,11 @@ function client(): Resend {
 /** Test seam. */
 export function __setResendForTests(r: Resend | null) { _resend = r }
 
+// Pauses before each retry of a rate-limited send (so at most 2 retries, ~2s added to the worst case).
+let rateLimitRetryDelaysMs: number[] = [600, 1500]
+/** Test seam. */
+export function __setRateLimitRetryDelaysForTests(delays: number[]) { rateLimitRetryDelaysMs = delays }
+
 // Accounts anonymised by the deletion flow. Mail to them can only bounce, and
 // bounces hurt the sending domain's reputation for every workspace.
 const DEAD_ADDRESS = /@deleted\.scopegov\.app$/i
@@ -139,7 +144,18 @@ export async function sendEmail(payload: EmailPayload, log?: EmailLogContext): P
 
   let result: SendResult
   try {
-    const res: any = await client().emails.send(body as any)
+    // FIX (Notifications & email pass 18 — B4): a provider rate limit (429 `rate_limit_exceeded`) was treated like any
+    // other rejection, so a cron that sends one email per row in a loop lost every message past the per-second cap
+    // (stall / expiry / overdue notices are not retried later). A 429 means the message was NOT accepted, so sending
+    // it again after a short pause cannot duplicate it. Quota errors (daily / monthly) also arrive as 429 but will
+    // not clear in seconds, so only `rate_limit_exceeded` is retried.
+    let res: any
+    for (let attempt = 0; ; attempt++) {
+      res = await client().emails.send(body as any)
+      const limited = res?.error?.name === 'rate_limit_exceeded'
+      if (!limited || attempt >= rateLimitRetryDelaysMs.length) break
+      await new Promise(resolve => setTimeout(resolve, rateLimitRetryDelaysMs[attempt]))
+    }
     if (res?.error) {
       result = { ok: false, error: String(res.error.message || res.error.name || 'Email provider rejected the message') }
     } else {

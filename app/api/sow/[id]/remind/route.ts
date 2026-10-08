@@ -150,7 +150,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         Scope governance by <a href="https://scopegov.app" style="color:#1A5C3A;">ScopeGov</a>
       </p>
       </body></html>`,
-    }, { workspaceId: session.workspaceId, kind: 'sow.reminder', entityType: 'sow', entityId: id, projectId: project?.id, actorId: session.id }), 'SOW reminder')
+    }, { workspaceId: session.workspaceId, kind: 'sow.reminder', entityType: 'sow', entityId: id, projectId: project?.id, actorId: session.id }), 'SOW reminder', { requireRecipient: true })
 
     if (!delivery.ok) {
       await logAudit(service, {

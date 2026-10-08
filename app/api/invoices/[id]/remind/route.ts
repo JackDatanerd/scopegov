@@ -144,7 +144,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       paymentTerms: client.payment_terms_note || null,
       replyTo,
       log:         { workspaceId: session.workspaceId, kind: 'invoice.reminder', entityType: 'invoice', entityId: id, projectId: project?.id, actorId: session.id },
-    }), 'Invoice reminder')
+    }), 'Invoice reminder', { requireRecipient: true })
     if (!delivery.ok) {
       await logAudit(service, {
         workspaceId: session.workspaceId, actorId: session.id,
