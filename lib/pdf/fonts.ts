@@ -34,6 +34,23 @@ export const PDF_FONT = {
 
 const dataUri = (b64: string) => `data:font/ttf;base64,${b64}`
 
+/** Words up to this many characters are never split; longer unbroken tokens get break points so they can wrap. */
+export const PDF_MAX_UNBROKEN = 24
+const PDF_CHUNK = 16
+
+/**
+ * Hyphenation callback for react-pdf. Ordinary words are returned whole (no mid-word hyphenation); only a token longer
+ * than PDF_MAX_UNBROKEN is cut into PDF_CHUNK-sized pieces (by code point, so no surrogate pair is ever split), which the
+ * line breaker uses only if the token would otherwise overflow its container.
+ */
+export function pdfBreakPoints(word: string): string[] {
+  const chars = Array.from(word)
+  if (chars.length <= PDF_MAX_UNBROKEN) return [word]
+  const out: string[] = []
+  for (let i = 0; i < chars.length; i += PDF_CHUNK) out.push(chars.slice(i, i + PDF_CHUNK).join(''))
+  return out
+}
+
 let registered = false
 function registerPdfFonts() {
   if (registered) return
@@ -42,8 +59,11 @@ function registerPdfFonts() {
   Font.register({ family: PDF_FONT.bold,       src: dataUri(NOTO_SANS_BOLD_B64) })
   Font.register({ family: PDF_FONT.italic,     src: dataUri(NOTO_SANS_ITALIC_B64) })
   Font.register({ family: PDF_FONT.boldItalic, src: dataUri(NOTO_SANS_BOLD_ITALIC_B64) })
-  // Never hyphenate: react-pdf's English patterns split other languages ("ma-hakama") and web addresses mid-word.
-  Font.registerHyphenationCallback(word => [word])
+  // Never hyphenate ordinary words: react-pdf's English patterns split other languages ("ma-hakama") and web addresses
+  // mid-word. FIX (SOW lifecycle independent pass 22, B1): returning [word] for EVERYTHING also meant a token wider than
+  // its box (a Figma/Drive URL, an e-mail, a long reference, a German compound in a narrow table cell) could never wrap, so
+  // it ran off the page edge and the overflow was silently lost from the printed — and frozen, executed — document.
+  Font.registerHyphenationCallback(pdfBreakPoints)
 }
 
 registerPdfFonts()

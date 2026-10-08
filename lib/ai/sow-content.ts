@@ -164,13 +164,32 @@ export function standardsPromptBlock(standards: AgencyStandards | null | undefin
 // anywhere in the text) so a standard that mentions an unrelated number —
 // "revisions must be requested within 5 business days" — is never
 // mistaken for a conflict and still gets appended normally.
+// FIX (SOW lifecycle independent pass 22, B3): this only matched a digit IMMEDIATELY before "round(s)". A standard written
+// "3 revision rounds", "Three rounds of revisions", "two (2) rounds", "3 rondas de revisión" or "3 Überarbeitungsrunden" slipped
+// through, so the policy was appended under the project's own "2 rounds" sentence and the Revision Policy section stated two
+// different counts. Detection now also accepts spelled-out numbers (en/es/fr/pt/de/sw), a "(n)" echo, a few revision-related
+// words between the number and "round", and the localized nouns. The middle words are deliberately a closed list: "one
+// additional round" or "within 5 days of each round" must still NOT read as a conflicting round count.
+const ROUND_NUMBER_WORDS: Record<string, number> = {
+  one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
+  un: 1, una: 1, uno: 1, dos: 2, tres: 3, cuatro: 4, cinco: 5, seis: 6, siete: 7, ocho: 8, nueve: 9, diez: 10,
+  une: 1, deux: 2, trois: 3, quatre: 4, cinq: 5, sept: 7, huit: 8, neuf: 9, dix: 10,
+  um: 1, uma: 1, dois: 2, duas: 2, 'três': 3, quatro: 4, sete: 7, oito: 8, dez: 10,
+  eine: 1, einen: 1, zwei: 2, drei: 3, vier: 4, 'fünf': 5, sechs: 6, sieben: 7, acht: 8, zehn: 10,
+  moja: 1, mbili: 2, tatu: 3, nne: 4, tano: 5, sita: 6, saba: 7, nane: 8, tisa: 9, kumi: 10,
+}
+const ROUND_COUNT_RE = (() => {
+  const words = Object.keys(ROUND_NUMBER_WORDS).sort((x, y) => y.length - x.length).join('|')
+  const middle = '(?:(?:revisions?|reviews?|feedback|designs?|edits?|amendments?|changes?)\\s+)?'
+  const noun = '(?:\\p{L}*runden?|rounds?|rondas?|rodadas?|tours?|s[ée]ries?|mizunguko|mzunguko)'
+  return new RegExp(`(?<![\\p{L}\\d])(\\d+|${words})(?:\\s*\\(\\d+\\))?\\s+${middle}${noun}(?![\\p{L}])`, 'giu')
+})()
+
 function conflictingRoundCount(text: string, revisionRounds: number): boolean {
-  // FIX (build-blocking regression, traced outside sections 7/8): for-of over a
-  // matchAll() iterator needs --downlevelIteration at this tsconfig's target,
-  // same TS2802 pattern fixed elsewhere via Array.from (round 17's CO/clients fix).
-  const matches = Array.from(text.matchAll(/(\d+)\s*rounds?\b/gi))
+  const matches = Array.from(text.matchAll(ROUND_COUNT_RE))
   for (const m of matches) {
-    const n = Number(m[1])
+    const token = m[1].toLowerCase()
+    const n = /^\d+$/.test(token) ? Number(token) : ROUND_NUMBER_WORDS[token]
     if (Number.isFinite(n) && n !== revisionRounds) return true
   }
   return false
@@ -378,6 +397,19 @@ function retainerTotalText(input: SowContentInput): string | null {
   const monthly = Number(input.contractValue)
   if (!input.retainer || !months || !Number.isFinite(monthly)) return null
   return `${input.currency} ${Math.round(monthly * months * 100) / 100}`
+}
+
+/** 12500.5 -> "12,500.50" (same format ensureContractValueStated appends); non-numeric input is passed through untouched. */
+function prettyAmount(value: unknown): string {
+  const n = Number(value)
+  return Number.isFinite(n) ? n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : String(value)
+}
+
+function retainerTotalPretty(input: SowContentInput): string | null {
+  const months = input.retainer?.months
+  const monthly = Number(input.contractValue)
+  if (!input.retainer || !months || !Number.isFinite(monthly)) return null
+  return `${input.currency} ${prettyAmount(Math.round(monthly * months * 100) / 100)}`
 }
 
 function retainerPromptLines(input: SowContentInput): string {
@@ -843,11 +875,13 @@ export function buildFallbackSections(input: SowContentInput): Record<string, st
       ? `<p>${t.oosIntro}</p><ul>${outOfScopeItems}</ul>`
       : `<p>${t.oosNone}</p>`,
     assumptions: `<p>${t.assumptions}</p>`,
+    // FIX (SOW lifecycle independent pass 22, B5): the amount was String(contractValue) — "USD 12500.5" — while the AI path's
+    // ensureContractValueStated prints "USD 12,500.50". Same formatting here so a fallback document reads like any other.
     payment: input.retainer
-      ? `<p>${t.paymentMonthly}: <strong>${escapeHtml(String(input.currency))} ${escapeHtml(String(input.contractValue))}</strong> ${t.perMonth}. ${
-          input.retainer.months ? t.paymentTerm(input.retainer.months, escapeHtml(retainerTotalText(input) || '')) : t.paymentOpenEnded
+      ? `<p>${t.paymentMonthly}: <strong>${escapeHtml(String(input.currency))} ${escapeHtml(prettyAmount(input.contractValue))}</strong> ${t.perMonth}. ${
+          input.retainer.months ? t.paymentTerm(input.retainer.months, escapeHtml(retainerTotalPretty(input) || '')) : t.paymentOpenEnded
         }. ${t.paymentStructure}: ${escapeHtml(localizedPaymentLabel(input))}.</p>`
-      : `<p>${t.paymentTotal}: <strong>${escapeHtml(String(input.currency))} ${escapeHtml(String(input.contractValue))}</strong>. ${t.paymentStructure}: ${escapeHtml(localizedPaymentLabel(input))}.</p>`,
+      : `<p>${t.paymentTotal}: <strong>${escapeHtml(String(input.currency))} ${escapeHtml(prettyAmount(input.contractValue))}</strong>. ${t.paymentStructure}: ${escapeHtml(localizedPaymentLabel(input))}.</p>`,
     revisions: `<p>${t.revisions(input.revisionRounds)}</p>`,
     ip: `<p>${t.ip(escapeHtml(input.agencyName))}</p>`,
     confidentiality: `<p>${t.confidentiality}</p>`,
@@ -903,11 +937,17 @@ export function buildFallbackTables(input: SowContentInput): Record<SowTableSect
   // it — a heading floating over blank space, which is exactly what
   // showed up on a real generated SOW. Trim BEFORE the `||` check so a
   // whitespace-only brief field is treated the same as an empty one.
-  const deliverableLines = ((input.deliverables || '').trim() || tt.genericDeliverable)
-    .split('\n').map(l => l.trim().replace(/^[-*]\s*/, '')).filter(Boolean)
-
-  const timelineLines = ((input.timeline || '').trim() || tt.delivery)
-    .split('\n').map(l => l.trim().replace(/^[-*]\s*/, '')).filter(Boolean)
+  // FIX (SOW lifecycle independent pass 22, B4): the blank check above ran BEFORE the bullet marker was stripped, so a brief
+  // field holding only "-" / "*" (a list started and then emptied) was truthy, stripped to nothing, and produced zero rows —
+  // the same heading-over-blank-space failure. Lines are cleaned first and the default is used when none survive.
+  const cleanLines = (raw: string | null | undefined, fallbackLine: string): string[] => {
+    const lines = (raw || '').split('\n')
+      .map(l => sanitizePlainText(l.trim().replace(/^[-*]\s*/, '')).trim())
+      .filter(l => !isBlankText(l))
+    return lines.length ? lines : [fallbackLine]
+  }
+  const deliverableLines = cleanLines(input.deliverables, tt.genericDeliverable)
+  const timelineLines = cleanLines(input.timeline, tt.delivery)
 
   return {
     deliverables: deliverableLines.map(d => ({

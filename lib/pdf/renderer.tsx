@@ -427,6 +427,9 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
   const paymentScheduleTitle =
     data.sections.find(sec => sec.id === 'payment_schedule')?.title || 'Payment Schedule'
 
+  const sigClauseSec = data.sections.find(sec => sec.id === 'signature' && sec.visible)
+  const sigClauseSection = sigClauseSec && hasRichText(sigClauseSec.content) ? sigClauseSec : null
+
   return (
     <Document>
       <Page size="A4" style={s.page}>
@@ -575,12 +578,14 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
         {/* The agreement clause ("By signing below, both parties agree…") the agency can edit under
             the Signature section — previously never printed, so the signed document contained no
             express statement of assent. */}
-        {(() => {
-          const sigSec = data.sections.find(sec => sec.id === 'signature' && sec.visible)
-          return sigSec && hasRichText(sigSec.content)
-            ? <View style={{ marginTop: 20 }} wrap={fitsOnOnePage(sigSec.content) ? false : undefined}><RichText html={sigSec.content} style={s.body} /></View>
-            : null
-        })()}
+        {/* FIX (SOW lifecycle independent pass 22, B2): the clause and the signature block were two separate
+            page-break units, so when the block did not fit under the clause it moved to the next page ALONE and the
+            clause stayed behind — a signature page carrying no agreement text. They are now one unsplittable group
+            whenever the clause itself fits on a page. */}
+        <View wrap={sigClauseSection && !fitsOnOnePage(sigClauseSection.content) ? undefined : false}>
+        {sigClauseSection
+          ? <View style={{ marginTop: 20 }} wrap={fitsOnOnePage(sigClauseSection.content) ? false : undefined}><RichText html={sigClauseSection.content} style={s.body} /></View>
+          : null}
 
         <View style={s.sigBlock} wrap={false}>
           <View style={s.sigCol}>
@@ -605,6 +610,7 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
                 </>
               : <Text style={[s.sigName, { color: '#B0B0B0' }]}>{t.notYetSigned}</Text>}
           </View>
+        </View>
         </View>
 
         {/* Footer */}
