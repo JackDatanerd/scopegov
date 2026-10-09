@@ -164,12 +164,20 @@ export default async function SettingsPage() {
   }
   // FEATURE (Settings & Team round): billing defaults (migration 076) — same tolerant, separate read so a deploy
   // that runs ahead of the migration degrades to "no defaults" instead of taking the whole page down.
-  let billingDefaults: { default_tax_rate?: number; default_tax_inclusive?: boolean; default_payment_terms_days?: number | null } = {}
+  let billingDefaults: { default_tax_rate?: number; default_tax_inclusive?: boolean; default_payment_terms_days?: number | null; default_late_fee_rate?: number | null; default_liability_cap?: string | null } = {}
   if (canManageWorkspace) {
     const { data: bd, error: bdErr } = await (service as any)
       .from('workspaces').select('default_tax_rate,default_tax_inclusive,default_payment_terms_days')
       .eq('id', session.workspaceId).maybeSingle()
     if (!bdErr && bd) billingDefaults = bd
+    // Late fee (migration 158): its own tolerant read, so a deploy that runs ahead of the migration only loses this field.
+    const { data: lf, error: lfErr } = await (service as any)
+      .from('workspaces').select('default_late_fee_rate').eq('id', session.workspaceId).maybeSingle()
+    if (!lfErr && lf) billingDefaults = { ...billingDefaults, default_late_fee_rate: lf.default_late_fee_rate ?? null }
+    // Liability cap (migration 159): likewise its own tolerant read.
+    const { data: lc, error: lcErr } = await (service as any)
+      .from('workspaces').select('default_liability_cap').eq('id', session.workspaceId).maybeSingle()
+    if (!lcErr && lc) billingDefaults = { ...billingDefaults, default_liability_cap: lc.default_liability_cap ?? null }
   }
   const workspace = wsRes.data && !canManageWorkspace
     ? {

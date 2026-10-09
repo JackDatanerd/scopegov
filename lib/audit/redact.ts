@@ -39,6 +39,9 @@ const NON_MONEY_KEYS = new Set([
   'old_value', 'new_value',
   // A number of days, not an amount (the "payment" word otherwise blanked it).
   'defaultPaymentTermsDays', 'default_payment_terms_days',
+  // A percentage rate, not an amount.
+  'defaultLateFeeRate', 'default_late_fee_rate',
+  'defaultLiabilityCap', 'default_liability_cap',
 ])
 
 const MONEY_WORDS = new Set([

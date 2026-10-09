@@ -58,6 +58,8 @@ const COLUMNS: Record<string, string> = {
   defaultTaxRate:             'default_tax_rate',
   defaultTaxInclusive:        'default_tax_inclusive',
   defaultPaymentTermsDays:    'default_payment_terms_days',
+  defaultLateFeeRate:         'default_late_fee_rate',
+  defaultLiabilityCap:        'default_liability_cap',
 }
 
 // Recorded as "changed" in the audit trail without the value: identifiers and
@@ -225,6 +227,20 @@ function parseField(key: string, value: unknown): unknown {
       if (!Number.isInteger(n) || n < 0 || n > 365)
         throw new FieldError('Payment terms must be a whole number of days from 0 to 365')
       return n
+    }
+    case 'defaultLateFeeRate': {
+      // Percent per month on overdue amounts. null / blank = no late fee (no document mentions one).
+      if (value === null || (typeof value === 'string' && value.trim() === '')) return null
+      const n = toFiniteNumber(value)
+      if (!Number.isFinite(n) || n < 0 || n > 100)
+        throw new FieldError('Late fee must be a percentage per month from 0 to 100')
+      return n === 0 ? null : Math.round(n * 100) / 100
+    }
+    case 'defaultLiabilityCap': {
+      // null / blank = no limitation clause. The only choice today is the fixed "fees paid" wording (lib/documents/liability-cap.ts).
+      if (value === null || (typeof value === 'string' && value.trim() === '')) return null
+      if (value !== 'fees_paid') throw new FieldError('Choose a listed liability option, or none')
+      return value
     }
     case 'legalAddress': {
       if (value === null) return null

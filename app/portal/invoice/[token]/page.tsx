@@ -33,6 +33,7 @@ interface InvoiceData {
   // the itemized breakdown and SOW/CO cross-reference the PDF already
   // shows.
   sowNumber: string | null
+  lateFeeRate?: number | null
   coNumber: string | null
   coTitle: string | null
   lineItems: Array<{ description: string; quantity: number; rate: number; total: number }>
@@ -205,7 +206,7 @@ export default function InvoicePortalPage() {
                   <div style={{ fontSize: 12, color: '#909090', marginTop: 4 }}>
                     {invoice.sowNumber ? `For services under SOW No. ${invoice.sowNumber}` : ''}
                     {invoice.sowNumber && invoice.coNumber ? ', ' : ''}
-                    {invoice.coNumber ? `as amended by Change Order No. ${invoice.coNumber}` : ''}
+                    {invoice.coNumber ? `${invoice.sowNumber ? 'as amended by' : 'For services under'} Change Order No. ${invoice.coNumber}` : ''}
                   </div>
                 )}
                 <span style={{ display: 'inline-block', marginTop: 10, fontSize: 11, fontWeight: 600, padding: '4px 10px', borderRadius: 20, background: statusMeta.bg, color: statusMeta.fg }}>
@@ -329,6 +330,12 @@ export default function InvoicePortalPage() {
                     reaches this public, unauthenticated page — same
                     guarantee SOW sections and CO notes already have. */}
                 <div className="portal-section-body" dangerouslySetInnerHTML={{ __html: invoice.paymentInstructions }} />
+              </div>
+            )}
+
+            {invoice.lateFeeRate && balanceDue > 0 && invoice.status !== 'void' && (
+              <div style={{ marginBottom: 20, fontSize: 12.5, color: '#555', lineHeight: 1.5 }}>
+                {`Overdue amounts accrue a late fee of ${Math.round(invoice.lateFeeRate * 100) / 100}% per month${invoice.sowNumber ? `, as set out in SOW No. ${invoice.sowNumber}` : ''}.`}
               </div>
             )}
 

@@ -30,7 +30,11 @@ function fake(results: Record<string, { data: any; error: any } | Array<{ data: 
 describe('B1 signed-SOW lookup distinguishes "none" from "failed"', () => {
   it('returns the signed SOW', async () => {
     const r = await findSignedSow(fake({ sow_documents: { data: { id: 's1', document_number: 'SOW-1' }, error: null } }), 'p', { newest: true })
-    expect(r).toEqual({ ok: true, sow: { id: 's1', document_number: 'SOW-1' } })
+    expect(r).toEqual({ ok: true, sow: { id: 's1', document_number: 'SOW-1', lateFeeRate: null } })
+  })
+  it('carries the late fee the SOW froze at drafting', async () => {
+    const r = await findSignedSow(fake({ sow_documents: { data: { id: 's1', document_number: 'SOW-1', metadata: { lateFeeRate: 1.5 } }, error: null } }), 'p', { newest: true })
+    expect(r).toEqual({ ok: true, sow: { id: 's1', document_number: 'SOW-1', lateFeeRate: 1.5 } })
   })
   it('returns sow:null when there genuinely is none', async () => {
     expect(await findSignedSow(fake({ sow_documents: { data: null, error: null } }), 'p')).toEqual({ ok: true, sow: null })

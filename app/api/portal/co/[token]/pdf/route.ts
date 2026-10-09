@@ -1,5 +1,6 @@
 export const runtime = 'nodejs'
 
+import { normalizeLateFeeRate } from '@/lib/documents/late-fee'
 import { checkPortalRateLimit, recordPortalAction } from '@/lib/utils/portal-rate-limit'
 import { getClientIp } from '@/lib/utils/request-ip'
 import { createServiceClient } from '@/lib/supabase/server'
@@ -137,7 +138,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 
     const { data: sow } = await (service as any)
       .from('sow_documents')
-      .select('document_number')
+      .select('document_number, metadata')
       .eq('project_id', co.project_id)
       .eq('status', 'signed')
       .order('version', { ascending: false })
@@ -157,6 +158,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       agencyTaxId:   ws?.tax_id || null,
       agencyPhone:   ws?.phone || null,
       paymentTermsDays: ws?.default_payment_terms_days ?? null,
+      lateFeeRate: normalizeLateFeeRate(sow?.metadata?.lateFeeRate),
       agencyWebsite: ws?.website || null,
       clientName:    client?.name || 'Client',
       clientCompany: client?.company_name || null,

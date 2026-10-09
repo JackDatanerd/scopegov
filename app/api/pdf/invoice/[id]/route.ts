@@ -1,6 +1,6 @@
 export const runtime = 'nodejs'
 
-import { resolveInvoiceSowNumber } from '@/lib/documents/invoice-refs'
+import { resolveInvoiceSowTerms } from '@/lib/documents/invoice-refs'
 import { computeContractPosition } from '@/lib/reports/contract-position'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
@@ -34,7 +34,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         projects(id, name, clients(name, company_name, billing_address, vat_number, payment_terms_note),
           workspaces(timezone, agency_name, brand_colour, logo_storage_path,
             legal_address, tax_id, phone, website)),
-        sow_documents(document_number), payment_milestones(sow_documents(document_number)), change_orders(document_number, title)`)
+        sow_documents(document_number, metadata), payment_milestones(sow_documents(document_number, metadata)), change_orders(document_number, title)`)
       .eq('id', id)
       .eq('workspace_id', session.workspaceId)
       .single()
@@ -76,7 +76,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     // Computed LIVE (lib/reports/contract-position.ts), not read from the nightly snapshot: the snapshot
     // can never include the invoice being rendered right now, and mis-stated retainers.
     // Which SOW this invoice is for — resolved through the milestone / accepted change order when the invoice has no direct sow_id.
-    const invoiceSowNumber = await resolveInvoiceSowNumber(service, invoice)
+    const invoiceSow = await resolveInvoiceSowTerms(service, invoice)
+    const invoiceSowNumber = invoiceSow.number
     let contractPosition: { contractedValue: number; invoicedToDate: number; paidToDate: number; excludesTax?: boolean } | null = null
     if (invoice.project_id) {
       const position = await computeContractPosition(service, invoice.project_id)
@@ -116,6 +117,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       sentAt:       invoice.sent_at,
       paymentInstructions: invoice.payment_instructions,
       sowNumber:  invoiceSowNumber,
+      lateFeeRate: invoiceSow.lateFeeRate,
       coNumber:   invoice.change_orders?.document_number || null,
       coTitle:    invoice.change_orders?.title || null,
       lineItems:  typeof invoice.line_items === 'string' ? JSON.parse(invoice.line_items) : (invoice.line_items || []),

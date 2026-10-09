@@ -206,6 +206,14 @@ export function validateSowForSend(input: {
       warnings.push(`Invoices will add ${taxRate}% tax, but the Payment Terms text never mentions it. State how tax applies so the signed SOW and the invoices agree.`)
   }
 
+  // Late fee: change orders and invoices under this SOW will quote it, so the SOW itself has to state it.
+  const lateFee = Number(input.metadata?.lateFeeRate)
+  if (paymentText && Number.isFinite(lateFee) && lateFee > 0) {
+    const r = String(lateFee).replace('.', '\\.')
+    if (!new RegExp(`${r}\\s*%`).test(paymentText))
+      warnings.push(`Invoices and change orders will quote a ${lateFee}% monthly late fee, but the Payment Terms text never states it. State it so the signed SOW supports it.`)
+  }
+
   // Milestone structure: the schedule is part of the agreement and has to foot.
   if (input.metadata?.paymentStructure === 'milestones') {
     const schedule = byId('payment_schedule')

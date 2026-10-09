@@ -125,6 +125,8 @@ function workspaceToForm(ws: any) {
     defaultTaxRate:             String(ws?.default_tax_rate ?? 0),
     defaultTaxInclusive:        ws?.default_tax_inclusive ?? true,
     defaultPaymentTermsDays:    ws?.default_payment_terms_days != null ? String(ws.default_payment_terms_days) : '',
+    defaultLateFeeRate:         ws?.default_late_fee_rate != null ? String(ws.default_late_fee_rate) : '',
+    defaultLiabilityCap:        ws?.default_liability_cap || '',
     autoClientReminders:        ws?.auto_client_reminders ?? false,
     clientReminderAfterDays:    String(ws?.client_reminder_after_days ?? 3),
     clientReminderMax:          String(ws?.client_reminder_max ?? 3),
@@ -158,6 +160,8 @@ function toServerValue(key: string, value: any): unknown {
     // null, which the server refuses with "Default tax rate must be a number from 0 to 100" — the person types 0 on purpose.
     case 'defaultTaxRate':             return trimText(value) === '' ? null : Math.round(Number(value) * 100) / 100
     case 'defaultPaymentTermsDays':    return trimText(value) === '' ? null : Number(value)
+    case 'defaultLateFeeRate':         return trimText(value) === '' ? null : Math.round(Number(value) * 100) / 100
+    case 'defaultLiabilityCap':        return trimText(value) === '' ? null : trimText(value)
     case 'clientReminderAfterDays':
     case 'clientReminderMax':
     case 'proactiveRiskThreshold':     return Number(value)
@@ -1078,6 +1082,19 @@ function WorkspaceTab({ form, setForm, permissions, onSave, saving, slugChangedA
           <label className="flbl">Default payment terms (days) <InfoTip text="Optional. Sets each new invoice&apos;s due date this many days out." /></label>
           <input className="finp" type="number" min={0} max={365} step={1} style={{ maxWidth: 160 }} value={form.defaultPaymentTermsDays}
             placeholder="e.g. 14" onChange={(e: React.ChangeEvent<HTMLInputElement>) => set('defaultPaymentTermsDays', e.target.value)} />
+        </div>
+        <div className="fgrp">
+          <label className="flbl">Late fee (% per month) <InfoTip text="Optional. When set, new SOWs state that overdue amounts accrue this late fee each month, and change orders and invoices under that SOW repeat it. Leave blank to charge none. This is a stated term only: ScopeGov doesn&apos;t add the fee to invoices for you." /></label>
+          <input className="finp" type="number" min={0} max={100} step={0.01} style={{ maxWidth: 160 }} value={form.defaultLateFeeRate}
+            placeholder="e.g. 1.5" onChange={(e: React.ChangeEvent<HTMLInputElement>) => set('defaultLateFeeRate', e.target.value)} />
+        </div>
+        <div className="fgrp">
+          <label className="flbl">Limitation of liability <InfoTip text="Optional. When chosen, new SOWs include this standard clause in Termination. Wording is fixed by ScopeGov and is not legal advice: have a lawyer review it for your jurisdiction before relying on it. Leave on 'None' to add no clause." /></label>
+          <select className="finp" style={{ maxWidth: 420 }} value={form.defaultLiabilityCap}
+            onChange={(e: React.ChangeEvent<HTMLSelectElement>) => set('defaultLiabilityCap', e.target.value)}>
+            <option value="">None — don&apos;t add a clause</option>
+            <option value="fees_paid">Exclude indirect damages; cap the Provider at fees paid under the SOW</option>
+          </select>
         </div>
         <button className="btn btn-primary btn-sm" disabled={saving}
           onClick={saveForm}>

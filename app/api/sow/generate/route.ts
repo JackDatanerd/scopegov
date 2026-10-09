@@ -19,9 +19,11 @@ import { getPendingApprovalForDocument } from '@/lib/approvals/engine'
 import { logAudit } from '@/lib/utils/audit'
 import { sanitizeRichText, sanitizePlainText, truncateText } from '@/lib/utils/sanitize'
 import { isBlankText } from '@/lib/utils/client-input'
-import { applyAgencyStandards, ensureContractValueStated, ensureTaxStated, derivedScheduleRows, type AgencyStandards } from '@/lib/ai/sow-content'
+import { applyAgencyStandards, ensureContractValueStated, ensureTaxStated, ensureLateFeeStated, ensureLiabilityCapStated, derivedScheduleRows, type AgencyStandards } from '@/lib/ai/sow-content'
 import { workspaceTaxDefaults } from '@/lib/documents/tax-defaults'
 import { sowDateStyle } from '@/lib/utils/date-style'
+import { normalizeLateFeeRate } from '@/lib/documents/late-fee'
+import { normalizeLiabilityCap } from '@/lib/documents/liability-cap'
 import { pickAgencyStandards } from '@/lib/utils/agency-standards'
 import { canReadProject } from '@/lib/utils/project-access'
 import { isTerminalStatus } from '@/lib/utils/project-status'
@@ -231,6 +233,18 @@ export async function POST(request: NextRequest) {
     // When the Client is a company, the named contact is the person who signs for it.
     const clientRepresentative = clientCompany ? (project.clients?.name || null) : null
     const taxDefaults   = await workspaceTaxDefaults(service, session.workspaceId)
+    // Late fee (migration 158) — its own tolerant read so a deploy that runs ahead of the migration only loses this term.
+    let lateFeeRate: number | null = null
+    try {
+      const { data: lf } = await (service as any).from('workspaces').select('default_late_fee_rate').eq('id', session.workspaceId).maybeSingle()
+      lateFeeRate = normalizeLateFeeRate(lf?.default_late_fee_rate)
+    } catch { /* no late fee */ }
+    // Liability cap (migration 159) — likewise its own tolerant read.
+    let liabilityCap: ReturnType<typeof normalizeLiabilityCap> = null
+    try {
+      const { data: lc } = await (service as any).from('workspaces').select('default_liability_cap').eq('id', session.workspaceId).maybeSingle()
+      liabilityCap = normalizeLiabilityCap(lc?.default_liability_cap)
+    } catch { /* no liability clause */ }
     // FIX (SOW-lifecycle fix round — headline finding): contractValue and
     // currency used to come straight from the request body — every other
     // legally-material field in this route is validated against a closed
@@ -321,6 +335,8 @@ export async function POST(request: NextRequest) {
       clientRepresentative,
       clientRepresentativeTitle: clientRepresentative ? (clientRepresentativeTitle || null) : null,
       tax: taxDefaults.taxRate > 0 ? { rate: taxDefaults.taxRate, inclusive: taxDefaults.taxInclusive } : null,
+      lateFeeRate,
+      liabilityCap,
       dateStyle: sowDateStyle(project.workspaces?.legal_address),
     }
 
@@ -408,6 +424,8 @@ export async function POST(request: NextRequest) {
     // The contract value is data, the payment prose is model-written: never let them disagree.
     allContent.payment = ensureContractValueStated(allContent.payment || '', contractValue, curr, contentInput.retainer)
     allContent.payment = ensureTaxStated(allContent.payment, contentInput)
+    allContent.payment = ensureLateFeeStated(allContent.payment, contentInput)
+    allContent.termination = ensureLiabilityCapStated(allContent.termination || '', contentInput)
 
     const parsed: { sections: any[]; metadata: any } = {
       sections: SOW_SECTION_DEFS.map(def => ({
@@ -430,6 +448,9 @@ export async function POST(request: NextRequest) {
         paymentStructure: paymentStructure,
         // Frozen with the document so the signed copy keeps saying how tax applied when it was drafted.
         ...(taxDefaults.taxRate > 0 ? { taxRate: taxDefaults.taxRate, taxInclusive: taxDefaults.taxInclusive } : {}),
+        // The late fee in force when this SOW was drafted: change orders and invoices under it print this rate.
+        ...(lateFeeRate ? { lateFeeRate } : {}),
+        ...(liabilityCap ? { liabilityCap } : {}),
         ...(clientRepresentative ? { clientRepresentative, ...(clientRepresentativeTitle ? { clientRepresentativeTitle } : {}) } : {}),
         revisionRounds,
         governingLaw: governingLaw,

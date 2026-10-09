@@ -36,6 +36,8 @@
 // same tolerant-parsing philosophy as the prose sections: if a row is
 // malformed it's dropped, not fatal to the whole document.
 
+import { normalizeLateFeeRate, lateFeeContractSentence } from '@/lib/documents/late-fee'
+import { normalizeLiabilityCap, liabilityCapSentence, LIABILITY_CAP_LEAD, type LiabilityCap } from '@/lib/documents/liability-cap'
 import { escapeHtml, sanitizePlainText, truncateText } from '@/lib/utils/sanitize'
 import { isBlankText } from '@/lib/utils/client-input'
 import { amountsStated } from '@/lib/sow/validate-send'
@@ -124,6 +126,11 @@ export interface SowContentInput {
   tax?: { rate: number; inclusive: boolean } | null
   // Calendar-date style for drafted prose; must match how the PDF prints dates (see lib/pdf/renderer.tsx).
   dateStyle?: 'us' | 'intl'
+  // Late fee, percent per month on overdue amounts (workspace setting at drafting). Null/absent = none: the Payment Terms
+  // then say nothing about one, and the prompt keeps forbidding the model from inventing it.
+  lateFeeRate?: number | null
+  // Optional limitation-of-liability clause chosen in settings; app-owned wording, appended deterministically to Termination.
+  liabilityCap?: LiabilityCap | null
 }
 
 export interface AgencyStandards {
@@ -382,6 +389,47 @@ export function ensureTaxStated(paymentHtml: string, input: SowContentInput): st
   return `${paymentHtml}${sentence}`
 }
 
+
+/** One deterministic contract sentence for the late fee. Empty when the agency charges none. */
+export function lateFeeSentenceHtml(input: SowContentInput): string {
+  const rate = normalizeLateFeeRate(input.lateFeeRate)
+  return rate ? `<p>${escapeHtml(lateFeeContractSentence(rate))}</p>` : ''
+}
+
+/** Prompt line giving the model the exact late-fee wording. Empty when none applies. */
+export function lateFeePromptBlock(input: SowContentInput): string {
+  const rate = normalizeLateFeeRate(input.lateFeeRate)
+  return rate ? `Late fee: the Payment Terms must state, exactly once and in these words: "${lateFeeContractSentence(rate)}"` : ''
+}
+
+/** Backstop for the model: append the late-fee sentence when the Payment Terms never state the rate. English only. */
+export function ensureLateFeeStated(paymentHtml: string, input: SowContentInput): string {
+  if (input.language && input.language !== 'en') return paymentHtml
+  const rate = normalizeLateFeeRate(input.lateFeeRate)
+  if (!rate) return paymentHtml
+  const r = String(rate).replace('.', '\\.')
+  const text = norm(paymentHtml)
+  if (new RegExp(`late[^.]{0,120}${r}\\s*%|${r}\\s*%[^.]{0,120}late`, 'i').test(text)) return paymentHtml
+  return `${paymentHtml}${lateFeeSentenceHtml(input)}`
+}
+
+
+/** The fixed limitation-of-liability paragraph. Empty when none is chosen or the document isn't English. */
+export function liabilityCapHtml(input: SowContentInput): string {
+  if (input.language && input.language !== 'en') return ''
+  const cap = normalizeLiabilityCap(input.liabilityCap)
+  return cap ? `<p><strong>${LIABILITY_CAP_LEAD}</strong> ${escapeHtml(liabilityCapSentence(cap))}</p>` : ''
+}
+
+/** Append the chosen clause to the Termination text unless that exact clause is already there. */
+export function ensureLiabilityCapStated(terminationHtml: string, input: SowContentInput): string {
+  const clause = liabilityCapHtml(input)
+  if (!clause) return terminationHtml
+  const cap = normalizeLiabilityCap(input.liabilityCap)!
+  if (norm(terminationHtml).includes(norm(escapeHtml(liabilityCapSentence(cap))))) return terminationHtml
+  return `${terminationHtml}${clause}`
+}
+
 const SCHEDULE_WORDS: Record<string, { upfront: string; final: string; full: string; monthly: string; kickoff: string; beforeWork: string; finalApproval: string; monthlyTrig: string; tax: string }> = {
   en: { upfront: 'Upfront payment (50%)', final: 'Final payment (50%)', full: 'Full payment', monthly: 'Monthly retainer', kickoff: 'Before work commences', beforeWork: 'Before work commences', finalApproval: 'Final delivery approval', monthlyTrig: 'Monthly — first of month', tax: 'tax' },
   es: { upfront: 'Pago inicial (50%)', final: 'Pago final (50%)', full: 'Pago total', monthly: 'Iguala mensual', kickoff: 'Antes de comenzar el trabajo', beforeWork: 'Antes de comenzar el trabajo', finalApproval: 'Aprobación de la entrega final', monthlyTrig: 'Mensual — primer día del mes', tax: 'impuesto' },
@@ -628,7 +676,7 @@ ${input.outOfScope || 'To be defined'}
 Timeline: ${input.timeline || 'To be agreed'}
 Payment structure: ${input.paymentLabel}
 Revision rounds: ${input.revisionRounds}
-Governing law: ${input.governingLaw}${taxPromptBlock(input) ? `\n${taxPromptBlock(input)}` : ''}
+Governing law: ${input.governingLaw}${taxPromptBlock(input) ? `\n${taxPromptBlock(input)}` : ''}${lateFeePromptBlock(input) ? `\n${lateFeePromptBlock(input)}` : ''}
 
 Output format — this is plain text, NOT JSON.
 
@@ -669,7 +717,8 @@ Rules:
 - Deliverables table rows must cover every item in the deliverables brief above — one row per deliverable, not grouped.
 - Roles table must reflect that ${input.agencyName} is the Provider and ${input.clientName} is the Client.
 - Write with professional, authoritative language appropriate for a legal document.
-- Never add a "late fee rate" or "revision fee" unless explicitly provided.
+- Never add a late fee, late-fee rate or revision fee unless it is explicitly provided above.
+- Never write a limitation of liability, liability cap, indemnity, warranty or damages clause. If the agency wants one it is added separately; any you write would contradict it.
 - Whenever you write a calendar date, include the year and use this style: ${input.dateStyle === 'us' ? '"June 16, 2026" (month day, year)' : '"16 June 2026" (day month year)'}. Never print a date without the year and never mix the two styles.
 - The Dispute Resolution section covers only the escalation steps (negotiation, mediation, courts). Do NOT restate the governing-law clause there: it has its own Governing Law section. The one exception is the courts step, which must say proceedings are brought in the competent courts of the jurisdiction given under "Governing law" above, naming that jurisdiction exactly as given — never a city, county, district or any other place, and never a different jurisdiction.${standardsPromptBlock(input.standards)}${wantsPaymentSchedule ? '\n- Payment Schedule table: propose sensible milestone titles and trigger conditions based on the deliverables/timeline above. Amount must be exactly 0 on every row — never write a dollar figure or percentage there.' : ''}${languageInstruction}${reminder}`
 }
@@ -1041,7 +1090,7 @@ export function buildFallbackSections(input: SowContentInput): Record<string, st
       ? `<p>${t.paymentMonthly}: <strong>${escapeHtml(String(input.currency))} ${escapeHtml(prettyAmount(input.contractValue))}</strong> ${t.perMonth}. ${
           input.retainer.months ? t.paymentTerm(input.retainer.months, escapeHtml(retainerTotalPretty(input) || '')) : t.paymentOpenEnded
         }. ${t.paymentStructure}: ${escapeHtml(localizedPaymentLabel(input))}.</p>`
-      : `<p>${t.paymentTotal}: <strong>${escapeHtml(String(input.currency))} ${escapeHtml(prettyAmount(input.contractValue))}</strong>. ${t.paymentStructure}: ${escapeHtml(localizedPaymentLabel(input))}.</p>${!input.language || input.language === 'en' ? taxSentenceHtml(input) : ''}`,
+      : `<p>${t.paymentTotal}: <strong>${escapeHtml(String(input.currency))} ${escapeHtml(prettyAmount(input.contractValue))}</strong>. ${t.paymentStructure}: ${escapeHtml(localizedPaymentLabel(input))}.</p>${!input.language || input.language === 'en' ? taxSentenceHtml(input) + lateFeeSentenceHtml(input) : ''}`,
     revisions: `<p>${t.revisions(input.revisionRounds)}</p>`,
     ip: `<p>${t.ip(escapeHtml(input.agencyName))}</p>`,
     confidentiality: `<p>${t.confidentiality}</p>`,

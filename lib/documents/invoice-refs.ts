@@ -6,25 +6,34 @@
 // actually linked: directly, else through the milestone (payment_milestones.sow_id is NOT NULL), else, for a change-order
 // invoice, through the amendment the accepted change order recorded (amendments.signed_sow_id).
 //
+import { normalizeLateFeeRate } from '@/lib/documents/late-fee'
+
 // Never throws: a failed lookup just means no reference line, same as before.
 
-export const INVOICE_SOW_EMBEDS = 'sow_documents(document_number), payment_milestones(sow_documents(document_number))'
+export const INVOICE_SOW_EMBEDS = 'sow_documents(document_number, metadata), payment_milestones(sow_documents(document_number, metadata))'
 
-export async function resolveInvoiceSowNumber(service: any, invoice: any): Promise<string | null> {
-  const direct = invoice?.sow_documents?.document_number
-  if (direct) return String(direct)
-  const viaMilestone = invoice?.payment_milestones?.sow_documents?.document_number
-  if (viaMilestone) return String(viaMilestone)
+export interface InvoiceSowTerms { number: string | null; lateFeeRate: number | null }
+
+/** The SOW an invoice sits under and the late fee that SOW froze at drafting (null when none). */
+export async function resolveInvoiceSowTerms(service: any, invoice: any): Promise<InvoiceSowTerms> {
+  const pick = (sow: any): InvoiceSowTerms | null =>
+    sow?.document_number ? { number: String(sow.document_number), lateFeeRate: normalizeLateFeeRate(sow?.metadata?.lateFeeRate) } : null
+  const direct = pick(invoice?.sow_documents) || pick(invoice?.payment_milestones?.sow_documents)
+  if (direct) return direct
   if (invoice?.co_id) {
     try {
       const { data } = await service
-        .from('amendments').select('sow_documents(document_number)')
+        .from('amendments').select('sow_documents(document_number, metadata)')
         .eq('change_order_id', invoice.co_id).limit(1).maybeSingle()
-      const n = data?.sow_documents?.document_number
-      if (n) return String(n)
+      const viaAmendment = pick(data?.sow_documents)
+      if (viaAmendment) return viaAmendment
     } catch (e) {
       console.error('invoice SOW reference lookup failed (printing no reference):', e)
     }
   }
-  return null
+  return { number: null, lateFeeRate: null }
+}
+
+export async function resolveInvoiceSowNumber(service: any, invoice: any): Promise<string | null> {
+  return (await resolveInvoiceSowTerms(service, invoice)).number
 }

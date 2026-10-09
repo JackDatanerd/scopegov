@@ -22,6 +22,7 @@ import { coWatermarkLabel, CO_STATUS_LABEL } from '@/lib/pdf/co-watermark'
 import { invoiceSingleLineAmount } from '@/lib/pdf/invoice-line'
 import { formatRate } from '@/lib/utils/money'
 import { dateStyleForCountry, englishDateLocale } from '@/lib/utils/date-style'
+import { lateFeeReminder } from '@/lib/documents/late-fee'
 
 // Phase 11: the ScopeGov credit in the footer of every document is a real
 // hyperlink now, not plain text — same URL everywhere so it's one place to
@@ -174,6 +175,8 @@ export interface CoPdfData {
   revisedDeliveryDate?: string | null
   /** The agency's standard invoice payment terms (workspace default), stated on the CO so the client knows when the amount falls due. */
   paymentTermsDays?: number | null
+  /** The late fee (percent per month) set by the SOW this CO amends, quoted so the CO and SOW agree. */
+  lateFeeRate?: number | null
   scopeImpactNote?:    string | null
 }
 
@@ -219,6 +222,8 @@ export interface InvoicePdfData {
   // under SOW No. X" / "as amended by Change Order No. Y" lines.
   sowNumber?:   string | null
   coNumber?:    string | null
+  /** Late fee (percent per month) set by the SOW this invoice sits under; quoted while a balance is outstanding. */
+  lateFeeRate?: number | null
   coTitle?:     string | null
   // Optional itemized breakdown (migration 017). Empty/undefined falls
   // back to the existing single-line title+amount display — every
@@ -932,8 +937,12 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
         {!data.isRetainerRenewal && !data.isCredit && data.total > 0 && (data.paymentTermsDays || 0) > 0 && (
           <Text style={{ fontSize: 9, color: '#555', lineHeight: 1.5, marginTop: 4 }}>
             Payment: this change order is invoiced separately, and each invoice is due within {data.paymentTermsDays} day{data.paymentTermsDays === 1 ? '' : 's'} of its invoice date.
+            {data.lateFeeRate ? ` ${lateFeeReminder(data.lateFeeRate, data.sowNumber)}` : ''}
           </Text>
         )}
+        {!(!data.isRetainerRenewal && !data.isCredit && data.total > 0 && (data.paymentTermsDays || 0) > 0) && !data.isRetainerRenewal && !data.isCredit && data.total > 0 && data.lateFeeRate ? (
+          <Text style={{ fontSize: 9, color: '#555', lineHeight: 1.5, marginTop: 4 }}>{lateFeeReminder(data.lateFeeRate, data.sowNumber)}</Text>
+        ) : null}
 
         {/* Signature block. FIX (doc-quality audit round 3): same
             missing wrap={false} as the SOW's — could split mid-block
@@ -1200,6 +1209,11 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
             <RichText html={data.paymentInstructions} style={s.body} />
           </View>
         )}
+
+        {/* The late fee comes from the SOW this invoice sits under (frozen at drafting) and is only worth saying while something is owed. */}
+        {data.lateFeeRate && balanceDue > 0 && data.status !== 'void' && data.status !== 'draft' ? (
+          <Text style={{ fontSize: 9, color: '#555', lineHeight: 1.5, marginTop: 8 }}>{lateFeeReminder(data.lateFeeRate, data.sowNumber)}</Text>
+        ) : null}
 
         {data.clientPaymentTerms && (
           <View style={s.section}>

@@ -1,5 +1,6 @@
 export const runtime = 'nodejs'
 
+import { normalizeLateFeeRate } from '@/lib/documents/late-fee'
 import { createServiceClient } from '@/lib/supabase/server'
 import { lookupMissResponse } from '@/lib/documents/co-lookup'
 import { NextResponse, type NextRequest } from 'next/server'
@@ -80,7 +81,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     // the DB level) just omits the cross-reference line.
     const { data: sow } = await (service as any)
       .from('sow_documents')
-      .select('document_number')
+      .select('document_number, metadata')
       .eq('project_id', co.project_id)
       .eq('status', 'signed')
       .order('version', { ascending: false })
@@ -105,6 +106,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       agencyTaxId:   ws?.tax_id || null,
       agencyPhone:   ws?.phone || null,
       paymentTermsDays: ws?.default_payment_terms_days ?? null,
+      lateFeeRate: normalizeLateFeeRate(sow?.metadata?.lateFeeRate),
       agencyWebsite: ws?.website || null,
       clientName:  co.projects?.clients?.name || 'Client',
       clientCompany: co.projects?.clients?.company_name || null,

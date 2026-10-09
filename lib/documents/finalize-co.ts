@@ -409,7 +409,7 @@ export async function finalizeCoAcceptance(service: any, params: {
       paymentTermsDays = tzRow?.default_payment_terms_days ?? null
     } catch { /* falls back to UTC / no payment-terms line, as before */ }
     pdfBuffer = await renderCoPdf({
-      timeZone, paymentTermsDays,
+      timeZone, paymentTermsDays, lateFeeRate: signedSow.lateFeeRate ?? null,
       agencyName:    ws.agency_name,
       logoUrl,
       brandColour:   ws.brand_colour || '#1A5C3A',
