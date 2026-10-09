@@ -59,7 +59,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         projects(name, status, client_id, clients(name, email, cc_emails), workspaces(agency_name, brand_colour)),
         line_items, subtotal, tax_rate, tax_inclusive, total,
         counter_amount, counter_note, is_retainer_renewal, renewal_term_months, is_credit,
-        timeline_impact_days, scope_impact_note`)
+        timeline_impact_days, revised_delivery_date, scope_impact_note`)
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!co) return lookupMissResponse(coLookupErr, 'Change order not found')
@@ -165,6 +165,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         is_retainer_renewal:  co.is_retainer_renewal,
         renewal_term_months:  co.renewal_term_months,
         timeline_impact_days: co.timeline_impact_days,
+        revised_delivery_date: co.revised_delivery_date ?? null,
         scope_impact_note:    co.scope_impact_note,
         created_by:   session.id,
         // Deliberately NOT copied: token, sent_at, expires_at,

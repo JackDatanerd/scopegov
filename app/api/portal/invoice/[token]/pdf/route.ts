@@ -1,5 +1,6 @@
 export const runtime = 'nodejs'
 
+import { resolveInvoiceSowNumber } from '@/lib/documents/invoice-refs'
 import { computeContractPosition } from '@/lib/reports/contract-position'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
@@ -28,7 +29,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         projects(id, name, clients(name, company_name, billing_address, vat_number, payment_terms_note),
           workspaces(timezone, agency_name, brand_colour, logo_storage_path,
             legal_address, tax_id, phone, website)),
-        sow_documents(document_number), change_orders(document_number, title)`)
+        sow_documents(document_number), payment_milestones(sow_documents(document_number)), change_orders(document_number, title)`)
     if (!resolved.ok) return NextResponse.json({ error: resolved.error }, { status: resolved.status })
     const invoice = resolved.invoice
     const workspace = invoice.projects?.workspaces
@@ -57,6 +58,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 
     // Computed LIVE (lib/reports/contract-position.ts), not read from the nightly snapshot: the snapshot
     // can never include the invoice being rendered right now, and mis-stated retainers.
+    // Which SOW this invoice is for — resolved through the milestone / accepted change order when the invoice has no direct sow_id.
+    const invoiceSowNumber = await resolveInvoiceSowNumber(service, invoice)
     let contractPosition: { contractedValue: number; invoicedToDate: number; paidToDate: number; excludesTax?: boolean } | null = null
     if (invoice.project_id) {
       const position = await computeContractPosition(service, invoice.project_id)
@@ -97,7 +100,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       // FIX (re-audit, section 18): same defense-in-depth gap as the CO pdf route — the JSON-serving
       // GET route already re-sanitizes this field on every read; this PDF route didn't.
       paymentInstructions: sanitizeRichTextOrNull(invoice.payment_instructions),
-      sowNumber:  invoice.sow_documents?.document_number || null,
+      sowNumber:  invoiceSowNumber,
       coNumber:   invoice.change_orders?.document_number || null,
       coTitle:    invoice.change_orders?.title || null,
       lineItems:  typeof invoice.line_items === 'string' ? JSON.parse(invoice.line_items) : (invoice.line_items || []),

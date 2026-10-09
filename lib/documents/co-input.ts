@@ -22,6 +22,19 @@ export interface ParsedCoFields {
   title?: string
   scopeImpactNote?: string | null
   timelineImpactDays?: number | null
+  /** YYYY-MM-DD, the new delivery date when the timeline moves. */
+  revisedDeliveryDate?: string | null
+}
+
+/** A real calendar date in YYYY-MM-DD form (an ISO timestamp's date part is accepted), else null. */
+function realDate(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const m = /^(\d{4})-(\d{2})-(\d{2})(?:$|T)/.exec(value.trim())
+  if (!m) return null
+  const y = Number(m[1]), mo = Number(m[2]), d = Number(m[3])
+  const dt = new Date(Date.UTC(y, mo - 1, d))
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== mo - 1 || dt.getUTCDate() !== d) return null
+  return `${m[1]}-${m[2]}-${m[3]}`
 }
 
 export function parseCoFields(body: any): { ok: true; fields: ParsedCoFields } | { ok: false; error: string } {
@@ -51,6 +64,16 @@ export function parseCoFields(body: any): { ok: true; fields: ParsedCoFields } |
       if (!Number.isInteger(n) || n < MIN_CO_TIMELINE_DAYS || n > MAX_CO_TIMELINE_DAYS)
         return { ok: false, error: `Timeline impact must be a whole number of days between ${MIN_CO_TIMELINE_DAYS} and ${MAX_CO_TIMELINE_DAYS}` }
       fields.timelineImpactDays = n
+    }
+  }
+
+  if (body?.revisedDeliveryDate !== undefined) {
+    const raw = body.revisedDeliveryDate
+    if (raw === null || raw === '') fields.revisedDeliveryDate = null
+    else {
+      const d = realDate(raw)
+      if (!d) return { ok: false, error: 'Revised delivery date must be a real date (YYYY-MM-DD)' }
+      fields.revisedDeliveryDate = d
     }
   }
 

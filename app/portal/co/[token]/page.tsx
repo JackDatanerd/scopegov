@@ -42,6 +42,7 @@ interface CoData {
   // api/portal/co/[token]/route.ts. Plain text, never dangerouslySetInnerHTML.
   scopeImpactNote:    string | null
   timelineImpactDays: number | null
+  revisedDeliveryDate?: string | null
   // CO-1: months a retainer renewal extends the retainer by (null when this is not a fixed-term renewal).
   renewalTermMonths?: number | null
 }
@@ -342,7 +343,7 @@ export default function CoPortalPage() {
                 the page the client is actually deciding on. Plain text only, rendered as
                 normal JSX (never dangerouslySetInnerHTML): CoEditor collects this via a
                 <textarea>, not a rich-text field. */}
-            {(co.scopeImpactNote || co.timelineImpactDays !== null || !!co.renewalTermMonths) && (
+            {(co.scopeImpactNote || co.timelineImpactDays !== null || !!co.revisedDeliveryDate || !!co.renewalTermMonths) && (
               <div style={{ marginTop: 24 }}>
                 <div className="portal-section-title">Impact analysis</div>
                 {co.scopeImpactNote && (
@@ -362,6 +363,12 @@ export default function CoPortalPage() {
                     {co.timelineImpactDays === 0
                       ? 'No change to the project timeline'
                       : `${co.timelineImpactDays > 0 ? '+' : ''}${co.timelineImpactDays} day${Math.abs(co.timelineImpactDays) === 1 ? '' : 's'}`}
+                  </div>
+                )}
+                {co.revisedDeliveryDate && (
+                  <div style={{ fontSize: 13, color: '#333', lineHeight: 1.6, marginTop: co.timelineImpactDays !== null ? 4 : 0 }}>
+                    <strong>Revised delivery date: </strong>
+                    {new Date(`${co.revisedDeliveryDate}T00:00:00Z`).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric', timeZone: 'UTC' })}
                   </div>
                 )}
               </div>

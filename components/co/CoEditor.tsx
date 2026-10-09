@@ -78,6 +78,7 @@ export default function CoEditor({ projId, coId }: Props) {
   // can hold '-5' mid-typing without parseInt fighting the user, cast to
   // int (or null) only at save time; scopeImpactNote is free text.
   const [timelineImpactDays, setTimelineImpactDays] = useState('')
+  const [revisedDeliveryDate, setRevisedDeliveryDate] = useState('')
   const [scopeImpactNote,    setScopeImpactNote]    = useState('')
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const savedCoId = useRef<string | null>(coId || null)
@@ -174,6 +175,7 @@ export default function CoEditor({ projId, coId }: Props) {
           setIsRetainerRenewal(co.is_retainer_renewal || false)
           setRenewalTermMonths(co.renewal_term_months != null ? String(co.renewal_term_months) : '')
           setTimelineImpactDays(co.timeline_impact_days != null ? String(co.timeline_impact_days) : '')
+          setRevisedDeliveryDate(co.revised_delivery_date ? String(co.revised_delivery_date).slice(0, 10) : '')
           setScopeImpactNote(co.scope_impact_note || '')
           setFlagId(co.flag_id || null)
           setFlagRequestText(co.flagRequestText || null)
@@ -216,7 +218,7 @@ export default function CoEditor({ projId, coId }: Props) {
   // A create in flight — a second doSave (Save draft then Send in quick succession) awaits it and then PATCHes,
   // instead of racing a second POST that would create a duplicate change order.
   const createInFlight = useRef<Promise<string> | null>(null)
-  const snapshot = JSON.stringify([title, note, lineItems, taxRate, taxInclusive, isCredit, isRetainerRenewal, renewalTermMonths, timelineImpactDays, scopeImpactNote])
+  const snapshot = JSON.stringify([title, note, lineItems, taxRate, taxInclusive, isCredit, isRetainerRenewal, renewalTermMonths, timelineImpactDays, revisedDeliveryDate, scopeImpactNote])
   // FIX (CO independent pass 9, CO-2): the latest on-screen state, readable from inside an async save. lastSaved only
   // advances when a PATCH RESOLVES, so an edit that is reverted while a save is in flight compared equal to the old
   // lastSaved, scheduled nothing, and the in-flight PATCH then left the server holding the reverted-away text under a
@@ -344,6 +346,7 @@ export default function CoEditor({ projId, coId }: Props) {
         // Only a fixed-term retainer has a term to extend.
         renewalTermMonths: isRetainerRenewal && !retainerOpenEnded && renewalTermMonths.trim() !== '' ? parseInt(renewalTermMonths, 10) : null,
         timelineImpactDays: timelineImpactDays.trim() !== '' ? timelineImpactDays.trim() : null,
+        revisedDeliveryDate: revisedDeliveryDate.trim() !== '' ? revisedDeliveryDate.trim() : null,
         scopeImpactNote:    scopeImpactNote.trim() || null,
       }
       // Another save is still creating this CO — wait for it, then update that row rather than creating a second.
@@ -615,6 +618,13 @@ export default function CoEditor({ projId, coId }: Props) {
             value={timelineImpactDays}
             onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTimelineImpactDays(e.target.value)}
             placeholder="e.g. 18 or -5" />
+        </div>
+
+        <div className="fgrp">
+          <label className="flbl">Revised delivery date <span className="fhint">— optional, the new date when the timeline moves</span></label>
+          <input className="finp" type="date" style={{ maxWidth: 200 }} disabled={isLocked}
+            value={revisedDeliveryDate}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setRevisedDeliveryDate(e.target.value)} />
         </div>
 
         {/* Line items */}

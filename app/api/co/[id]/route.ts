@@ -171,6 +171,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     if (parsedFields.fields.title !== undefined)              update.title = parsedFields.fields.title
     if (parsedFields.fields.scopeImpactNote !== undefined)    update.scope_impact_note = parsedFields.fields.scopeImpactNote
     if (parsedFields.fields.timelineImpactDays !== undefined) update.timeline_impact_days = parsedFields.fields.timelineImpactDays
+    if (parsedFields.fields.revisedDeliveryDate !== undefined) update.revised_delivery_date = parsedFields.fields.revisedDeliveryDate
     if (note !== undefined)               update.note = sanitizeRichTextOrNull(note)
     if (isRetainerRenewal !== undefined)  update.is_retainer_renewal = isRetainerRenewal
     if (isCredit !== undefined)           update.is_credit = isCredit

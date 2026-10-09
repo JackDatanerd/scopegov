@@ -355,6 +355,8 @@ export async function finalizeCoAcceptance(service: any, params: {
     title: co.title, note: co.note || null, lineItems, subtotal: co.subtotal,
     taxRate: co.tax_rate, taxInclusive: co.tax_inclusive, total: co.total, currency: project.currency || 'USD',
     timelineImpactDays: co.timeline_impact_days ?? null, scopeImpactNote: co.scope_impact_note || null,
+    // Only part of the fingerprint when set, so every change order accepted before this field existed hashes exactly as it did.
+    ...(co.revised_delivery_date ? { revisedDeliveryDate: co.revised_delivery_date } : {}),
     isRetainerRenewal: isRenewal, previousContractValue, ...(isCredit ? { isCredit: true } : {}),
     // CO-1: the term is part of what the client agreed to, so it is part of the fingerprint (renewals only, so every other
     // document's hash recipe - and every hash already stored - is unchanged).
@@ -400,12 +402,14 @@ export async function finalizeCoAcceptance(service: any, params: {
     // while every later download printed them in the workspace's zone. Looked up here because the callers'
     // workspace selects don't all carry it.
     let timeZone: string | null = null
+    let paymentTermsDays: number | null = null
     try {
-      const { data: tzRow } = await (service as any).from('workspaces').select('timezone').eq('id', co.workspace_id).maybeSingle()
+      const { data: tzRow } = await (service as any).from('workspaces').select('timezone, default_payment_terms_days').eq('id', co.workspace_id).maybeSingle()
       timeZone = tzRow?.timezone ?? null
-    } catch { /* falls back to UTC, as before */ }
+      paymentTermsDays = tzRow?.default_payment_terms_days ?? null
+    } catch { /* falls back to UTC / no payment-terms line, as before */ }
     pdfBuffer = await renderCoPdf({
-      timeZone,
+      timeZone, paymentTermsDays,
       agencyName:    ws.agency_name,
       logoUrl,
       brandColour:   ws.brand_colour || '#1A5C3A',
@@ -439,6 +443,7 @@ export async function finalizeCoAcceptance(service: any, params: {
       clientSignatureData: signatureData,
       documentNumber: co.document_number || null,
       timelineImpactDays: co.timeline_impact_days ?? null,
+      revisedDeliveryDate: co.revised_delivery_date ?? null,
       scopeImpactNote:    co.scope_impact_note || null,
       sowNumber:          signedSow.document_number || null,
       contractValueBefore,

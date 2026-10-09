@@ -49,7 +49,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const { data: co } = await (service as any)
       .from('change_orders')
       .select(`id,title,note,status,version,line_items,subtotal,tax_rate,tax_inclusive,total,flag_id,
-        timeline_impact_days,scope_impact_note,is_retainer_renewal,renewal_term_months,is_credit,
+        timeline_impact_days,revised_delivery_date,scope_impact_note,is_retainer_renewal,renewal_term_months,is_credit,
         token,document_number,project_id,workspace_id,
         projects(id,name,type,status,currency,contract_value,retainer_duration_months,client_id,clients(name,email,cc_emails,company_name,billing_address,vat_number),
           workspaces(id,agency_name,brand_colour,logo_storage_path,agency_signature_data, agency_signatory_name, agency_signatory_title,

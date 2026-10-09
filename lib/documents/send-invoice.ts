@@ -30,6 +30,7 @@
 // existing "approved — not sent, retry once fixed" flow other send failures
 // already use — no new UI needed.
 
+import { resolveInvoiceSowNumber } from '@/lib/documents/invoice-refs'
 import { computeContractPosition } from '@/lib/reports/contract-position'
 import { SignJWT } from 'jose'
 import { nanoid } from 'nanoid'
@@ -70,7 +71,7 @@ export async function sendInvoiceDocument(service: any, params: {
       po_number, milestone_id, project_id, subtotal, tax_rate, tax_inclusive, line_items, sow_id, co_id,
       projects(id, name, client_id, deleted_at, clients(name, email, cc_emails, company_name, billing_address, vat_number, payment_terms_note),
         workspaces(id, timezone, agency_name, brand_colour, logo_storage_path, legal_address, tax_id, phone, website)),
-      sow_documents(document_number), change_orders(document_number, title)`)
+      sow_documents(document_number), payment_milestones(sow_documents(document_number)), change_orders(document_number, title)`)
     .eq('id', invoiceId).eq('workspace_id', workspaceId).single()
 
   if (!invoice) {
@@ -111,6 +112,7 @@ export async function sendInvoiceDocument(service: any, params: {
   // lib/utils/client-contacts.ts — the client's designated primary
   // contact, if any, is now CC'd alongside cc_emails rather than never
   // being consulted at all.
+  const invoiceSowNumber = await resolveInvoiceSowNumber(service, invoice)
   const ccEmails = await withPrimaryContactCc(service, project.client_id, client.email, client.cc_emails, 'invoice')
 
   const jwtSecret = await getWorkspaceJwtSecret(service, workspaceId)
@@ -218,7 +220,7 @@ export async function sendInvoiceDocument(service: any, params: {
       dueDate:       invoice.due_date,
       sentAt:        now,
       paymentInstructions: invoice.payment_instructions,
-      sowNumber:  invoice.sow_documents?.document_number || null,
+      sowNumber:  invoiceSowNumber,
       coNumber:   invoice.change_orders?.document_number || null,
       coTitle:    invoice.change_orders?.title || null,
       lineItems:  typeof invoice.line_items === 'string' ? JSON.parse(invoice.line_items) : (invoice.line_items || []),

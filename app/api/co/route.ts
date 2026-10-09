@@ -242,6 +242,7 @@ export async function POST(request: NextRequest) {
         // items — see the PDF renderer's Impact Analysis section for
         // where this surfaces to the client.
         timeline_impact_days: parsedFields.fields.timelineImpactDays ?? null,
+        revised_delivery_date: parsedFields.fields.revisedDeliveryDate ?? null,
         scope_impact_note:    parsedFields.fields.scopeImpactNote ?? null,
         created_by:   session.id,
       })

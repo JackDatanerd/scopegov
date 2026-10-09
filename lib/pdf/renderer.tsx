@@ -170,6 +170,10 @@ export interface CoPdfData {
   // optional and independent of contractValueBefore — a CO can state a
   // scope change with no financial impact, or vice versa.
   timelineImpactDays?: number | null
+  /** New delivery date when the timeline moves (YYYY-MM-DD). */
+  revisedDeliveryDate?: string | null
+  /** The agency's standard invoice payment terms (workspace default), stated on the CO so the client knows when the amount falls due. */
+  paymentTermsDays?: number | null
   scopeImpactNote?:    string | null
 }
 
@@ -608,7 +612,7 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
           <View style={s.sigCol}>
             <Text style={s.sigLabel}>{t.agencyLabel} — {data.agencyName}</Text>
             <View style={s.sigArea}>
-              {data.agencySignatureData ? <Image src={data.agencySignatureData} style={s.sigImg} /> : null}
+              {data.agencySignatureData && !data.isWatermarked ? <Image src={data.agencySignatureData} style={s.sigImg} /> : null}
             </View>
             <View style={s.sigRule} />
             <Text style={s.sigName}>{[data.agencySignatoryName || data.agencyName, data.agencySignatoryTitle].filter(Boolean).join(', ')}</Text>
@@ -737,7 +741,7 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
   // of Scope/Timeline/Value being present, since a CO can carry a
   // timeline or scope impact with no financial component at all.
   const hasScopeImpact    = !!data.scopeImpactNote
-  const hasTimelineImpact = data.timelineImpactDays != null && data.timelineImpactDays !== 0
+  const hasTimelineImpact = (data.timelineImpactDays != null && data.timelineImpactDays !== 0) || !!data.revisedDeliveryDate
   const hasValueImpact    = data.contractValueBefore != null
   // CO-1: a renewal's term is a binding part of what the client signs, so it is stated in its own row (independent of the
   // value block, which needs a known "before" figure) and is enough on its own to produce the Impact Analysis section.
@@ -866,10 +870,16 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
                   <Text style={{ fontSize: 10, color: '#1A1A1A', lineHeight: 1.5 }}>{data.scopeImpactNote}</Text>
                 </View>
               )}
-              {hasTimelineImpact && (
+              {data.timelineImpactDays != null && data.timelineImpactDays !== 0 && (
                 <View style={s.impactRow}>
                   <Text style={{ color: '#909090' }}>Timeline</Text>
-                  <Text style={s.mono}>{data.timelineImpactDays! > 0 ? '+' : ''}{data.timelineImpactDays} day{Math.abs(data.timelineImpactDays!) === 1 ? '' : 's'}</Text>
+                  <Text style={s.mono}>{data.timelineImpactDays > 0 ? '+' : ''}{data.timelineImpactDays} day{Math.abs(data.timelineImpactDays) === 1 ? '' : 's'}</Text>
+                </View>
+              )}
+              {data.revisedDeliveryDate && (
+                <View style={s.impactRow}>
+                  <Text style={{ color: '#909090' }}>Revised delivery date</Text>
+                  <Text style={s.mono}>{fd(data.revisedDeliveryDate)}</Text>
                 </View>
               )}
               {renewalTerm != null && (
@@ -918,6 +928,12 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
             This change order amends SOW No. {data.sowNumber}. Except as expressly amended here, all terms of that SOW remain unchanged and in full force.
           </Text>
         )}
+        {/* When the money falls due: stated only when the agency has standard payment terms and this change order charges something. */}
+        {!data.isRetainerRenewal && !data.isCredit && data.total > 0 && (data.paymentTermsDays || 0) > 0 && (
+          <Text style={{ fontSize: 9, color: '#555', lineHeight: 1.5, marginTop: 4 }}>
+            Payment: this change order is invoiced separately, and each invoice is due within {data.paymentTermsDays} day{data.paymentTermsDays === 1 ? '' : 's'} of its invoice date.
+          </Text>
+        )}
 
         {/* Signature block. FIX (doc-quality audit round 3): same
             missing wrap={false} as the SOW's — could split mid-block
@@ -927,7 +943,7 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
           <View style={s.sigCol}>
             <Text style={s.sigLabel}>Provider — {data.agencyName}</Text>
             <View style={s.sigArea}>
-              {data.agencySignatureData ? <Image src={data.agencySignatureData} style={s.sigImg} /> : null}
+              {data.agencySignatureData && !data.isWatermarked ? <Image src={data.agencySignatureData} style={s.sigImg} /> : null}
             </View>
             <View style={s.sigRule} />
             <Text style={s.sigName}>{[data.agencySignatoryName || data.agencyName, data.agencySignatoryTitle].filter(Boolean).join(', ')}</Text>
@@ -1053,7 +1069,7 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
               <Text style={[s.meta, { marginTop: 2 }]}>
                 {data.sowNumber ? `For services under SOW No. ${data.sowNumber}` : ''}
                 {data.sowNumber && data.coNumber ? ', ' : ''}
-                {data.coNumber ? `as amended by Change Order No. ${data.coNumber}` : ''}
+                {data.coNumber ? `${data.sowNumber ? 'as amended by' : 'For services under'} Change Order No. ${data.coNumber}` : ''}
               </Text>
             )}
           </View>
