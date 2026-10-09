@@ -159,7 +159,9 @@ Rules:
 - Only include work that is genuinely NOT already covered by "Already in scope" above.
 - quantity should reflect a sensible unit (e.g. hours, pages, revisions) — default to 1 if unclear.
 - Keep title and note client-facing and professional — no internal jargon.
-- scopeImpact should name the specific deliverable or SOW section this falls outside of, not just restate the note.`
+- Write note and scopeImpact in the third person, as a contract would: refer to "the Provider" and "the Client" and never use "we", "us", "you" or "your".
+- Any quantity named in note or scopeImpact (pages, rounds, hours) must equal the line-item quantities exactly. Never write "a round" or "one" when a line item says 2. If a line item adds revision rounds, say they are in addition to any revision rounds already included in the SOW.
+- scopeImpact should name the specific deliverable or SOW section this falls outside of, quoting the section by its printed title (for example the "Out of Scope" section), not just restate the note.`
 
     // createWithTool: some models (e.g. a newer ANTHROPIC_MODEL) reject a forced tool_choice with a 400 — it retries
     // once with tool_choice 'auto' instead of failing every draft (see lib/ai/tool-call.ts).

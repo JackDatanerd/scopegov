@@ -280,6 +280,11 @@ function listItemInline(html: string): string {
     .replace(/^(?:\s*<br\s*\/?>)+|(?:<br\s*\/?>\s*)+$/gi, '')
 }
 
+// FIX (doc-quality harmonisation): a list item is a two-column row (bullet | text). When such a row straddled a page
+// break the bullet stayed at the foot of one page while its text started the next, leaving a stranded "•". An item that
+// fits comfortably on a page is now unsplittable; only a very long item may still flow across pages.
+const LIST_ITEM_KEEP_TOGETHER_MAX_CHARS = 600
+
 function ListBlock({ tag, inner, style, depth, lead }: { tag: string; inner: string; style: any; depth: number; lead?: React.ReactNode }) {
   const items = splitListItems(inner)
   return (
@@ -288,7 +293,7 @@ function ListBlock({ tag, inner, style, depth, lead }: { tag: string; inner: str
         const { text, nested } = splitListItemContent(item)
         // `lead` (a section heading) rides in the first item's unsplittable block so it can never be stranded alone.
         return (
-          <View key={j} style={{ marginBottom: 2 }} wrap={lead && j === 0 ? false : undefined}>
+          <View key={j} style={{ marginBottom: 2 }} wrap={(lead && j === 0) || (nested.length === 0 && text.replace(/<[^>]*>/g, '').length <= LIST_ITEM_KEEP_TOGETHER_MAX_CHARS) ? false : undefined}>
             {lead && j === 0 ? lead : null}
             <View style={{ flexDirection: 'row' }}>
               <Text style={[style, { width: 16 }]}>

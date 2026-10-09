@@ -1,0 +1,15 @@
+CHANGES — document harmony pass: SOW payment timing + wording
+
+lib/ai/sow-content.ts
+- New SowContentInput.paymentTermsDays (workspace default_payment_terms_days). Invoices and change orders already print
+  the "due within N days" period; the SOW never stated it, so a SOW saying "due upfront" sat beside an invoice due 14 days
+  after issue. Adds normalizePaymentTermsDays, paymentTermsSentenceHtml, paymentTermsPromptBlock and the backstop
+  ensurePaymentTermsDaysStated (English only, appended only when no day count is already stated).
+- Prompt: instalments are described by when their invoice is ISSUED, never "due upfront"/"due on delivery".
+- Prompt: when an exclusion is "beyond" a basic level (e.g. CMS training beyond basic content updates), the included basic
+  level must appear as a deliverable row or Assumptions item, and is not mentioned elsewhere unless listed.
+
+app/api/sow/generate/route.ts
+- Reads default_payment_terms_days (tolerant read), passes it to generation, and applies the backstop.
+
+tests/sow-payment-terms-days.test.ts — new.

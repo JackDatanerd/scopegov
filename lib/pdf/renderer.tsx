@@ -303,6 +303,30 @@ function fmtMoneyIn(n: number, currency?: string | null) {
 
 const hasRichText = (html?: string | null) => !!html && html.replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').trim().length > 0
 
+// FIX (doc-quality harmonisation): the "Scope governance by ScopeGov / Generated" line used to flow straight after the last
+// block, so on a short document it floated mid-page while the page number sat at the foot. All three documents now share one
+// fixed strip at the page bottom: credit on the left, generation date and page number on the right, on every page.
+function PdfFooter({ generatedLabel, generatedOn, scopeGovLabel, pageLabel }: {
+  generatedLabel: string; generatedOn: string; scopeGovLabel: string; pageLabel: (n: number, total: number) => string
+}) {
+  return (
+    <View fixed style={{ position: 'absolute', bottom: 20, left: 48, right: 48, flexDirection: 'row', justifyContent: 'space-between', borderTop: '1 solid #E5E1D8', paddingTop: 6, fontSize: 8, color: '#B0B0B0' }}>
+      <Text>{scopeGovLabel} <Link src={SCOPEGOV_URL} style={{ color: '#B0B0B0', textDecoration: 'none' }}>ScopeGov</Link></Text>
+      <Text render={({ pageNumber, totalPages }) => `${generatedLabel} ${generatedOn}${totalPages > 1 ? ` · ${pageLabel(pageNumber, totalPages)}` : ''}`} />
+    </View>
+  )
+}
+
+// FIX (doc-quality harmonisation): a table was kept as one unsplittable block whenever it had <= 4 rows, however much text the
+// rows held, so a 4-row Deliverables table with wrapped cells jumped whole to the next page and left a large gap on the
+// previous one. A table now stays whole only when it is short in rows AND in printed text.
+const TABLE_KEEP_TOGETHER_MAX_CHARS = 450
+function tableTextWeight(rows: SowTableRow[] | undefined): number {
+  let n = 0
+  for (const r of rows || []) for (const v of Object.values(r || {})) n += String(v ?? '').length
+  return n
+}
+
 // ── SOW PDF ──────────────────────────────────────────────────
 
 // FIX (SOW lifecycle independent pass, S1): prose sections were hard-coded wrap={false}. A section
@@ -343,7 +367,7 @@ function SectionShell({ s, keepTogether, title, content }: { s: any; keepTogethe
 }
 
 function SowSection({ sec, num, s, language, currency }: { sec: SowPdfData['sections'][number]; num: number; s: any; language?: string; currency?: string }) {
-  const keepTogether = isTableSection(sec.id) ? (sec.table || []).length <= TABLE_KEEP_TOGETHER_MAX_ROWS : fitsOnOnePage(sec.content)
+  const keepTogether = isTableSection(sec.id) ? (sec.table || []).length <= TABLE_KEEP_TOGETHER_MAX_ROWS && tableTextWeight(sec.table) <= TABLE_KEEP_TOGETHER_MAX_CHARS : fitsOnOnePage(sec.content)
   return (
     <SectionShell
       s={s}
@@ -363,7 +387,7 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
   const fm = (n: number) => fmtMoneyIn(n, data.currency)
 
   const s = StyleSheet.create({
-    page:       { fontFamily: PDF_FONT.sans, fontSize: 10, color: '#1A1A1A', padding: '40 48' },
+    page:       { fontFamily: PDF_FONT.sans, fontSize: 10, color: '#1A1A1A', padding: '40 48 56' },
     // Header
     header:     { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', borderBottom: `2 solid ${c}`, paddingBottom: 14, marginBottom: 20 },
     h1:         { fontFamily: PDF_FONT.bold, fontSize: 18, color: c, marginBottom: 3 },
@@ -489,6 +513,9 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
               : <Text style={s.agencyText}>{data.agencyName}</Text>}
             <Text style={s.value}>{data.currency} {fm(data.contractValue)}{data.isRetainer ? ` / ${t.perMonth}` : ''}</Text>
             <Text style={s.valueLabel}>{data.isRetainer ? t.monthlyRetainer : t.contractValue}</Text>
+            {data.signedBy && data.signedAt && !data.isWatermarked && (
+              <Text style={{ fontSize: 8.5, fontFamily: PDF_FONT.bold, textTransform: 'uppercase', letterSpacing: 0.6, paddingVertical: 3, paddingHorizontal: 8, borderRadius: 3, marginTop: 6, alignSelf: 'flex-end', backgroundColor: '#F2F0EA', color: '#909090' }}>{t.signed}</Text>
+            )}
             {!data.isRetainer && (data.taxRate || 0) > 0 && (
               <Text style={[s.valueLabel, { marginTop: 2 }]}>{data.taxInclusive ? t.inclTax(data.taxRate as number) : t.exclTax(data.taxRate as number)}</Text>
             )}
@@ -639,20 +666,8 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
         </View>
         </View>
 
-        {/* Footer */}
-        <View style={s.footer}>
-          <Text>{t.scopeGovBy} <Link src={SCOPEGOV_URL} style={s.footerLink}>ScopeGov</Link></Text>
-          <Text>{t.generated} {fd(new Date().toISOString())}</Text>
-        </View>
-
-        {/* Page numbers — fixed, only shown once the document actually
-            runs past one page, so a short single-page SOW doesn't get a
-            pointless "Page 1 of 1". */}
-        <Text
-          style={s.pageNum}
-          fixed
-          render={({ pageNumber, totalPages }) => (totalPages > 1 ? t.page(pageNumber, totalPages) : '')}
-        />
+        {/* Footer — fixed strip on every page; the page number is only shown once the document runs past one page. */}
+        <PdfFooter generatedLabel={t.generated} generatedOn={fd(new Date().toISOString())} scopeGovLabel={t.scopeGovBy} pageLabel={t.page} />
       </Page>
     </Document>
   )
@@ -678,7 +693,7 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
   const statusLoud  = data.status ? CO_STATUS_LOUD.has(data.status) : false
 
   const s = StyleSheet.create({
-    page:      { fontFamily: PDF_FONT.sans, fontSize: 10, color: '#1A1A1A', padding: '40 48' },
+    page:      { fontFamily: PDF_FONT.sans, fontSize: 10, color: '#1A1A1A', padding: '40 48 56' },
     header:    { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', borderBottom: `2 solid ${c}`, paddingBottom: 14, marginBottom: 20 },
     h1:        { fontFamily: PDF_FONT.bold, fontSize: 16, color: c, marginBottom: 3 },
     meta:      { fontSize: 8.5, color: '#909090' },
@@ -720,6 +735,7 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
     secTitle:  { fontSize: 8, fontFamily: PDF_FONT.bold, color: '#909090', textTransform: 'uppercase', letterSpacing: 0.6, marginBottom: 6, borderBottom: '1 solid #E5E1D8', paddingBottom: 3 },
     secNum:    { color: '#C0C0C0' },
     section:   { marginBottom: 18 },
+    contMasthead: { flexDirection: 'row', justifyContent: 'space-between', fontSize: 7.5, color: '#B0B0B0', paddingBottom: 6, marginBottom: 14, borderBottom: '1 solid #F2F0EA' },
     impactBox: { border: '1 solid #E5E1D8', borderRadius: 4, marginTop: 12, padding: '10 14' },
     impactRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 3, fontSize: 10 },
     impactGrand: { flexDirection: 'row', justifyContent: 'space-between', paddingTop: 6, marginTop: 4, borderTop: '1 solid #1A1A1A', fontSize: 12, fontFamily: PDF_FONT.bold },
@@ -768,6 +784,16 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
       <Page size="A4" style={s.page}>
         {/* Same fix as SowDocument: `fixed` so the stamp appears on every page, not only the first. */}
         {data.isWatermarked && <Text fixed style={s.watermark}>{data.watermarkText || 'DRAFT'}</Text>}
+        {/* Running masthead on continuation pages only — same treatment as the SOW, so a multi-page change order keeps its identity. */}
+        <Text
+          style={s.contMasthead}
+          fixed
+          render={({ pageNumber }) =>
+            pageNumber > 1
+              ? `${data.agencyName} · ${data.isCredit ? 'Credit Change Order' : 'Change Order'}${data.documentNumber ? ` · ${data.documentNumber}` : ''} · ${data.projectName}`
+              : ''
+          }
+        />
         {/* Header */}
         <View style={s.header}>
           <View>
@@ -973,16 +999,7 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
           </View>
         </View>
 
-        <View style={s.footer}>
-          <Text>Scope governance by <Link src={SCOPEGOV_URL} style={s.footerLink}>ScopeGov</Link></Text>
-          <Text>Generated {fd(new Date().toISOString())}</Text>
-        </View>
-
-        <Text
-          style={s.pageNum}
-          fixed
-          render={({ pageNumber, totalPages }) => (totalPages > 1 ? `Page ${pageNumber} of ${totalPages}` : '')}
-        />
+        <PdfFooter generatedLabel="Generated" generatedOn={fd(new Date().toISOString())} scopeGovLabel="Scope governance by" pageLabel={(n, total) => `Page ${n} of ${total}`} />
       </Page>
     </Document>
   )
@@ -994,6 +1011,8 @@ const INVOICE_STATUS_LABEL: Record<string, string> = {
   draft: 'Draft', sent: 'Awaiting payment', partially_paid: 'Partially paid',
   paid: 'Paid', overdue: 'Overdue', void: 'Void',
 }
+// Same convention as the change-order badge: states that still need action are loud, settled ones are muted.
+const INVOICE_STATUS_LOUD = new Set(['sent', 'partially_paid', 'overdue'])
 const INVOICE_METHOD_LABEL: Record<string, string> = {
   bank_transfer: 'Bank transfer', stripe: 'Stripe', check: 'Check', cash: 'Cash', other: 'Other',
 }
@@ -1028,13 +1047,13 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
   const invTax = hasTax && !data.taxInclusive ? invTaxAmount : 0
 
   const s = StyleSheet.create({
-    page:      { fontFamily: PDF_FONT.sans, fontSize: 10, color: '#1A1A1A', padding: '40 48' },
+    page:      { fontFamily: PDF_FONT.sans, fontSize: 10, color: '#1A1A1A', padding: '40 48 56' },
     header:    { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', borderBottom: `2 solid ${c}`, paddingBottom: 14, marginBottom: 20 },
     h1:        { fontFamily: PDF_FONT.bold, fontSize: 18, color: c, marginBottom: 3 },
     meta:      { fontSize: 8.5, color: '#909090' },
     logo:      { maxHeight: 42, maxWidth: 100, objectFit: 'contain' },
     agencyText:{ fontFamily: PDF_FONT.bold, fontSize: 11, color: c },
-    statusPill:{ fontSize: 8, fontFamily: PDF_FONT.bold, color: c, textTransform: 'uppercase', letterSpacing: 0.5, textAlign: 'right', marginBottom: 4 },
+    statusPill:{ fontSize: 8.5, fontFamily: PDF_FONT.bold, textTransform: 'uppercase', letterSpacing: 0.6, paddingVertical: 3, paddingHorizontal: 8, borderRadius: 3, alignSelf: 'flex-end' },
     partiesBox:{ flexDirection: 'row', gap: 32, backgroundColor: '#F9F8F5', border: '1 solid #E5E1D8', borderRadius: 4, padding: '10 14', marginBottom: 20 },
     partyLabel:{ fontSize: 8, color: '#909090', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4 },
     partyName: { fontFamily: PDF_FONT.bold, fontSize: 11 },
@@ -1084,7 +1103,9 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
           </View>
           <View style={{ alignItems: 'flex-end' }}>
             {logo ? <Image src={logo} style={s.logo} /> : <Text style={s.agencyText}>{data.agencyName}</Text>}
-            <Text style={[s.statusPill, { marginTop: 8 }]}>{INVOICE_STATUS_LABEL[data.status] || data.status}</Text>
+            <Text style={[s.statusPill, { marginTop: 6 }, INVOICE_STATUS_LOUD.has(data.status)
+              ? { backgroundColor: '#FDF3E7', color: '#B8611A' }
+              : { backgroundColor: '#F2F0EA', color: '#909090' }]}>{INVOICE_STATUS_LABEL[data.status] || data.status}</Text>
           </View>
         </View>
 
@@ -1262,19 +1283,11 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
           </View>
         )}
 
-        <View style={s.footer}>
-          <Text>{data.status === 'paid' && balanceDue === 0 ? 'Paid in full — no further payment is due on this invoice.' : 'This is a payment record, not a payment portal — pay per the instructions above.'}</Text>
-          <View style={s.footerRow}>
-            <Text>Scope governance by <Link src={SCOPEGOV_URL} style={s.footerLink}>ScopeGov</Link></Text>
-            <Text>Generated {fd(new Date().toISOString())}</Text>
-          </View>
-        </View>
+        <Text style={{ marginTop: 18, paddingTop: 10, borderTop: '1 solid #E5E1D8', fontSize: 8, color: '#B0B0B0' }}>
+          {data.status === 'paid' && balanceDue === 0 ? 'Paid in full — no further payment is due on this invoice.' : 'This is a payment record, not a payment portal — pay per the instructions above.'}
+        </Text>
 
-        <Text
-          style={s.pageNum}
-          fixed
-          render={({ pageNumber, totalPages }) => (totalPages > 1 ? `Page ${pageNumber} of ${totalPages}` : '')}
-        />
+        <PdfFooter generatedLabel="Generated" generatedOn={fd(new Date().toISOString())} scopeGovLabel="Scope governance by" pageLabel={(n, total) => `Page ${n} of ${total}`} />
       </Page>
     </Document>
   )

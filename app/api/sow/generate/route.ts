@@ -19,7 +19,7 @@ import { getPendingApprovalForDocument } from '@/lib/approvals/engine'
 import { logAudit } from '@/lib/utils/audit'
 import { sanitizeRichText, sanitizePlainText, truncateText } from '@/lib/utils/sanitize'
 import { isBlankText } from '@/lib/utils/client-input'
-import { applyAgencyStandards, ensureContractValueStated, ensureTaxStated, ensureLateFeeStated, ensureLiabilityCapStated, derivedScheduleRows, type AgencyStandards } from '@/lib/ai/sow-content'
+import { applyAgencyStandards, ensureContractValueStated, ensureTaxStated, ensureLateFeeStated, ensurePaymentTermsDaysStated, normalizePaymentTermsDays, ensureLiabilityCapStated, derivedScheduleRows, type AgencyStandards } from '@/lib/ai/sow-content'
 import { workspaceTaxDefaults } from '@/lib/documents/tax-defaults'
 import { sowDateStyle } from '@/lib/utils/date-style'
 import { normalizeLateFeeRate } from '@/lib/documents/late-fee'
@@ -239,6 +239,12 @@ export async function POST(request: NextRequest) {
       const { data: lf } = await (service as any).from('workspaces').select('default_late_fee_rate').eq('id', session.workspaceId).maybeSingle()
       lateFeeRate = normalizeLateFeeRate(lf?.default_late_fee_rate)
     } catch { /* no late fee */ }
+    // Standard payment terms (days) — the period every invoice and change order for this workspace prints; its own tolerant read.
+    let paymentTermsDays: number | null = null
+    try {
+      const { data: pt } = await (service as any).from('workspaces').select('default_payment_terms_days').eq('id', session.workspaceId).maybeSingle()
+      paymentTermsDays = normalizePaymentTermsDays(pt?.default_payment_terms_days)
+    } catch { /* no standard term */ }
     // Liability cap (migration 159) — likewise its own tolerant read.
     let liabilityCap: ReturnType<typeof normalizeLiabilityCap> = null
     try {
@@ -336,6 +342,7 @@ export async function POST(request: NextRequest) {
       clientRepresentativeTitle: clientRepresentative ? (clientRepresentativeTitle || null) : null,
       tax: taxDefaults.taxRate > 0 ? { rate: taxDefaults.taxRate, inclusive: taxDefaults.taxInclusive } : null,
       lateFeeRate,
+      paymentTermsDays,
       liabilityCap,
       dateStyle: sowDateStyle(project.workspaces?.legal_address),
     }
@@ -425,6 +432,7 @@ export async function POST(request: NextRequest) {
     allContent.payment = ensureContractValueStated(allContent.payment || '', contractValue, curr, contentInput.retainer)
     allContent.payment = ensureTaxStated(allContent.payment, contentInput)
     allContent.payment = ensureLateFeeStated(allContent.payment, contentInput)
+    allContent.payment = ensurePaymentTermsDaysStated(allContent.payment, contentInput)
     allContent.termination = ensureLiabilityCapStated(allContent.termination || '', contentInput)
 
     const parsed: { sections: any[]; metadata: any } = {

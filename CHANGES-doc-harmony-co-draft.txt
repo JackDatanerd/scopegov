@@ -1,0 +1,8 @@
+CHANGES — document harmony pass: change order AI draft wording
+
+app/api/co/draft/route.ts
+- note / scopeImpact are written in the third person ("the Provider" / "the Client"), matching the SOW and the CO's own
+  Provider/Client labels; the draft said "At your team's request, we will ...".
+- Quantities named in the prose must equal the line-item quantities (the draft said "a round of revisions" beside a
+  2-round line item), and added revision rounds are stated as in addition to those included in the SOW.
+- scopeImpact quotes the SOW section by its printed title (e.g. the "Out of Scope" section).

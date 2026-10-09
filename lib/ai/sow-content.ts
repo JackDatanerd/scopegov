@@ -129,6 +129,9 @@ export interface SowContentInput {
   // Late fee, percent per month on overdue amounts (workspace setting at drafting). Null/absent = none: the Payment Terms
   // then say nothing about one, and the prompt keeps forbidding the model from inventing it.
   lateFeeRate?: number | null
+  // Workspace standard payment terms (days from invoice date to due date). Null/absent = the SOW says nothing about it.
+  // Invoices and change orders already print this period, so the SOW the client signs must state the same one.
+  paymentTermsDays?: number | null
   // Optional limitation-of-liability clause chosen in settings; app-owned wording, appended deterministically to Termination.
   liabilityCap?: LiabilityCap | null
 }
@@ -389,6 +392,35 @@ export function ensureTaxStated(paymentHtml: string, input: SowContentInput): st
   return `${paymentHtml}${sentence}`
 }
 
+
+/** Whole number of days, 1-365, or null. */
+export function normalizePaymentTermsDays(v: unknown): number | null {
+  const n = Number(v)
+  return Number.isInteger(n) && n >= 1 && n <= 365 ? n : null
+}
+
+/** One deterministic contract sentence for when invoices fall due. Empty when the workspace sets no standard term. */
+export function paymentTermsSentenceHtml(input: SowContentInput): string {
+  const d = normalizePaymentTermsDays(input.paymentTermsDays)
+  return d ? `<p>Each invoice is due within ${d} day${d === 1 ? '' : 's'} of its invoice date.</p>` : ''
+}
+
+/** Prompt line: the same period the invoices print, and consistent trigger wording. Empty when no term is set. */
+export function paymentTermsPromptBlock(input: SowContentInput): string {
+  const d = normalizePaymentTermsDays(input.paymentTermsDays)
+  return d
+    ? `Payment timing: each invoice is payable within ${d} day${d === 1 ? '' : 's'} of its invoice date. Describe each instalment by WHEN ITS INVOICE IS ISSUED (for example "invoiced before work commences", "invoiced on final delivery approval") and never as "due upfront" or "due on delivery", which would contradict that period.`
+    : ''
+}
+
+/** Backstop for the model: append the payment-period sentence when the Payment Terms never state a day count. English only. */
+export function ensurePaymentTermsDaysStated(paymentHtml: string, input: SowContentInput): string {
+  if (input.language && input.language !== 'en') return paymentHtml
+  const d = normalizePaymentTermsDays(input.paymentTermsDays)
+  if (!d) return paymentHtml
+  if (new RegExp(`within\\s+${d}\\s+days?\\b|net\\s*${d}\\b`, 'i').test(norm(paymentHtml))) return paymentHtml
+  return `${paymentHtml}${paymentTermsSentenceHtml(input)}`
+}
 
 /** One deterministic contract sentence for the late fee. Empty when the agency charges none. */
 export function lateFeeSentenceHtml(input: SowContentInput): string {
@@ -676,7 +708,7 @@ ${input.outOfScope || 'To be defined'}
 Timeline: ${input.timeline || 'To be agreed'}
 Payment structure: ${input.paymentLabel}
 Revision rounds: ${input.revisionRounds}
-Governing law: ${input.governingLaw}${taxPromptBlock(input) ? `\n${taxPromptBlock(input)}` : ''}${lateFeePromptBlock(input) ? `\n${lateFeePromptBlock(input)}` : ''}
+Governing law: ${input.governingLaw}${taxPromptBlock(input) ? `\n${taxPromptBlock(input)}` : ''}${lateFeePromptBlock(input) ? `\n${lateFeePromptBlock(input)}` : ''}${paymentTermsPromptBlock(input) ? `\n${paymentTermsPromptBlock(input)}` : ''}
 
 Output format — this is plain text, NOT JSON.
 
@@ -711,6 +743,7 @@ Rules:
 - Do NOT restate the parties preamble ("entered into between …") or the governing law in any section: both have their own sections. Project Overview covers the objective, a short summary of what is delivered, the timeline and the contract value (written once, in the format above) and nothing else.
 - Timeline and Deliverables must agree. Use the SAME phase names in the Timeline table and in each deliverable's Target date cell, and make each deliverable's Target date exactly the end date of the Timeline phase in which it is delivered. Timeline phases must be consecutive with exact start–end dates covering the whole project period from the brief without gaps or overlaps, and each duration label must match its own dates. If the brief gives no dates, use durations only and write "To be confirmed" as the date — never invent dates.
 - If a deliverable is a website or app, state in Assumptions who is responsible for hosting, domain registration and going live; do not assume the Provider does unless the brief says so.
+- If the out-of-scope brief excludes something only "beyond" a basic level (for example "training beyond basic content updates"), the included basic level must itself appear as a deliverable row or an Assumptions item, naming the system it concerns. Never mention such an activity in Timeline or elsewhere unless it is listed that way.
 - The Revision Policy must say that work beyond the included revision rounds, or outside the listed deliverables, requires a written change order signed by both parties before it begins.
 - Out of scope section must list every item from the out-of-scope brief as explicit exclusions. Be specific.
 - Revision policy must reference exactly ${input.revisionRounds} revision round(s).

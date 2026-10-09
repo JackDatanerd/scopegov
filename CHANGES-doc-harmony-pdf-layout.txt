@@ -1,0 +1,20 @@
+CHANGES — document harmony pass: PDF layout (SOW / CO / Invoice)
+
+Found by rendering a real SOW + change order + invoice through the renderer and comparing page by page.
+
+lib/pdf/renderer.tsx
+- Footer: "Scope governance by ScopeGov / Generated <date>" was a flow block that floated under the last content while the
+  page number sat at the page foot. All three documents now share one fixed footer strip (PdfFooter) on every page; the
+  page number joins it once the document runs past one page. Page bottom padding raised 40 -> 56 so content never meets it.
+- SOW page 1 gap: a Deliverables table of <= 4 rows was kept as one unsplittable block however long its cells were, so it
+  jumped whole to page 2 and left ~40% of page 1 blank. Tables now stay whole only when short in rows AND in printed text
+  (TABLE_KEEP_TOGETHER_MAX_CHARS). The sample SOW drops from 6 to 5 pages.
+- Change order: continuation pages now carry the same running masthead as the SOW.
+- Status markers harmonised: invoice status is a pill like the CO badge (loud = awaiting/partial/overdue, muted = paid/
+  draft/void); a signed SOW shows a muted SIGNED pill like an ACCEPTED CO.
+
+lib/pdf/rich-text.tsx
+- List items are unsplittable when <= 600 chars, so a bullet can no longer be stranded at the foot of one page with its
+  text on the next.
+
+Not changed (checked, correct): tax maths, contract position maths, PDF text layer (ligatures are mapped correctly).
