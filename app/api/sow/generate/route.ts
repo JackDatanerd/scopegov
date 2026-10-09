@@ -418,18 +418,19 @@ export async function POST(request: NextRequest) {
         title: sectionTitle(def.id, contentInput.language),
         content: sanitizeRichText(allContent[def.id] || ''),
         ...(TABLE_SECTION_IDS.includes(def.id as SowTableSectionId) ? { table: sanitizeTableRows(def.id, tables[def.id as SowTableSectionId]) } : {}),
-        // FEATURE (section-9 audit follow-up): every other section
-        // defaults to visible — payment_schedule is the one exception,
-        // shown by default only when it's actually relevant (the agency
-        // chose 'milestones'). Still toggleable by hand either way, same
-        // as any other non-required section.
-        visible: def.id === 'payment_schedule' ? paymentStructure === 'milestones' : true,
+        // Every section is shown by default. payment_schedule used to be hidden for every structure except
+        // 'milestones'; it now always carries rows (authored milestones, or the instalments derived from the
+        // structure — see derivedScheduleRows), so there is never an empty section to hide.
+        visible: true,
         order: def.order,
       })),
       // Metadata is entirely server-derived from the request — never
       // asked of the model, so it can never be malformed or missing.
       metadata: {
         paymentStructure: paymentStructure,
+        // Frozen with the document so the signed copy keeps saying how tax applied when it was drafted.
+        ...(taxDefaults.taxRate > 0 ? { taxRate: taxDefaults.taxRate, taxInclusive: taxDefaults.taxInclusive } : {}),
+        ...(clientRepresentative ? { clientRepresentative, ...(clientRepresentativeTitle ? { clientRepresentativeTitle } : {}) } : {}),
         revisionRounds,
         governingLaw: governingLaw,
         // FIX (section-9 audit, 9-G7): persist the language the document
@@ -524,10 +525,10 @@ export async function POST(request: NextRequest) {
       // found the toggle), and milestones -> anything else kept it VISIBLE over an empty table, which
       // prints a numbered "Payment Schedule — To be defined" section on the client's document. Only
       // honour the agency's manual show/hide when the structure is unchanged.
-      const structureUnchanged = existingSow.metadata?.paymentStructure === paymentStructure
       const sectionsToWrite = parsed.sections.map(sec => {
         if (REQUIRED_SECTION_IDS.includes(sec.id)) return sec
-        if (sec.id === 'payment_schedule' && !structureUnchanged) return sec
+        // Always visible and always populated (see above), so a manual hide on the old draft is not carried across.
+        if (sec.id === 'payment_schedule') return sec
         const prior = oldVisibleById.get(sec.id)
         return typeof prior === 'boolean' ? { ...sec, visible: prior } : sec
       })

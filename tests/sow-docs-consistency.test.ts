@@ -156,3 +156,25 @@ describe('Send validation flags Payment Terms that omit the tax rate', () => {
     expect(r.warnings.some(w => w.includes('tax'))).toBe(false)
   })
 })
+
+// Source guards for the generate route: these three rules live in one long route handler that has no behavioural test,
+// and one of them silently failed to land once. They are cheap to pin.
+import { readFileSync } from 'fs'
+import { join } from 'path'
+describe('generate route wiring', () => {
+  const src = readFileSync(join(process.cwd(), 'app/api/sow/generate/route.ts'), 'utf8')
+  it('every section is visible on a new SOW, including payment_schedule', () => {
+    expect(src).not.toMatch(/visible:\s*def\.id === 'payment_schedule'/)
+    expect(src).toMatch(/visible: true,\s*\n\s*order: def\.order/)
+  })
+  it('freezes the tax setting into the SOW metadata', () => {
+    expect(src).toContain('taxRate: taxDefaults.taxRate, taxInclusive: taxDefaults.taxInclusive')
+  })
+  it('regenerating a draft never carries a manual hide onto payment_schedule', () => {
+    expect(src).toMatch(/if \(sec\.id === 'payment_schedule'\) return sec/)
+  })
+  it('passes tax and the contracting party to the drafting prompt', () => {
+    expect(src).toContain('tax: taxDefaults.taxRate > 0')
+    expect(src).toContain('clientRepresentative,')
+  })
+})
