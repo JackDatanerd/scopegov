@@ -81,6 +81,7 @@ export function timeAgo(iso: string, now: number = Date.now()): string {
   // (notifications live up to ~270 days, so an age threshold never reached it and "1 Dec" read as the wrong year).
   if (days < 7) return `${days}d ago`
   const then = new Date(iso)
-  const sameYear = then.getUTCFullYear() === new Date(now).getUTCFullYear()
+  // Same zone as the rendered date below (the viewer's), or a notification from the first hours of 1 Jan UTC reads "31 Dec" with no year.
+  const sameYear = then.getFullYear() === new Date(now).getFullYear()
   return then.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: sameYear ? undefined : 'numeric' })
 }

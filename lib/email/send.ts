@@ -104,6 +104,8 @@ export function cleanSubject(subject: string | null | undefined): string {
   const s = String(subject ?? '')
     // eslint-disable-next-line no-control-regex
     .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, ' ')
+    // Bidi overrides/isolates and zero-width characters can reorder or hide text in a Subject.
+    .replace(/[\u200B-\u200F\u202A-\u202E\u2060-\u2069\uFEFF]/g, '')
     .replace(/\s+/g, ' ')
     .trim()
   return s || 'Notification from ScopeGov'

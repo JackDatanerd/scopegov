@@ -139,7 +139,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
             is still awaiting your signature.
           </p>
           <p style="font-size:12px;color:#909090;margin:0 0 20px;">
-            ${sow.expires_at ? `This link expires ${new Date(sow.expires_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}.` : ''}
+            ${sow.expires_at ? `This link expires ${new Date(sow.expires_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' })}.` : ''}
           </p>
           <a href="${portalUrl}" style="display:inline-block;background:${accent};color:#FFF;padding:12px 24px;border-radius:5px;font-size:13px;font-weight:600;text-decoration:none;">
             Review &amp; Sign Agreement →
