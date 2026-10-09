@@ -105,7 +105,11 @@ describe('Formats', () => {
   })
   it('prompt keeps timeline, deliverables and overview consistent', () => {
     const p = buildSowContentPrompt(base)
-    expect(p).toContain('Use the SAME phase names')
+    // Timeline and Deliverables stay tied together: each Target date is exactly its phase's end date (date only, so the narrow
+    // column stays one line); with no dates the cell carries the phase name the Timeline table uses.
+    expect(p).toContain('exactly the end date of the Timeline phase')
+    expect(p).toContain('the SAME name the Timeline table uses')
+    expect(p).toContain('do NOT repeat the phase name')
     expect(p).toContain('Do NOT restate the parties preamble')
     expect(p).toContain('hosting, domain registration and going live')
   })

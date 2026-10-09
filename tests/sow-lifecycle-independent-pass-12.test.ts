@@ -46,7 +46,8 @@ describe('B2 — a table row never splits across pages', () => {
   it('a long table renders as the heading group + remaining rows without losing a row', () => {
     const rows = Array.from({ length: 30 }, (_, i) => ({ deliverable: `D${i}`, acceptanceCriteria: 'ok', owner: 'Provider', targetDate: '' }))
     const els = walk(SowTable({ sectionId: 'deliverables', rows, language: 'en', lead: React.createElement('span', null, 'HEAD') }))
-    expect(els.filter(e => e.props.wrap === false && e.type !== 'span')).toHaveLength(31) // 30 rows + the lead group
+    // 30 rows + the lead group (heading, header, first two rows) + the tail group (last two rows, so a break never strands one row)
+    expect(els.filter(e => e.props.wrap === false && e.type !== 'span')).toHaveLength(32)
     expect(els.some(e => e.type === 'span')).toBe(true)
   })
 })

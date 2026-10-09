@@ -1,0 +1,25 @@
+CHANGES — document harmony pass 2: invoice "Contract position" shows what is still to invoice
+
+Problem: "Remaining contract value" (contracted - invoiced) read like an amount owed, and silently included an approved change
+order that had not been invoiced yet (3,650 contracted - 1,500 invoiced = 2,150, of which 650 was the unbilled change order).
+
+lib/utils/contract-value.ts
+- unbilledChangeOrderValue(): per change order, its amendment's financial impact less the subtotal of the live (non-draft,
+  non-void) invoices raised against it (invoices.co_id), floored at 0 — a part-billed change order counts only its remainder.
+  Credits and retainer renewals (on a retainer) are ignored. Net of tax, like every other contract figure.
+
+lib/reports/contract-position.ts
+- ContractPosition.unbilledChangeOrderValue; the amendments query now also selects change_order_id and the invoices query co_id.
+- toInvoiceContractPosition(): ONE place that shapes the position for an invoice document (it was copy-pasted in three routes).
+
+app/api/pdf/invoice/[id]/route.ts, app/api/portal/invoice/[token]/route.ts, app/api/portal/invoice/[token]/pdf/route.ts
+- Use toInvoiceContractPosition; the "unbilledChangeOrders" figure reaches the PDF and the portal page.
+
+lib/pdf/renderer.tsx, app/portal/invoice/[token]/page.tsx
+- "Remaining contract value" -> "Remaining to invoice (excl. tax)", and a muted line underneath, "of which approved change
+  orders not yet invoiced", only when there is one (capped at the remaining figure). Agency PDF, portal PDF and portal page agree.
+
+tests/contract-position-unbilled-co.test.ts (new): unbilled, fully/part billed, draft and void invoices, credits, retainer
+renewals, and the owner's own numbers (3,650 contracted, 650 unbilled, 2,150 left).
+
+No migration: amendments.change_order_id and invoices.co_id already exist.

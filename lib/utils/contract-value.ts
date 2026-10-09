@@ -112,6 +112,8 @@ export async function loadRetainerMonthsBilled(
 }
 
 export interface AmendmentLike {
+  /** The change order this amendment came from (amendments.change_order_id). Optional: only the unbilled-CO figure needs it. */
+  change_order_id?: string | null
   financial_impact: number | string | null
   // PostgREST returns a to-one embed as an object; tolerate an array too.
   change_orders?: { is_retainer_renewal?: boolean | null } | Array<{ is_retainer_renewal?: boolean | null }> | null
@@ -131,6 +133,37 @@ export function amendmentImpact(amendments: AmendmentLike[] | null | undefined, 
     total += Number(a.financial_impact) || 0
   }
   return total
+}
+
+/**
+ * Value (net of tax) of approved change orders that no live invoice has billed yet. Per change order: its amendment's
+ * financial impact less the subtotal of the non-draft, non-void invoices raised against it (invoices.co_id), floored at 0,
+ * so a part-billed change order counts only its remainder. Credits (negative impact) cannot be invoiced and are ignored,
+ * and so are retainer renewals on a retainer (they replace the rate rather than add to it).
+ */
+export function unbilledChangeOrderValue(
+  amendments: AmendmentLike[] | null | undefined,
+  invoices: Array<{ co_id?: string | null; subtotal?: number | string | null; amount?: number | string | null; status?: string | null }> | null | undefined,
+  projectType: string | null | undefined,
+): number {
+  const isRetainer = projectType === 'retainer'
+  const billedByCo = new Map<string, number>()
+  for (const inv of invoices || []) {
+    if (!inv?.co_id || inv.status === 'draft' || inv.status === 'void') continue
+    billedByCo.set(inv.co_id, (billedByCo.get(inv.co_id) || 0) + (Number(inv.subtotal ?? inv.amount) || 0))
+  }
+  const impactByCo = new Map<string, number>()
+  for (const a of amendments || []) {
+    if (!a?.change_order_id) continue
+    if (isRetainer && isRenewalAmendment(a)) continue
+    impactByCo.set(a.change_order_id, (impactByCo.get(a.change_order_id) || 0) + (Number(a.financial_impact) || 0))
+  }
+  let total = 0
+  for (const [coId, impact] of impactByCo) {
+    if (impact <= 0) continue
+    total += Math.max(0, impact - (billedByCo.get(coId) || 0))
+  }
+  return Math.round(total * 100) / 100
 }
 
 /** Base + amendments, floored at zero. */

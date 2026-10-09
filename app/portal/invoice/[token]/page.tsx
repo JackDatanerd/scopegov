@@ -27,7 +27,7 @@ interface InvoiceData {
   invoiceNumber: string | null
   poNumber: string | null
   milestoneTrigger: string | null
-  contractPosition: { contractedValue: number; invoicedToDate: number; paidToDate: number; excludesTax?: boolean } | null
+  contractPosition: { contractedValue: number; invoicedToDate: number; paidToDate: number; excludesTax?: boolean; unbilledChangeOrders?: number } | null
   // FIX (section-12 audit, flagship finding): the API now sends these
   // (see the matching route fix) — added here so the page can render
   // the itemized breakdown and SOW/CO cross-reference the PDF already
@@ -378,12 +378,26 @@ export default function InvoicePortalPage() {
                   <span>Paid to date{invoice.contractPosition.excludesTax ? ' (excl. tax)' : ''}</span>
                   <span style={{ fontFamily: 'IBM Plex Mono, monospace' }}>{invoice.currency} {formatAmount(invoice.contractPosition.paidToDate, invoice.currency)}</span>
                 </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, fontWeight: 600, padding: '8px 0 0', marginTop: 2, borderTop: '1px solid #E5E1D8' }}>
-                  <span>Remaining contract value{invoice.contractPosition.excludesTax ? ' (excl. tax)' : ''}</span>
-                  <span style={{ fontFamily: 'IBM Plex Mono, monospace', color: accent }}>
-                    {invoice.currency} {formatAmount(Math.max(0, invoice.contractPosition.contractedValue - invoice.contractPosition.invoicedToDate), invoice.currency)}
-                  </span>
-                </div>
+                {(() => {
+                  const remaining = Math.max(0, invoice.contractPosition.contractedValue - invoice.contractPosition.invoicedToDate)
+                  const unbilledCo = Math.min(remaining, Math.max(0, invoice.contractPosition.unbilledChangeOrders || 0))
+                  return (
+                    <>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, fontWeight: 600, padding: '8px 0 0', marginTop: 2, borderTop: '1px solid #E5E1D8' }}>
+                        <span>Remaining to invoice{invoice.contractPosition.excludesTax ? ' (excl. tax)' : ''}</span>
+                        <span style={{ fontFamily: 'IBM Plex Mono, monospace', color: accent }}>
+                          {invoice.currency} {formatAmount(remaining, invoice.currency)}
+                        </span>
+                      </div>
+                      {unbilledCo > 0 && (
+                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11.5, color: '#909090', padding: '3px 0 0 12px' }}>
+                          <span>of which approved change orders not yet invoiced</span>
+                          <span style={{ fontFamily: 'IBM Plex Mono, monospace' }}>{invoice.currency} {formatAmount(unbilledCo, invoice.currency)}</span>
+                        </div>
+                      )}
+                    </>
+                  )
+                })()}
               </div>
             )}
           </div>

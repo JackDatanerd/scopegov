@@ -2,7 +2,7 @@ export const runtime = 'nodejs'
 
 import { resolveInvoiceSowTerms } from '@/lib/documents/invoice-refs'
 import { markFirstViewed } from '@/lib/utils/client-viewed'
-import { computeContractPosition } from '@/lib/reports/contract-position'
+import { computeContractPosition, toInvoiceContractPosition, type InvoiceContractPosition } from '@/lib/reports/contract-position'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { resolveInvoiceToken } from '@/lib/documents/invoice-token'
@@ -60,13 +60,10 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     // Which SOW this invoice is for — resolved through the milestone / accepted change order when the invoice has no direct sow_id.
     const invoiceSow = await resolveInvoiceSowTerms(service, invoice)
     const invoiceSowNumber = invoiceSow.number
-    let contractPosition: { contractedValue: number; invoicedToDate: number; paidToDate: number; excludesTax?: boolean } | null = null
+    let contractPosition: InvoiceContractPosition | null = null
     if (invoice.project_id) {
       const position = await computeContractPosition(service, invoice.project_id)
-      if (position) contractPosition = position.hasTax
-        // Contract figures are net of tax; show cash on the same basis and say so (a net "invoiced" beside a gross "paid" read as paid > invoiced).
-        ? { contractedValue: position.contractedValue, invoicedToDate: position.invoicedToDate, paidToDate: position.paidToDateNet ?? position.paidToDate, excludesTax: true }
-        : { contractedValue: position.contractedValue, invoicedToDate: position.invoicedToDate, paidToDate: position.paidToDate }
+      if (position) contractPosition = toInvoiceContractPosition(position)
     }
 
     const { data: payments } = await (service as any)

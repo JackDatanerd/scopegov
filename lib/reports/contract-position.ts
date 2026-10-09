@@ -22,7 +22,7 @@
 // amendment must not also be added on top — historical renewal amendments still carry the full total.
 
 import { fetchAll } from '@/lib/utils/fetch-all'
-import { amendmentImpact, baseContractValue, loadRetainerMonthsBilled, type PositionProject } from '@/lib/utils/contract-value'
+import { amendmentImpact, baseContractValue, loadRetainerMonthsBilled, unbilledChangeOrderValue, type PositionProject } from '@/lib/utils/contract-value'
 
 export { baseContractValue }
 export type { PositionProject }
@@ -36,6 +36,26 @@ export interface ContractPosition {
   /** True when any billed invoice carries tax, i.e. gross cash and the net contract figures differ. */
   hasTax?: boolean
   atRiskValue: number
+  /** Net value of approved change orders no live invoice has billed yet (already inside contractedValue; part of what is still to invoice). */
+  unbilledChangeOrderValue?: number
+}
+
+/** The invoice-document shape of a position (agency PDF, portal page, portal PDF): one definition so the three routes cannot drift. */
+export interface InvoiceContractPosition {
+  contractedValue: number
+  invoicedToDate: number
+  paidToDate: number
+  excludesTax?: boolean
+  unbilledChangeOrders?: number
+}
+
+export function toInvoiceContractPosition(position: ContractPosition): InvoiceContractPosition {
+  const unbilled = Math.round(Math.max(0, position.unbilledChangeOrderValue || 0) * 100) / 100
+  const base = position.hasTax
+    // Contract figures are net of tax; show cash on the same basis and say so (a net "invoiced" beside a gross "paid" read as paid > invoiced).
+    ? { contractedValue: position.contractedValue, invoicedToDate: position.invoicedToDate, paidToDate: position.paidToDateNet ?? position.paidToDate, excludesTax: true }
+    : { contractedValue: position.contractedValue, invoicedToDate: position.invoicedToDate, paidToDate: position.paidToDate }
+  return unbilled > 0 ? { ...base, unbilledChangeOrders: unbilled } : base
 }
 
 const CHUNK = 100 // ids per .in() — keeps the request URL well under proxy limits
@@ -55,10 +75,10 @@ export async function computeContractPositions(
     const chunk = ids.slice(i, i + CHUNK)
     const [amendments, invoices, openCos] = await Promise.all([
       fetchAll<any>('position amendments', (from, to) =>
-        service.from('amendments').select('id, project_id, financial_impact, change_orders(is_retainer_renewal)')
+        service.from('amendments').select('id, project_id, change_order_id, financial_impact, change_orders(is_retainer_renewal)')
           .in('project_id', chunk).order('id').range(from, to)),
       fetchAll<any>('position invoices', (from, to) =>
-        service.from('invoices').select('id, project_id, amount, amount_paid, subtotal, status')
+        service.from('invoices').select('id, project_id, co_id, amount, amount_paid, subtotal, status')
           .in('project_id', chunk).order('id').range(from, to)),
       fetchAll<any>('position open COs', (from, to) =>
         service.from('change_orders').select('id, project_id, total')
@@ -100,6 +120,11 @@ export async function computeContractPositions(
           return s + (gross > 0 && net !== gross ? paid * (net / gross) : paid)
         }, 0),
         hasTax:          billed.some((inv: any) => inv.subtotal != null && Number(inv.subtotal) !== Number(inv.amount)),
+        unbilledChangeOrderValue: unbilledChangeOrderValue(
+          amendments.filter((a: any) => a.project_id === id),
+          invoices.filter((inv: any) => inv.project_id === id),
+          project.type,
+        ),
         atRiskValue:     openCos.filter((c: any) => c.project_id === id).reduce((s: number, c: any) => s + (Number(c.total) || 0), 0),
       })
     }

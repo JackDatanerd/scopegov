@@ -10,9 +10,9 @@ import {
 } from '@react-pdf/renderer'
 import { safeFetch } from '@/lib/utils/safe-fetch'
 import { RichText, printedWeight } from '@/lib/pdf/rich-text'
-import { SowTable } from '@/lib/pdf/sow-table'
+import { SowTable, estimateSowTableHeight, TABLE_KEEP_TOGETHER_MAX_HEIGHT } from '@/lib/pdf/sow-table'
 import { pdfChrome } from '@/lib/pdf/chrome-labels'
-import { isTableSection, milestoneBlockLabels, type SowTableRow } from '@/lib/sow/table-schema'
+import { isTableSection, milestoneBlockLabels, type SowTableRow, type SowTableSectionId } from '@/lib/sow/table-schema'
 import { formatAddressLines, roundCurrency, type LegalAddress } from '@/lib/utils/format'
 import { resolveTimeZone } from '@/lib/utils/timezone'
 import { PDF_FONT, sanitizeForPdf } from '@/lib/pdf/fonts'
@@ -215,7 +215,7 @@ export interface InvoicePdfData {
   sentAt?:      string | null
   paymentInstructions?: string | null
   payments:     Array<{ amount: number; paidAt: string; method: string; referenceNote?: string | null }>
-  contractPosition?: { contractedValue: number; invoicedToDate: number; paidToDate: number; excludesTax?: boolean } | null
+  contractPosition?: { contractedValue: number; invoicedToDate: number; paidToDate: number; excludesTax?: boolean; unbilledChangeOrders?: number } | null
   // Cross-references (doc-quality audit round 2) — the underlying
   // sow_id/co_id FKs already existed on `invoices`, just weren't being
   // read into the PDF. Mirrors Meridian sample's "For services rendered
@@ -317,16 +317,6 @@ function PdfFooter({ generatedLabel, generatedOn, scopeGovLabel, pageLabel }: {
   )
 }
 
-// FIX (doc-quality harmonisation): a table was kept as one unsplittable block whenever it had <= 4 rows, however much text the
-// rows held, so a 4-row Deliverables table with wrapped cells jumped whole to the next page and left a large gap on the
-// previous one. A table now stays whole only when it is short in rows AND in printed text.
-const TABLE_KEEP_TOGETHER_MAX_CHARS = 450
-function tableTextWeight(rows: SowTableRow[] | undefined): number {
-  let n = 0
-  for (const r of rows || []) for (const v of Object.values(r || {})) n += String(v ?? '').length
-  return n
-}
-
 // ── SOW PDF ──────────────────────────────────────────────────
 
 // FIX (SOW lifecycle independent pass, S1): prose sections were hard-coded wrap={false}. A section
@@ -350,8 +340,11 @@ function fitsOnOnePage(html: string | null | undefined): boolean {
 // wrappable sibling — verified by sweeping section lengths), and a table section was never kept together at all.
 // Short sections are one unsplittable block (heading + content). Long ones, which must be free to flow across pages,
 // hand the heading to the content as `lead`, which puts it inside the unsplittable first paragraph / list item / row.
-// Only genuinely short tables stay as one block: a taller one flows across pages, its heading travelling with its first row
-// (the `lead` mechanism), instead of jumping whole to the next page and leaving half a page blank.
+// Table sections: a table is never split across pages when its ESTIMATED HEIGHT (estimateSowTableHeight) is at most
+// TABLE_KEEP_TOGETHER_MAX_HEIGHT — if it does not fit under what is already on the page it moves whole to the next one. This
+// replaces the old row-count rule (<= 4 rows): four rows of wrapped text jumped to the next page and left a gap, while a
+// five-row table of one-liners was split. Only a table too tall for that flows across pages, and SowTable then guarantees at
+// least two rows on each side of the break. (The payment-schedule block below is still decided by row count.)
 const TABLE_KEEP_TOGETHER_MAX_ROWS = 4
 function SectionShell({ s, keepTogether, title, content }: { s: any; keepTogether: boolean; title: React.ReactNode; content: (lead?: React.ReactNode) => React.ReactNode }) {
   const heading = <Text style={s.secTitle}>{title}</Text>
@@ -367,7 +360,7 @@ function SectionShell({ s, keepTogether, title, content }: { s: any; keepTogethe
 }
 
 function SowSection({ sec, num, s, language, currency }: { sec: SowPdfData['sections'][number]; num: number; s: any; language?: string; currency?: string }) {
-  const keepTogether = isTableSection(sec.id) ? (sec.table || []).length <= TABLE_KEEP_TOGETHER_MAX_ROWS && tableTextWeight(sec.table) <= TABLE_KEEP_TOGETHER_MAX_CHARS : fitsOnOnePage(sec.content)
+  const keepTogether = isTableSection(sec.id) ? estimateSowTableHeight(sec.id as SowTableSectionId, sec.table) <= TABLE_KEEP_TOGETHER_MAX_HEIGHT : fitsOnOnePage(sec.content)
   return (
     <SectionShell
       s={s}
@@ -1045,6 +1038,10 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
   // taxInclusive — a legacy row stored as tax_rate 0 + tax_inclusive true must not print a
   // duplicate Subtotal/Amount due pair with no tax line between them.
   const invTax = hasTax && !data.taxInclusive ? invTaxAmount : 0
+  // Contract position: what is still to be invoiced, and how much of that is an approved change order nobody has billed yet
+  // (capped at the remaining figure, so a stale input can never print "of which" more than the whole).
+  const cpRemaining = data.contractPosition ? Math.max(0, r2(data.contractPosition.contractedValue - data.contractPosition.invoicedToDate)) : 0
+  const cpUnbilledCo = data.contractPosition ? Math.min(cpRemaining, r2(data.contractPosition.unbilledChangeOrders || 0)) : 0
 
   const s = StyleSheet.create({
     page:      { fontFamily: PDF_FONT.sans, fontSize: 10, color: '#1A1A1A', padding: '40 48 56' },
@@ -1274,12 +1271,21 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
               <Text>Paid to date{data.contractPosition.excludesTax ? ' (excl. tax)' : ''}</Text>
               <Text style={{ fontFamily: 'Courier' }}>{data.currency} {fmtInv(data.contractPosition.paidToDate)}</Text>
             </View>
+            {/* "Remaining to invoice", not "remaining contract value": the figure is what is still to be BILLED (contracted less
+                invoiced), not an amount owed. When part of it is an approved change order nobody has invoiced yet, say so on its own
+                line, so the reader can tell the SOW's instalments from the change order and the agency can see what is unbilled. */}
             <View style={[s.cpRow, { borderTop: '1 solid #F2F0EA', paddingTop: 6, marginTop: 2 }]}>
-              <Text style={{ color: '#1A1A1A' }}>Remaining contract value{data.contractPosition.excludesTax ? ' (excl. tax)' : ''}</Text>
+              <Text style={{ color: '#1A1A1A' }}>Remaining to invoice{data.contractPosition.excludesTax ? ' (excl. tax)' : ''}</Text>
               <Text style={{ fontFamily: 'Courier-Bold', color: '#1A1A1A' }}>
-                {data.currency} {fmtInv(Math.max(0, data.contractPosition.contractedValue - data.contractPosition.invoicedToDate))}
+                {data.currency} {fmtInv(cpRemaining)}
               </Text>
             </View>
+            {cpUnbilledCo > 0 && (
+              <View style={[s.cpRow, { paddingTop: 0 }]}>
+                <Text style={{ color: '#909090', fontSize: 9 }}>   of which approved change orders not yet invoiced</Text>
+                <Text style={{ fontFamily: 'Courier', color: '#909090', fontSize: 9 }}>{data.currency} {fmtInv(cpUnbilledCo)}</Text>
+              </View>
+            )}
           </View>
         )}
 

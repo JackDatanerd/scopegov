@@ -53,9 +53,10 @@ export const SOW_TABLE_SCHEMAS: Record<SowTableSectionId, SowTableSchema> = {
   deliverables: {
     columns: [
       { key: 'deliverable', label: 'Deliverable', width: 3 },
-      { key: 'acceptanceCriteria', label: 'Acceptance Criteria', width: 4 },
-      { key: 'owner', label: 'Owner', width: 1.4, options: ['Provider', 'Client', 'Joint'], align: 'center' },
-      { key: 'targetDate', label: 'Target Date', width: 1.6, align: 'right' },
+      { key: 'acceptanceCriteria', label: 'Acceptance Criteria', width: 3.7 },
+      { key: 'owner', label: 'Owner', width: 1.3, options: ['Provider', 'Client', 'Joint'], align: 'center' },
+      // Wide enough for a full date ("September 30, 2026") on one line: a wrapped date made every row three or four lines tall.
+      { key: 'targetDate', label: 'Target Date', width: 2, align: 'right' },
     ],
     emptyRowLabel: 'No deliverables added yet',
   },

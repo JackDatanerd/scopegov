@@ -1,0 +1,34 @@
+CHANGES — document harmony pass 2: tables never split (unless too tall for a page)
+
+Follow-up to CHANGES-doc-harmony-pdf-layout.txt. The owner's decision: accept an occasional gap rather than a split table.
+
+lib/pdf/sow-table.tsx
+- estimateSowTableHeight(): rendered-height estimate from the column widths and cell text (deliberately an OVERestimate; a
+  table kept whole but taller than the page loses text, an overestimate only lets it flow).
+- A table is kept whole when its estimate is <= TABLE_KEEP_TOGETHER_MAX_HEIGHT (480pt, about 2/3 of a page); if it does not fit
+  under what is already on the page it moves whole to the next one. Replaces the row-count rule (<= 4 rows) and the
+  character-count rule from the previous pass.
+- A table too tall for that still flows, but never leaves a lone row: the first two rows travel with the heading and header
+  row, and the last two rows are one unsplittable group, so a break always has at least two rows on each side. Rows that
+  would themselves be too tall to group (TABLE_UNSPLITTABLE_SAFE_HEIGHT) fall back to one row at the head and no tail group.
+
+lib/pdf/renderer.tsx
+- SowSection decides keep-together from the height estimate. (Also carries the invoice contract-position change, see
+  CHANGES-doc-harmony-contract-position.txt; the file is identical in both packages.)
+
+lib/sow/table-schema.ts
+- Deliverables column widths 3 / 4 / 1.4 / 1.6 -> 3 / 3.7 / 1.3 / 2 (same total): a full date now fits one line in Target Date.
+
+lib/ai/sow-content.ts
+- Prompt: a deliverable's Target Date cell is the end date of its phase, as the date alone ("July 21, 2026"), not
+  "Phase name – July 21, 2026" (that made every row 3-4 lines tall). With no dates in the brief the cell holds the phase name.
+  Timeline and Deliverables stay tied: the date is still exactly the phase end date.
+
+tests
+- tests/table-pagination.test.ts (new): height estimate, keep-whole ceiling, two-row minimum either side of a break, prompt.
+- tests/sow-lifecycle-independent-pass-12.test.ts: the long-table group count 31 -> 32 (the new closing group).
+- tests/sow-docs-consistency.test.ts: asserts the new Target Date wording instead of "Use the SAME phase names".
+
+Existing documents: layout applies to any PDF rendered after deploy; already-signed (frozen) PDFs keep the layout they had.
+Known limit: a table that does flow across pages does not repeat its header row on the next page (react-pdf has no repeating
+table header).
