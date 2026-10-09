@@ -972,7 +972,8 @@ export async function cancelApprovalRequest(service: any, params: {
       // FIX (approvals pass 14): the requester is never told a step is waiting on them (the step notification excludes
       // them), so "no action needed" about it is noise — and when someone else cancels they get the dedicated
       // "your request was cancelled" notice below as well, i.e. two for one event.
-      stepRecipients = stepRecipients.filter(r => r.id !== request.requested_by)
+      // The person who cancelled is not told about their own action (the requester branch below applies the same rule).
+      stepRecipients = stepRecipients.filter(r => r.id !== request.requested_by && r.id !== params.actorId)
       if (stepRecipients.length) {
         const docTitle    = request.context?.title || documentLabelFor(params.documentType)
         const projectName = request.context?.project_name || ''

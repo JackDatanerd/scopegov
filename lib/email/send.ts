@@ -104,8 +104,9 @@ export function cleanSubject(subject: string | null | undefined): string {
   const s = String(subject ?? '')
     // eslint-disable-next-line no-control-regex
     .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, ' ')
-    // Bidi overrides/isolates and zero-width characters can reorder or hide text in a Subject.
-    .replace(/[\u200B-\u200F\u202A-\u202E\u2060-\u2069\uFEFF]/g, '')
+    // Bidi controls and invisible format characters (\p{Cf}) can reorder or hide text in a Subject. ZWNJ / ZWJ are kept:
+    // they are real characters in Persian / Urdu / Indic text and emoji sequences (same rule as sanitizeDisplayName).
+    .replace(/(?![\u200C\u200D])\p{Cf}/gu, '')
     .replace(/\s+/g, ' ')
     .trim()
   return s || 'Notification from ScopeGov'

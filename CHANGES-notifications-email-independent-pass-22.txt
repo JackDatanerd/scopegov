@@ -1,0 +1,6 @@
+Notifications & email independent pass 22 (audit base e9fc165, fixed on 23ac722)
+B1 lib/email/send.ts cleanSubject: stripped ZWNJ/ZWJ (corrupting Persian/Indic text and ZWJ emoji in subjects) while missing other
+   invisible format chars (U+061C, U+206A-F, U+00AD). Now removes every \p{Cf} except U+200C/U+200D.
+B2 lib/approvals/engine.ts cancelApprovalRequest: the "request cancelled" heads-up to the pending step's approvers also went to the
+   person who cancelled. Now excludes params.actorId.
+Test: tests/notifications-email-independent-pass-22.test.ts (fails on pre-fix code).
