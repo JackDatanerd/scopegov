@@ -177,6 +177,19 @@ export function validateSowForSend(input: {
   if (bareCountry || /laws? of (the )?(united states( of america)?|u\.?s\.?a?\.?)\s*\.?$/i.test(lawText))
     warnings.push('The Governing Law clause names only "United States". Name a specific state (e.g. "the State of Florida") so the clause can be applied.')
 
+  // Placeholder wording ("To be confirmed", TBC, [insert date]) in a document the client is about to sign. A warning, not a block:
+  // the agency may genuinely mean it, but it should be a choice rather than something the drafter left behind.
+  const PLACEHOLDER_RE = /\bto be (?:confirmed|determined|decided|agreed)\b|\bTBC\b|\bTBD\b|\[(?:insert|enter|client|date|name)[^\]\n]{0,60}\]/i
+  const placeholderIn: string[] = []
+  for (const sec of sections) {
+    if (sec?.visible === false) continue
+    const cells = Array.isArray(sec?.table) ? sec.table.flatMap((r: any) => Object.values(r || {}).map(v => String(v ?? ''))) : []
+    if (PLACEHOLDER_RE.test(textOf(sec?.content)) || cells.some((c: string) => PLACEHOLDER_RE.test(c)))
+      placeholderIn.push(String(sec?.title || sec?.id || 'a section'))
+  }
+  if (placeholderIn.length > 0)
+    warnings.push(`${placeholderIn.join(', ')} still ${placeholderIn.length === 1 ? 'contains' : 'contain'} placeholder wording (such as "To be confirmed"). Replace it with the actual term before sending, or the signed SOW will carry it.`)
+
   const start = typeof input.projectStartDate === 'string' ? input.projectStartDate.slice(0, 10) : ''
   const today = input.today || new Date().toISOString().slice(0, 10)
   if (/^\d{4}-\d{2}-\d{2}$/.test(start) && start < today)

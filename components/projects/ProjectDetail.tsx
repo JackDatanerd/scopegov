@@ -4,6 +4,7 @@
 
 'use client'
 import { effectiveFormStructure } from '@/lib/sow/payment-structure'
+import { retainerSuggestion, type BriefBillingSignals } from '@/lib/sow/brief-signals'
 import { useState, useEffect, useRef } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
@@ -1200,7 +1201,10 @@ function GenerateSowModal({ project, existingSow, onClose, onDone }: any) {
     SOW_PAYMENT_STRUCTURES.includes(existingSow?.metadata?.paymentStructure) ? existingSow.metadata.paymentStructure : '50_50'
   )
   // (pass 11, B1) a retainer is always billed monthly; a one-off project cannot be 'monthly'. The server enforces the same.
-  const effStructure = effectiveFormStructure(project?.type, paymentStructure)
+  // The project's billing type as this modal sees it: starts as the project's, and follows the "Bill as a monthly retainer" offer
+  // below so the form, the payment structure and the generate call agree the moment it is accepted.
+  const [billingType, setBillingType] = useState<string>(project?.type)
+  const effStructure = effectiveFormStructure(billingType, paymentStructure)
   const [revisionRounds,   setRevisionRounds]    = useState(() => {
     const n = Number(existingSow?.metadata?.revisionRounds)
     return Number.isInteger(n) && n >= 1 && n <= 10 ? String(n) : '2'
@@ -1211,6 +1215,29 @@ function GenerateSowModal({ project, existingSow, onClose, onDone }: any) {
   const [signerTitle,      setSignerTitle]       = useState<string>(existingSow?.metadata?.clientRepresentativeTitle || '')
   const [generating,       setGenerating]        = useState(false)
   const [error,            setError]             = useState('')
+  const [revisionNote,     setRevisionNote]      = useState<string>(existingSow?.metadata?.revisionNote || '')
+  const [briefSignals,     setBriefSignals]      = useState<BriefBillingSignals | null>(null)
+  const [offerDismissed,   setOfferDismissed]    = useState(false)
+  const [switching,        setSwitching]         = useState(false)
+
+  // A brief that describes monthly billing on a project that is not a retainer used to end as a 50/50 SOW with no word said.
+  async function acceptRetainerOffer() {
+    const offer = retainerSuggestion(briefSignals, billingType)
+    if (!offer || switching) return
+    setSwitching(true); setError('')
+    try {
+      const res = await fetch(`/api/projects/${project.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'retainer', retainerDurationMonths: offer.termMonths ? String(offer.termMonths) : '' }),
+      })
+      const j = await res.json().catch(() => ({} as any))
+      if (!res.ok) throw new Error(j.error || 'Could not switch this project to monthly billing')
+      setBillingType('retainer')
+      setPaymentStructure('monthly')
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Could not switch this project to monthly billing')
+    } finally { setSwitching(false) }
+  }
 
   async function extractFromBrief() {
     if (!briefText.trim()) { setReviewing(true); return }
@@ -1218,7 +1245,7 @@ function GenerateSowModal({ project, existingSow, onClose, onDone }: any) {
     try {
       const res  = await fetch('/api/sow/parse-brief', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ briefText, projectType: project.type }),
+        body: JSON.stringify({ briefText, projectType: billingType }),
       })
       const json = await res.json().catch(() => ({} as any))
       if (!res.ok) throw new Error(json.error || 'Could not read that brief — you can still fill the fields in manually below.')
@@ -1252,6 +1279,21 @@ function GenerateSowModal({ project, existingSow, onClose, onDone }: any) {
       // an off-spec AI answer falls back to the existing manual default
       // instead of being trusted as-is.
       if (SOW_PAYMENT_STRUCTURES.includes(brief.paymentStructure)) setPaymentStructure(brief.paymentStructure)
+      setBriefSignals({
+        billingCadence: brief.billingCadence === 'monthly' || brief.billingCadence === 'one_off' ? brief.billingCadence : '',
+        feeAmount: typeof brief.feeAmount === 'number' ? brief.feeAmount : null,
+        termMonths: typeof brief.termMonths === 'number' ? brief.termMonths : null,
+        revisionNote: typeof brief.revisionNote === 'string' ? brief.revisionNote : '',
+      })
+      setOfferDismissed(false)
+      if (typeof brief.revisionNote === 'string' && brief.revisionNote) setRevisionNote(brief.revisionNote)
+      // A start date stated in the brief is saved on the project (the SOW is drafted from the project record) unless one is set.
+      if (typeof brief.startDate === 'string' && brief.startDate && !project.start_date) {
+        fetch(`/api/projects/${project.id}`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ startDate: brief.startDate }),
+        }).catch(() => { /* can still be set from Edit project */ })
+      }
       const parsedBriefRounds = Number(brief.revisionRounds)
       if (Number.isInteger(parsedBriefRounds) && parsedBriefRounds >= 1 && parsedBriefRounds <= 10)
         setRevisionRounds(String(parsedBriefRounds))
@@ -1272,8 +1314,8 @@ function GenerateSowModal({ project, existingSow, onClose, onDone }: any) {
       const res  = await fetch('/api/sow/generate', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          projectId: project.id, projectType: project.type,
-          objective, deliverables, outOfScope, timeline,
+          projectId: project.id, projectType: billingType,
+          objective, deliverables, outOfScope, timeline, revisionNote: revisionNote.trim(),
           clientCompany: clientCompany.trim(), clientRepresentativeTitle: signerTitle.trim(),
           paymentStructure: effStructure, revisionRounds: parseInt(revisionRounds) || 2,
           contractValue: project.contract_value || 0, currency: project.currency || 'USD',
@@ -1320,6 +1362,22 @@ function GenerateSowModal({ project, existingSow, onClose, onDone }: any) {
               </div>
             )}
             {error && <p className="ferr">{error}</p>}
+            {(() => {
+              const offer = !offerDismissed ? retainerSuggestion(briefSignals, billingType) : null
+              if (!offer) return null
+              return (
+                <div className="surface surface-p" style={{ marginBottom: 12, borderLeft: '3px solid var(--amber)', fontSize: 12, color: 'var(--text-2)' }}>
+                  <strong style={{ color: 'var(--text)' }}>This brief describes monthly billing.</strong>{' '}
+                  Billed as a retainer, the amount is invoiced every month{offer.termMonths ? ` for ${offer.termMonths} months` : ' until the retainer ends'}; as a fixed project it would be one total split into instalments.
+                  <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                    <button type="button" className="btn btn-primary btn-xs" onClick={acceptRetainerOffer} disabled={switching}>
+                      {switching ? <span className="spin" /> : 'Bill as a monthly retainer'}
+                    </button>
+                    <button type="button" className="btn btn-ghost btn-xs" onClick={() => setOfferDismissed(true)}>Keep as a fixed project</button>
+                  </div>
+                </div>
+              )
+            })()}
             <div>
               <label className="flbl">Contracting company <span className="fhint">(optional)</span></label>
               <input className="finp" value={clientCompany} maxLength={160} placeholder={`Leave blank if ${project?.clients?.name || 'the client'} is contracting personally`}
@@ -1369,9 +1427,14 @@ function GenerateSowModal({ project, existingSow, onClose, onDone }: any) {
               </div>
             </div>
             <div className="fgrp">
+              <label className="flbl">How revisions are counted <span className="fhint">(optional, e.g. &quot;per post&quot;)</span></label>
+              <input className="finp" value={revisionNote} maxLength={200} placeholder="Leave blank to count rounds across the whole engagement"
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setRevisionNote(e.target.value)} />
+            </div>
+            <div className="fgrp">
               <label className="flbl">Payment structure</label>
-              <select className="finp" value={effStructure} disabled={project?.type === 'retainer'} onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setPaymentStructure(e.target.value)}>
-                {project?.type === 'retainer' ? (
+              <select className="finp" value={effStructure} disabled={billingType === 'retainer'} onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setPaymentStructure(e.target.value)}>
+                {billingType === 'retainer' ? (
                   <option value="monthly">Billed monthly (retainer)</option>
                 ) : (<>
                   <option value="50_50">50% upfront, 50% on delivery</option>

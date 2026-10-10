@@ -1,5 +1,6 @@
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
+import { isBillingModelChange } from '@/lib/sow/brief-signals'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { isUuidString } from '@/lib/utils/uuid'
 import { logAudit } from '@/lib/utils/audit'
@@ -160,9 +161,14 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     // FIX (Projects & Dashboard pass 2, B2): the lock used to fire on the field merely being PRESENT, so a client that
     // echoes the current client/type/currency back unchanged (the new-project wizard does, on Back-and-resubmit) got a
     // 409 once any SOW existed. It now fires only when one of them would actually change.
+    // Moving a project into or out of RETAINER billing is not "what the SOW is about" — it is how the project is billed, and a
+    // project is often created as, say, Marketing before anyone says "this is a monthly retainer". It stays possible while
+    // every SOW is still an unsent draft (the same rule that guards the contract value, below); every other type change
+    // keeps the old lock.
+    const billingModelChange = body.type !== undefined && isBillingModelChange(project.type, body.type)
     const structuralEdit =
       (body.clientId !== undefined && body.clientId !== project.client_id) ||
-      (body.type !== undefined && body.type !== project.type) ||
+      (body.type !== undefined && body.type !== project.type && !billingModelChange) ||
       (body.currency !== undefined && !(typeof body.currency === 'string' && body.currency.trim().toUpperCase() === project.currency))
     if (structuralEdit && sows.length > 0)
       return NextResponse.json({
@@ -209,6 +215,14 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     // wizard fail for a creator without VIEW_FINANCIALS. Once the project moves on, VIEW_FINANCIALS is required again.
     const canReprice = hasPermission(session, 'VIEW_FINANCIALS') ||
       (project.created_by === session.id && ['Draft', 'Intake'].includes(project.status))
+    if (billingModelChange && sows.length > 0) {
+      // Retainer billing multiplies the amount by the term, so changing the model re-prices the project like a value edit does.
+      const billingNeedsFinancials = !canReprice
+      if (billingNeedsFinancials)
+        return NextResponse.json({ error: 'You need the View financials permission to change how this project is billed once a SOW draft exists.' }, { status: 403 })
+      const lockError = await checkSowLock(service, sows, 'billing model (retainer or fixed project)', 'billing model', 'billing model')
+      if (lockError) return NextResponse.json({ error: lockError }, { status: 409 })
+    }
     if (body.contractValue !== undefined) {
       const p = parseContractValue(body.contractValue)
       if (!p.ok) return NextResponse.json({ error: p.error }, { status: 400 })
@@ -295,10 +309,14 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       if (!freshProject)
         return NextResponse.json({ error: 'This project changed while you were editing it. Refresh and try again.' }, { status: 409 })
       const freshSows: Array<{ id: string; status: string }> = freshProject.sow_documents || []
-      if ((updates.client_id !== undefined || updates.type !== undefined || updates.currency !== undefined) && freshSows.length > 0)
+      if ((updates.client_id !== undefined || updates.currency !== undefined || (updates.type !== undefined && !billingModelChange)) && freshSows.length > 0)
         return NextResponse.json({
           error: 'The client, project type and currency can no longer be changed because a SOW already exists for this project.',
         }, { status: 409 })
+      if (billingModelChange && freshSows.length > 0) {
+        const lockError = await checkSowLock(service, freshSows, 'billing model (retainer or fixed project)', 'billing model', 'billing model')
+        if (lockError) return NextResponse.json({ error: lockError }, { status: 409 })
+      }
       if (updates.contract_value !== undefined) {
         const lockError = await checkSowLock(service, freshSows, 'contract value', 'contract value', 'value')
         if (lockError) return NextResponse.json({ error: lockError }, { status: 409 })

@@ -132,6 +132,14 @@ export interface SowContentInput {
   // Workspace standard payment terms (days from invoice date to due date). Null/absent = the SOW says nothing about it.
   // Invoices and change orders already print this period, so the SOW the client signs must state the same one.
   paymentTermsDays?: number | null
+  // Dates the drafter must not guess. `today` and the project's own `startDate` (both ISO yyyy-mm-dd) are given to the model:
+  // it was told to print a year on every date but never what year it is, so a brief saying "start date: November 1" came
+  // back as "November 1, 2025" on a SOW signed in October 2026.
+  today?: string | null
+  startDate?: string | null
+  // How the brief counts revisions when it is not simply "N rounds" (e.g. "1 caption revision per post"). Described in the
+  // Revision Policy ALONGSIDE the exact round count; it never changes that count.
+  revisionNote?: string | null
   // Optional limitation-of-liability clause chosen in settings; app-owned wording, appended deterministically to Termination.
   liabilityCap?: LiabilityCap | null
 }
@@ -655,6 +663,74 @@ function retainerPromptLines(input: SowContentInput): string {
       : 'Retainer term: open-ended — billed monthly until either party ends it in writing')
 }
 
+// ── Dates, spelling and drafting rules that depend on who the SOW is for ─────────────────────────────
+const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
+
+/** "2026-11-01" -> "November 1, 2026" (us) / "1 November 2026" (intl). Null for anything that is not a real ISO date. */
+export function formatIsoDateForPrompt(iso: unknown, style: 'us' | 'intl' | undefined): string | null {
+  const m = typeof iso === 'string' ? /^(\d{4})-(\d{2})-(\d{2})/.exec(iso.trim()) : null
+  if (!m) return null
+  const y = +m[1], mo = +m[2], d = +m[3]
+  const dt = new Date(Date.UTC(y, mo - 1, d))
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== mo - 1 || dt.getUTCDate() !== d) return null
+  return style === 'us' ? `${MONTH_NAMES[mo - 1]} ${d}, ${y}` : `${d} ${MONTH_NAMES[mo - 1]} ${y}`
+}
+
+/** Prompt lines giving the model today's date and the project's start date. Empty when neither is known. */
+export function datePromptBlock(input: SowContentInput): string {
+  const today = formatIsoDateForPrompt(input.today, input.dateStyle)
+  const start = formatIsoDateForPrompt(input.startDate, input.dateStyle)
+  const lines: string[] = []
+  if (today) lines.push(`Today's date: ${today}`)
+  if (start) lines.push(`Engagement start date (from the project record): ${start}`)
+  return lines.join('\n')
+}
+
+/** Rules that need no new facts: dates, placeholders, spelling, revision basis, reported results, deliverable boundaries. */
+export function draftingRulesBlock(input: SowContentInput): string {
+  const lines: string[] = []
+  const today = formatIsoDateForPrompt(input.today, input.dateStyle)
+  const start = formatIsoDateForPrompt(input.startDate, input.dateStyle)
+  if (today) lines.push(`- Today is ${today}. Never write a year that has already passed for a date that is still to come. A date the brief gives without a year means its next occurrence on or after today.`)
+  if (start) lines.push(`- The engagement starts on ${start}. Wherever the start date is stated (overview, timeline, deliverable dates), use exactly that date.`)
+  lines.push('- Never print "To be confirmed", "TBC", "TBD" or a bracketed placeholder in any section or table cell. When something is not yet fixed, state the rule that fixes it (for example "agreed in writing within 5 business days of the start date") or use the phase name.')
+  if ((!input.language || input.language === 'en') && input.dateStyle === 'us')
+    lines.push('- Use American English spelling throughout (for example installment, license, color, optimize, authorized, advisor).')
+  const note = typeof input.revisionNote === 'string' ? input.revisionNote.trim() : ''
+  if (note)
+    lines.push(`- The client's brief counts revisions as: "${sanitizePlainText(note)}". Describe the Revision Policy on that basis, in addition to the exact round count above, and never change that count.`)
+  lines.push('- If the scope brief names results the client wants to see (for example follower growth or traffic), name them in the Project Overview and in the reporting deliverable as measures that are tracked and reported. Never promise or guarantee them.')
+  lines.push('- State precisely what each deliverable covers in its own acceptance criteria (for example "a caption for each published post") so that adjacent work is clearly not part of it. Do not add exclusions that are not in the out-of-scope brief.')
+  lines.push('- State the payment period once. Never repeat it in a second sentence.')
+  return lines.join('\n')
+}
+
+/**
+ * Backstop: the model sometimes states the invoice payment period twice ("payable within 14 days of its invoice date. Invoices
+ * are due 14 days of issue."). Keeps the first sentence that states it and drops later restatements; a <p> left empty goes too.
+ */
+export function dedupePaymentPeriodSentences(paymentHtml: string, days: number | null | undefined): string {
+  const d = normalizePaymentTermsDays(days)
+  if (!d || typeof paymentHtml !== 'string') return paymentHtml
+  const dayRe = new RegExp(`\\b${d}\\s*(?:calendar\\s+)?days?\\b`, 'i')
+  const dueRe = /\b(?:due|payable)\b/i
+  const invRe = /\binvoices?\b/i
+  let seen = false
+  return paymentHtml.replace(/<p>([\s\S]*?)<\/p>/gi, (whole, inner: string) => {
+    const sentences = inner.split(/(?<=[.!?])\s+/)
+    const kept: string[] = []
+    for (const sent of sentences) {
+      const text = sent.replace(/<[^>]+>/g, '')
+      const states = dayRe.test(text) && dueRe.test(text) && invRe.test(text)
+      if (states) { if (seen) continue; seen = true }
+      kept.push(sent)
+    }
+    if (kept.length === sentences.length) return whole
+    const joined = kept.join(' ').trim()
+    return joined ? `<p>${joined}</p>` : ''
+  })
+}
+
 export function buildSowContentPrompt(input: SowContentInput, opts?: { emphatic?: boolean }): string {
   const markerList = AI_SECTION_IDS.map(id => SECTION_MARKER(id)).join('\n')
   const reminder = opts?.emphatic
@@ -695,7 +771,7 @@ Provider (the agency): ${input.agencyName}
 Client (the contracting party): ${input.clientName}${input.clientRepresentative && !isBlankText(input.clientRepresentative) && input.clientRepresentative.trim() !== input.clientName.trim() ? `\nClient's authorised representative (signs for the Client): ${input.clientRepresentative.trim()}${input.clientRepresentativeTitle && !isBlankText(input.clientRepresentativeTitle) ? `, ${input.clientRepresentativeTitle.trim()}` : ''}` : ''}
 Project: ${input.projectName}${input.projectDisc ? ` (${input.projectDisc})` : ''}
 Project type: ${input.projectType}
-${retainerPromptLines(input)}
+${retainerPromptLines(input)}${datePromptBlock(input) ? `\n${datePromptBlock(input)}` : ''}
 
 Scope brief:
 Objective: ${input.objective || 'Not specified'}
@@ -753,6 +829,7 @@ Rules:
 - Never add a late fee, late-fee rate or revision fee unless it is explicitly provided above.
 - Never write a limitation of liability, liability cap, indemnity, warranty or damages clause. If the agency wants one it is added separately; any you write would contradict it.
 - Whenever you write a calendar date, include the year and use this style: ${input.dateStyle === 'us' ? '"June 16, 2026" (month day, year)' : '"16 June 2026" (day month year)'}. Never print a date without the year and never mix the two styles.
+${draftingRulesBlock(input)}
 - The Dispute Resolution section covers only the escalation steps (negotiation, mediation, courts). Do NOT restate the governing-law clause there: it has its own Governing Law section. The one exception is the courts step, which must say proceedings are brought in the competent courts of the jurisdiction given under "Governing law" above, naming that jurisdiction exactly as given — never a city, county, district or any other place, and never a different jurisdiction.${standardsPromptBlock(input.standards)}${wantsPaymentSchedule ? '\n- Payment Schedule table: propose sensible milestone titles and trigger conditions based on the deliverables/timeline above. Amount must be exactly 0 on every row — never write a dollar figure or percentage there.' : ''}${languageInstruction}${reminder}`
 }
 

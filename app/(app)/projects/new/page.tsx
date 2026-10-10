@@ -1,5 +1,6 @@
 'use client'
 import { effectiveFormStructure } from '@/lib/sow/payment-structure'
+import { retainerSuggestion, type BriefBillingSignals } from '@/lib/sow/brief-signals'
 import { useState, useEffect, useRef, Suspense } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { PROJECT_TYPE_ICONS } from '@/lib/utils/format'
@@ -27,7 +28,7 @@ const PROJECT_TYPES: Array<{ key: ProjectType; label: string; sub: string }> = [
   { key: 'brand',     label: 'Branding',     sub: 'Identity & strategy' },
   { key: 'ecomm',     label: 'E-Commerce',   sub: 'Shops & marketplaces' },
   { key: 'marketing', label: 'Marketing',    sub: 'Campaigns & content' },
-  { key: 'retainer',  label: 'Retainer',     sub: 'Ongoing relationship' },
+  { key: 'retainer',  label: 'Retainer',     sub: 'Same fee every month, any kind of work' },
   { key: 'video',     label: 'Video',        sub: 'Animation & production' },
   { key: 'other',     label: 'Other',        sub: 'Custom project' },
 ]
@@ -107,6 +108,19 @@ function NewProjectPageInner() {
   // (pass 11, B1) a retainer is always billed monthly; a one-off project cannot be 'monthly'. The server enforces the same.
   const effStructure = effectiveFormStructure(projectType, paymentStructure)
   const [revisionRounds,   setRevisionRounds]   = useState('2')
+  // How revisions are counted when the brief does not say "N rounds" (e.g. "1 caption revision per post").
+  const [revisionNote,     setRevisionNote]     = useState('')
+  // What the brief said about billing. A brief that describes a monthly fee on a project that is not a retainer is OFFERED the
+  // retainer billing model (see acceptRetainerOffer) instead of having "monthly" silently turned into a 50/50 split.
+  const [briefSignals,     setBriefSignals]     = useState<BriefBillingSignals | null>(null)
+  const [retainerOfferDismissed, setRetainerOfferDismissed] = useState(false)
+  const [switchingBilling, setSwitchingBilling] = useState(false)
+  // The work type to go back to when "Billing" is flipped from monthly back to one fixed fee.
+  const [fixedTypeMemory,  setFixedTypeMemory]  = useState<ProjectType>('other')
+  // Who the contract is with. Asked here, before anything is drafted, so the Parties clause, the PDFs and the signature block
+  // all name the right party from the first draft (the SOW generator used to learn this only on a later regenerate).
+  const [clientCompany,    setClientCompany]    = useState('')
+  const [signerTitle,      setSignerTitle]      = useState('')
 
   const guardianItems = [
     'SOW generated from this brief',
@@ -312,6 +326,23 @@ function NewProjectPageInner() {
       // existing manual default on anything the model returned off-spec,
       // same as this page already does for a merely-absent value.
       setPaymentStructure(SOW_PAYMENT_STRUCTURES.includes(brief.paymentStructure) ? brief.paymentStructure : '50_50')
+      setBriefSignals({
+        billingCadence: brief.billingCadence === 'monthly' || brief.billingCadence === 'one_off' ? brief.billingCadence : '',
+        feeAmount: typeof brief.feeAmount === 'number' ? brief.feeAmount : null,
+        termMonths: typeof brief.termMonths === 'number' ? brief.termMonths : null,
+        revisionNote: typeof brief.revisionNote === 'string' ? brief.revisionNote : '',
+      })
+      setRetainerOfferDismissed(false)
+      setRevisionNote(typeof brief.revisionNote === 'string' ? brief.revisionNote : '')
+      // A start date the brief states is saved on the project, which is what the SOW is drafted from. The year is resolved by the
+      // server (next such date on or after today), never guessed.
+      if (typeof brief.startDate === 'string' && brief.startDate && !startDate && projectId) {
+        setStartDate(brief.startDate)
+        fetch(`/api/projects/${projectId}`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ startDate: brief.startDate }),
+        }).catch(() => { /* the date is still shown on the review step and can be set from Edit project */ })
+      }
       const parsedBriefRounds = Number(brief.revisionRounds)
       setRevisionRounds(
         Number.isInteger(parsedBriefRounds) && parsedBriefRounds >= 1 && parsedBriefRounds <= 10
@@ -327,6 +358,35 @@ function NewProjectPageInner() {
       setError(err instanceof Error ? err.message : 'Could not parse brief — please fill in manually')
       setBriefMode('manual')
     } finally { setBriefParsing(false) }
+  }
+
+  // "How is it billed?" is not a kind of work: a Marketing or Web project can be billed as one fixed fee or as the same fee every
+  // month. Retainer billing is carried by the Retainer type, so this control moves between that type and the work type the person
+  // had chosen, instead of making them guess which of eight tiles means "monthly".
+  function chooseBilling(model: 'fixed' | 'monthly') {
+    if (model === 'monthly' && projectType !== 'retainer') { setFixedTypeMemory(projectType); setProjectType('retainer') }
+    if (model === 'fixed' && projectType === 'retainer') setProjectType(fixedTypeMemory)
+  }
+
+  async function acceptRetainerOffer() {
+    if (!projectId || switchingBilling) return
+    const offer = retainerSuggestion(briefSignals, projectType)
+    if (!offer) return
+    setSwitchingBilling(true); setError('')
+    try {
+      const res = await fetch(`/api/projects/${projectId}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'retainer', retainerDurationMonths: offer.termMonths ? String(offer.termMonths) : '' }),
+      })
+      const j = await res.json().catch(() => ({} as any))
+      if (!res.ok) throw new Error(j.error || 'Could not switch this project to monthly billing')
+      setFixedTypeMemory(projectType)
+      setProjectType('retainer')
+      setRetainerMonths(offer.termMonths ? String(offer.termMonths) : '')
+      setPaymentStructure('monthly')
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Could not switch this project to monthly billing')
+    } finally { setSwitchingBilling(false) }
   }
 
   // FEATURE GAP closed (Projects & Dashboard deep audit): the step
@@ -359,6 +419,8 @@ function NewProjectPageInner() {
         body: JSON.stringify({
           projectId, projectType, objective, deliverables, outOfScope, timeline,
           paymentStructure: effStructure, revisionRounds: parseInt(revisionRounds),
+          revisionNote: revisionNote.trim(),
+          clientCompany: clientCompany.trim(), clientRepresentativeTitle: signerTitle.trim(),
           contractValue: parseFloat(contractValue) || 0, currency,
         }),
       })
@@ -477,6 +539,22 @@ function NewProjectPageInner() {
             </div>
 
             <div className="fgrp">
+              <label className="flbl">Contracting company <span className="fhint">— optional</span></label>
+              <input className="finp" value={clientCompany} maxLength={160}
+                placeholder={`Leave blank if ${(isNewClient ? clientName : '') || 'the client'} is contracting personally`}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setClientCompany(e.target.value)} />
+              {clientCompany.trim() && (
+                <>
+                  <p className="fhint" style={{ margin: '6px 0 4px' }}>
+                    The agreement is made with {clientCompany.trim()}, signed by the contact above. Saved on the client record so every document names the same party.
+                  </p>
+                  <input className="finp" value={signerTitle} maxLength={120} placeholder="Signer's title, e.g. Director"
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSignerTitle(e.target.value)} />
+                </>
+              )}
+            </div>
+
+            <div className="fgrp">
               <label className="flbl">Project name</label>
               <input className="finp" value={projectName} required placeholder="Website Redesign"
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => setProjectName(e.target.value)} />
@@ -500,6 +578,27 @@ function NewProjectPageInner() {
                   </button>
                 ))}
               </div>
+            </div>
+
+            <div className="fgrp">
+              <label className="flbl">How is it billed?</label>
+              <div style={{ display: 'inline-flex', background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)', padding: 3 }}>
+                {([['fixed', 'One fixed fee'], ['monthly', 'Same fee every month']] as const).map(([k, label]) => {
+                  const on = (k === 'monthly') === (projectType === 'retainer')
+                  return (
+                    <button key={k} type="button" onClick={() => chooseBilling(k)}
+                      style={{ padding: '6px 14px', borderRadius: 4, fontSize: 12, border: 'none', cursor: 'pointer',
+                        background: on ? 'var(--surface)' : 'transparent', color: on ? 'var(--text)' : 'var(--text-3)', fontWeight: on ? 500 : 400 }}>
+                      {label}
+                    </button>
+                  )
+                })}
+              </div>
+              <p className="fhint" style={{ marginTop: 6 }}>
+                {projectType === 'retainer'
+                  ? 'The amount below is invoiced every month, in advance, until the retainer ends. Works for any kind of work (content, support, design…).'
+                  : 'The amount below is the whole project, invoiced as one fee or in instalments.'}
+              </p>
             </div>
 
             <div className="f2">
@@ -606,6 +705,26 @@ function NewProjectPageInner() {
               </div>
             )}
 
+            {(() => {
+              const offer = !retainerOfferDismissed ? retainerSuggestion(briefSignals, projectType) : null
+              if (!offer) return null
+              return (
+                <div className="surface surface-p" style={{ marginBottom: 14, borderLeft: '3px solid var(--amber)', fontSize: 12.5, color: 'var(--text-2)' }}>
+                  <strong style={{ color: 'var(--text)' }}>This brief describes monthly billing{offer.feeAmount ? ` (${currency} ${offer.feeAmount.toLocaleString('en-US', { maximumFractionDigits: 2 })} a month)` : ''}.</strong>{' '}
+                  Billed as a retainer, that amount is invoiced every month{offer.termMonths ? ` for ${offer.termMonths} months` : ' until the retainer ends'}.
+                  As a fixed project it would be one total split into instalments.
+                  {offer.feeAmount && Number(contractValue) > 0 && Number(contractValue) !== offer.feeAmount
+                    ? ` The project amount is ${currency} ${contractValue} — check that is the monthly fee.` : ''}
+                  <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                    <button type="button" className="btn btn-primary btn-xs" onClick={acceptRetainerOffer} disabled={switchingBilling}>
+                      {switchingBilling ? <span className="spin" /> : 'Bill as a monthly retainer'}
+                    </button>
+                    <button type="button" className="btn btn-ghost btn-xs" onClick={() => setRetainerOfferDismissed(true)}>Keep as a fixed project</button>
+                  </div>
+                </div>
+              )
+            })()}
+
             {(briefMode === 'manual' || objective) && (
               <>
                 <div className="fgrp">
@@ -651,6 +770,11 @@ function NewProjectPageInner() {
                       {['1','2','3','4','5','6','7','8','9','10'].map(n => <option key={n} value={n}>{n} round{n !== '1' ? 's' : ''}</option>)}
                     </select>
                   </div>
+                </div>
+                <div className="fgrp">
+                  <label className="flbl">How revisions are counted <span className="fhint">— optional, e.g. "per post" or "per deliverable"</span></label>
+                  <input className="finp" value={revisionNote} maxLength={200} placeholder="Leave blank to count rounds across the whole engagement"
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setRevisionNote(e.target.value)} />
                 </div>
               </>
             )}

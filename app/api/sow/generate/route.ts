@@ -19,9 +19,10 @@ import { getPendingApprovalForDocument } from '@/lib/approvals/engine'
 import { logAudit } from '@/lib/utils/audit'
 import { sanitizeRichText, sanitizePlainText, truncateText } from '@/lib/utils/sanitize'
 import { isBlankText } from '@/lib/utils/client-input'
-import { applyAgencyStandards, ensureContractValueStated, ensureTaxStated, ensureLateFeeStated, ensurePaymentTermsDaysStated, normalizePaymentTermsDays, ensureLiabilityCapStated, derivedScheduleRows, type AgencyStandards } from '@/lib/ai/sow-content'
+import { applyAgencyStandards, ensureContractValueStated, ensureTaxStated, ensureLateFeeStated, ensurePaymentTermsDaysStated, dedupePaymentPeriodSentences, normalizePaymentTermsDays, ensureLiabilityCapStated, derivedScheduleRows, type AgencyStandards } from '@/lib/ai/sow-content'
 import { workspaceTaxDefaults } from '@/lib/documents/tax-defaults'
 import { sowDateStyle } from '@/lib/utils/date-style'
+import { normalizeRevisionNote } from '@/lib/sow/brief-signals'
 import { normalizeLateFeeRate } from '@/lib/documents/late-fee'
 import { normalizeLiabilityCap } from '@/lib/documents/liability-cap'
 import { pickAgencyStandards } from '@/lib/utils/agency-standards'
@@ -118,6 +119,8 @@ export async function POST(request: NextRequest) {
     // nothing enforced it, so `revisionRounds || 2` happily carried a
     // negative, a float, or 1e9 into both the prompt and the stored
     // metadata that the Revision Policy section is written against.
+    // How the brief counts revisions when it is not just "N rounds" ("per post"); described beside the exact count, never replacing it.
+    const revisionNote = normalizeRevisionNote(body.revisionNote)
     const parsedRounds   = Math.trunc(Number(body.revisionRounds))
     const revisionRounds = Number.isFinite(parsedRounds) && parsedRounds >= 1 && parsedRounds <= 10
       ? parsedRounds
@@ -128,7 +131,7 @@ export async function POST(request: NextRequest) {
     // Fetch project + client + workspace for context
     const { data: project, error: projectErr } = await (service as any)
       .from('projects')
-      .select('id,name,disc,type,retainer_duration_months,status,contract_value,currency,client_id,clients(name,email,company_name),workspaces(agency_name,governing_law,sow_language,legal_address)')
+      .select('id,name,disc,type,retainer_duration_months,status,contract_value,currency,client_id,start_date,clients(name,email,company_name),workspaces(agency_name,governing_law,sow_language,legal_address)')
       .eq('id', projectId).eq('workspace_id', session.workspaceId).is('deleted_at', null).maybeSingle()
     // SOW lifecycle pass 17, B5: a failed read is not "not found" — fail into the route's 500 handler.
     if (projectErr) throw new Error(`project read failed: ${projectErr.message}`)
@@ -345,6 +348,10 @@ export async function POST(request: NextRequest) {
       paymentTermsDays,
       liabilityCap,
       dateStyle: sowDateStyle(project.workspaces?.legal_address),
+      // The model is told what day it is and when the project starts, instead of guessing a year (see SowContentInput).
+      today: new Date().toISOString().slice(0, 10),
+      startDate: typeof project.start_date === 'string' ? project.start_date.slice(0, 10) : null,
+      revisionNote: revisionNote || null,
     }
 
     const MAX_ATTEMPTS = 3
@@ -433,6 +440,7 @@ export async function POST(request: NextRequest) {
     allContent.payment = ensureTaxStated(allContent.payment, contentInput)
     allContent.payment = ensureLateFeeStated(allContent.payment, contentInput)
     allContent.payment = ensurePaymentTermsDaysStated(allContent.payment, contentInput)
+    allContent.payment = dedupePaymentPeriodSentences(allContent.payment, contentInput.paymentTermsDays)
     allContent.termination = ensureLiabilityCapStated(allContent.termination || '', contentInput)
 
     const parsed: { sections: any[]; metadata: any } = {
@@ -461,6 +469,7 @@ export async function POST(request: NextRequest) {
         ...(liabilityCap ? { liabilityCap } : {}),
         ...(clientRepresentative ? { clientRepresentative, ...(clientRepresentativeTitle ? { clientRepresentativeTitle } : {}) } : {}),
         revisionRounds,
+        ...(revisionNote ? { revisionNote } : {}),
         governingLaw: governingLaw,
         // FIX (section-9 audit, 9-G7): persist the language the document
         // was drafted in. Without it, every later read path (the PATCH

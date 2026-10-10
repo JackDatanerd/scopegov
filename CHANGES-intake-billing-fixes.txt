@@ -1,0 +1,44 @@
+CHANGES — intake & billing model: let the app handle what users bring to it
+
+Principle: when what a user enters implies something the project is not set up for, say so and offer the fix; never reshape it
+silently. Found by tracing a monthly social-media engagement (billed monthly, signing a "fixed 50/50" SOW dated a year in the past)
+through the wizard, the brief parser, the generator and the project API.
+
+1. Billing model is no longer hidden among the kinds of work
+   app/(app)/projects/new/page.tsx
+   - "How is it billed?" control (One fixed fee / Same fee every month) under the type tiles. It moves between the Retainer type and
+     the work type the person had chosen, so a Marketing or Web project can be billed monthly without guessing which tile means it.
+   - Retainer tile now reads "Same fee every month, any kind of work".
+   - After a brief is read, a brief that describes monthly billing on a non-retainer project shows an offer, "Bill as a monthly
+     retainer" / "Keep as a fixed project", instead of "monthly" being silently replaced by 50/50. Accepting PATCHes the project.
+   components/projects/ProjectDetail.tsx (Generate / Regenerate SOW modal): the same offer; the form follows it (billingType).
+   app/api/projects/[id]/route.ts: moving a project INTO or OUT OF retainer is allowed while every SOW is an unsent draft (same lock as
+     the contract value: signed / out for signature / changes requested / pending approval still refuse), and needs View financials
+     once a draft exists. Every other type change, and client/currency, keep the old lock and message. Re-checked against a fresh read.
+
+2. The brief parser reads what the form could not see
+   app/api/sow/parse-brief/route.ts, lib/sow/brief-signals.ts (new, pure)
+   - billingCadence, feeAmount, termMonths (none = open-ended), revisionNote ("per post"), startDate.
+   - startDate is resolved server-side: a date written without a year is the next such date on or after today, never a year the
+     model guessed. A start date found in the brief is saved on the project if none is set.
+   - Objective now names results the client wants to see (follower growth, traffic) as tracked and reported, never guaranteed.
+
+3. The SOW is drafted knowing today's date and the project's start date
+   lib/ai/sow-content.ts, app/api/sow/generate/route.ts
+   - The prompt demanded a year on every date but never said what year it is, and the project's start_date was never read.
+     Both are now given (formatted in the document's date style) with rules to use the start date verbatim.
+   - Rules: no "To be confirmed"/TBC/TBD/bracket placeholders; American spelling for a US agency (English, US date style);
+     revision basis described beside the exact round count; reported results stated as measures; each deliverable's boundary stated
+     in its own acceptance criteria without inventing exclusions; payment period stated once.
+   - dedupePaymentPeriodSentences(): backstop that drops a restated payment period ("…within 14 days… Invoices are due 14 days of issue").
+   - revisionNote is stored on the SOW metadata so Regenerate prefills it.
+
+4. Contracting company and signer title are asked before the first draft
+   app/(app)/projects/new/page.tsx: optional fields under Client; sent with the first generation (they only existed in the SOW modal,
+   so a SOW created by the wizard was drafted without them).
+
+5. Placeholders at send time
+   lib/sow/validate-send.ts: a WARNING (not a block) when a visible section or table cell still holds placeholder wording.
+
+tests/intake-billing-brief-signals.test.ts (new, 19 tests). Full suite: 341 files / 3352 tests pass; tsc clean.
+No migration. Not covered by automated tests: the on-screen flow and the model's actual output; try the wizard banner and one real generation.

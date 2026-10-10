@@ -9,6 +9,7 @@ import { claimAiRateSlot } from '@/lib/utils/rate-limit'
 import { createServiceClient } from '@/lib/supabase/server'
 import Anthropic from '@anthropic-ai/sdk'
 import { aiModel, structuredJobParams, scaleMaxTokens } from '@/lib/ai/model'
+import { normalizeBillingSignals, resolveBriefStartDate } from '@/lib/sow/brief-signals'
 
 // FIX (re-audit — build-blocking): was constructed at module scope, so an
 // unset ANTHROPIC_API_KEY turns importing this route into a hard build
@@ -63,14 +64,22 @@ Return this exact JSON structure with extracted values:
   "outOfScope": "bullet list of explicitly excluded items, one per line starting with -",
   "timeline": "duration or deadline if mentioned, else empty string",
   "paymentStructure": "one of: 50_50 | 100_upfront | milestones | monthly | on_delivery — infer from context or default 50_50",
-  "revisionRounds": 2
+  "revisionRounds": 2,
+  "revisionNote": "how the text counts revisions when it is not simply a number of rounds (e.g. 1 caption revision per post), else empty string",
+  "billingCadence": "monthly if the fee recurs every month (monthly retainer, per month, /month, monthly upfront, ongoing monthly), one_off if it is a single project fee, else empty string",
+  "feeAmount": 0,
+  "termMonths": 0,
+  "startDate": "the start date exactly as written in the text (e.g. November 1 or 2026-11-01), else empty string"
 }
 
 Rules:
 - Extract only what is actually stated. Do not invent deliverables.
 - If a field cannot be inferred, use an empty string (not null).
 - revisionRounds must be an integer between 1 and 5. Default 2 if not mentioned.
-- Never invent payment amounts or deadlines.`
+- Never invent payment amounts or deadlines.
+- feeAmount is the number the text states as the fee (no currency symbol), or 0 if none. termMonths is a fixed number of months only if the text names one (an ongoing engagement is 0).
+- The objective must also name any results the client says they want to see (for example follower growth, traffic, leads) as things to be tracked and reported, never as guaranteed outcomes.
+- Do not write a start year unless the text does.`
 
     const model = aiModel()
     const msg = await anthropicClient().messages.create({
@@ -100,6 +109,10 @@ Rules:
       outOfScope: text(parsed?.outOfScope), timeline: text(parsed?.timeline),
       paymentStructure: typeof parsed?.paymentStructure === 'string' ? parsed.paymentStructure : '',
       revisionRounds: Number(parsed?.revisionRounds),
+      // How the brief wants to be billed / how it counts revisions / when it starts. The forms use these to OFFER the
+      // retainer billing model instead of silently turning "monthly" into a 50/50 split (see lib/sow/brief-signals.ts).
+      ...normalizeBillingSignals(parsed as Record<string, unknown> | null),
+      startDate: resolveBriefStartDate(parsed?.startDate),
     }
     return NextResponse.json({ brief })
   } catch (err) {
