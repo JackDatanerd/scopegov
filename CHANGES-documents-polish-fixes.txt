@@ -1,0 +1,31 @@
+CHANGES — documents polish: signature block, embedded fonts, bounded change-order drafts
+
+Found by reading a signed SOW, change order and invoice side by side and checking the PDFs' fonts with pdffonts.
+
+1. The signer's position follows the person (lib/documents/signer-title.ts, app/api/portal/sow/[token]/sign/route.ts)
+   The agreement names the client's signatory and position in its body ("Faith Christine, Director"), but the signature block
+   printed only what the signer typed into an optional title box, so the same person was titled in the text and untitled above
+   their signature. A blank box now takes the position the agreement already names, only when the person signing is that named
+   person (a colleague signing in their place never inherits it). Stored on sow_documents.signer_title at signing, so the portal
+   copy, the agency copy and the executed PDF all agree. What the signer types still wins.
+   Existing signed SOWs are unchanged (their stored title stays as it was).
+
+2. Amounts use the embedded font (lib/pdf/renderer.tsx, lib/pdf/fonts.ts comment)
+   Amounts, totals and the contract-position rows on the change order and invoice were set in Courier, a standard font that is NOT
+   embedded in the PDF, so every viewer substituted its own face and the amounts looked different from the SOW (which has none).
+   They now use the embedded Noto Sans (digits are fixed-width at 572/1000 in both weights, so right-aligned columns still line up;
+   U+2212 exists too, though the ASCII minus is kept). rich-text.tsx's inline-code Courier is untouched (rare in contracts).
+   Layout applies to PDFs rendered after deploy; frozen signed PDFs keep the layout they had.
+
+3. Change-order drafts are bounded (app/api/co/draft/route.ts, prompt only)
+   - Each line item states its limit (number of creators, outreach rounds, pages, posts) so added work cannot be open-ended.
+   - Work listed under "Already excluded" is brought in by an explicit amendment of that exclusion, for the described work only.
+   - Third-party costs (creator fees, ad spend, licences, tools) say who bears them.
+   - For a retainer the draft says whether each line is one-time or monthly; an ongoing engagement with no end date gets no
+     invented timeline impact.
+
+Checked and left alone: invoice terms (payment period and late-fee notice already print while a balance is due, and are rightly
+absent on a paid invoice); tax and contract-position arithmetic; PDF text layer.
+
+tests/documents-polish.test.ts (new, 9 tests, incl. a real rendered invoice asserting no Courier). Full suite: 342 files / 3361 tests
+pass; tsc clean. No migration. The CO prompt change is untested against a live model.

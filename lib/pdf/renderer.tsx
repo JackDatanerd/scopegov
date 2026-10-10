@@ -401,7 +401,7 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
     th:         { fontSize: 8, fontFamily: PDF_FONT.bold, color: '#909090', textTransform: 'uppercase', letterSpacing: 0.5 },
     td:         { fontSize: 9.5, color: '#1A1A1A' },
     tdSub:      { fontSize: 8, color: '#909090', marginTop: 1 },
-    mono:       { fontFamily: 'Courier', fontSize: 9.5 },
+    mono:       { fontFamily: PDF_FONT.sans, fontSize: 9.5 },
     // Sections
     section:    { marginBottom: 16 },
     secTitle:   { fontSize: 8, fontFamily: PDF_FONT.bold, color: '#909090', textTransform: 'uppercase', letterSpacing: 0.6, marginBottom: 6, borderBottom: `1 solid #E5E1D8`, paddingBottom: 3 },
@@ -707,7 +707,7 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
     th:        { fontSize: 8, fontFamily: PDF_FONT.bold, color: '#909090', textTransform: 'uppercase', letterSpacing: 0.5 },
     row:       { flexDirection: 'row', borderBottom: `1 solid #F2F0EA`, paddingVertical: 8 },
     td:        { fontSize: 10, color: '#1A1A1A' },
-    mono:      { fontFamily: 'Courier', fontSize: 9.5 },
+    mono:      { fontFamily: PDF_FONT.sans, fontSize: 9.5 },
     // Totals
     totals:    { marginTop: 10, paddingTop: 10, borderTop: `1 solid #E5E1D8` },
     totalRow:  { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 2, fontSize: 10 },
@@ -930,7 +930,7 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
                     <Text style={s.mono}>
                       {(() => {
                         const delta = isRenewalDoc ? revisedValue - data.contractValueBefore! : netChange
-                        // ASCII hyphen, not U+2212: this row is Courier (WinAnsi), which has no glyph for U+2212, so the sign was dropped
+                        // ASCII hyphen, not U+2212: this row was once Courier (WinAnsi), which has no glyph for U+2212, so the sign was dropped
                         // and a credit / rate decrease printed as an unsigned (apparent increase) amount.
                         return `${delta < 0 ? '-' : '+'}${data.currency} ${fm(Math.abs(delta))}`
                       })()}
@@ -938,7 +938,7 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
                   </View>
                   <View style={s.impactGrand}>
                     <Text>{isRenewalDoc ? 'New Monthly Rate' : `Revised Contract Value${exTax}`}</Text>
-                    <Text style={{ fontFamily: 'Courier-Bold', color: c }}>{data.currency} {fm(revisedValue)}</Text>
+                    <Text style={{ fontFamily: PDF_FONT.bold, color: c }}>{data.currency} {fm(revisedValue)}</Text>
                   </View>
                 </View>
               )}
@@ -1060,7 +1060,7 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
     lineRow:   { flexDirection: 'row', justifyContent: 'space-between', padding: '12 14', borderBottom: '1 solid #F2F0EA' },
     lineDesc:  { fontSize: 11, color: '#1A1A1A' },
     lineSub:   { fontSize: 8.5, color: '#909090', marginTop: 2 },
-    lineAmt:   { fontSize: 11, fontFamily: 'Courier-Bold' },
+    lineAmt:   { fontSize: 11, fontFamily: PDF_FONT.bold },
     totals:    { marginTop: 4 },
     totalRow:  { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 3, fontSize: 10 },
     grandRow:  { flexDirection: 'row', justifyContent: 'space-between', paddingTop: 8, marginTop: 6, borderTop: '1 solid #1A1A1A', fontSize: 14, fontFamily: PDF_FONT.bold },
@@ -1137,9 +1137,9 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
             {data.lineItems.map((item, i) => (
               <View key={i} style={[s.itemsRow, i === data.lineItems!.length - 1 ? { borderBottom: 'none' } : {}]}>
                 <Text style={[s.itemsTd, { flex: 1 }]}>{item.description}</Text>
-                <Text style={[s.itemsTd, { width: 40, textAlign: 'center', fontFamily: 'Courier' }]}>{item.quantity}</Text>
-                <Text style={[s.itemsTd, { width: 90, textAlign: 'right', fontFamily: 'Courier' }]}>{item.rate ? `${data.currency} ${formatRate(item.rate, data.currency)}` : '—'}</Text>
-                <Text style={[s.itemsTd, { width: 90, textAlign: 'right', fontFamily: 'Courier-Bold' }]}>{data.currency} {fmtInv(item.total)}</Text>
+                <Text style={[s.itemsTd, { width: 40, textAlign: 'center', fontFamily: PDF_FONT.sans }]}>{item.quantity}</Text>
+                <Text style={[s.itemsTd, { width: 90, textAlign: 'right', fontFamily: PDF_FONT.sans }]}>{item.rate ? `${data.currency} ${formatRate(item.rate, data.currency)}` : '—'}</Text>
+                <Text style={[s.itemsTd, { width: 90, textAlign: 'right', fontFamily: PDF_FONT.bold }]}>{data.currency} {fmtInv(item.total)}</Text>
               </View>
             ))}
           </View>
@@ -1158,30 +1158,30 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
         <View style={s.totals}>
           <View style={s.totalRow}>
             <Text style={{ color: '#909090' }}>{invTax > 0 || (data.taxInclusive && hasTax) ? 'Subtotal' : 'Amount due'}</Text>
-            <Text style={{ fontFamily: 'Courier' }}>{data.currency} {fmtInv(invSubtotal)}</Text>
+            <Text style={{ fontFamily: PDF_FONT.sans }}>{data.currency} {fmtInv(invSubtotal)}</Text>
           </View>
           {invTax > 0 && (
             <View style={s.totalRow}>
               <Text style={{ color: '#909090' }}>Tax ({data.taxRate}%)</Text>
-              <Text style={{ fontFamily: 'Courier' }}>{data.currency} {fmtInv(invTax)}</Text>
+              <Text style={{ fontFamily: PDF_FONT.sans }}>{data.currency} {fmtInv(invTax)}</Text>
             </View>
           )}
           {data.taxInclusive && hasTax && (
             <View style={s.totalRow}>
               <Text style={{ color: '#909090' }}>Tax included ({data.taxRate}%)</Text>
-              <Text style={{ fontFamily: 'Courier' }}>{data.currency} {fmtInv(invTaxAmount)}</Text>
+              <Text style={{ fontFamily: PDF_FONT.sans }}>{data.currency} {fmtInv(invTaxAmount)}</Text>
             </View>
           )}
           {(invTax > 0 || (data.taxInclusive && hasTax)) && (
             <View style={s.totalRow}>
               <Text style={{ color: '#909090' }}>Amount due</Text>
-              <Text style={{ fontFamily: 'Courier' }}>{data.currency} {fmtInv(invAmount)}</Text>
+              <Text style={{ fontFamily: PDF_FONT.sans }}>{data.currency} {fmtInv(invAmount)}</Text>
             </View>
           )}
           {data.amountPaid > 0 && (
             <View style={s.totalRow}>
               <Text style={{ color: '#1A5C3A' }}>Paid to date</Text>
-              <Text style={{ fontFamily: 'Courier', color: '#1A5C3A' }}>-{data.currency} {fmtInv(data.amountPaid)}</Text>
+              <Text style={{ fontFamily: PDF_FONT.sans, color: '#1A5C3A' }}>-{data.currency} {fmtInv(data.amountPaid)}</Text>
             </View>
           )}
           {/* FIX (independent pass 3): a voided invoice with an outstanding balance
@@ -1246,7 +1246,7 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
             {data.payments.map((p, i) => (
               <View key={i} style={s.payRow}>
                 <Text>{fd(p.paidAt)} · {INVOICE_METHOD_LABEL[p.method] || p.method}{p.referenceNote ? ` · ${p.referenceNote}` : ''}</Text>
-                <Text style={{ fontFamily: 'Courier' }}>{data.currency} {fmtInv(p.amount)}</Text>
+                <Text style={{ fontFamily: PDF_FONT.sans }}>{data.currency} {fmtInv(p.amount)}</Text>
               </View>
             ))}
           </View>
@@ -1261,29 +1261,29 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
             <Text style={s.secTitle}>Contract position</Text>
             <View style={s.cpRow}>
               <Text>Contracted value{data.contractPosition.excludesTax ? ' (excl. tax)' : ''}</Text>
-              <Text style={{ fontFamily: 'Courier' }}>{data.currency} {fmtInv(data.contractPosition.contractedValue)}</Text>
+              <Text style={{ fontFamily: PDF_FONT.sans }}>{data.currency} {fmtInv(data.contractPosition.contractedValue)}</Text>
             </View>
             <View style={s.cpRow}>
               <Text>Invoiced to date (incl. this invoice{data.contractPosition.excludesTax ? ', excl. tax' : ''})</Text>
-              <Text style={{ fontFamily: 'Courier' }}>{data.currency} {fmtInv(data.contractPosition.invoicedToDate)}</Text>
+              <Text style={{ fontFamily: PDF_FONT.sans }}>{data.currency} {fmtInv(data.contractPosition.invoicedToDate)}</Text>
             </View>
             <View style={s.cpRow}>
               <Text>Paid to date{data.contractPosition.excludesTax ? ' (excl. tax)' : ''}</Text>
-              <Text style={{ fontFamily: 'Courier' }}>{data.currency} {fmtInv(data.contractPosition.paidToDate)}</Text>
+              <Text style={{ fontFamily: PDF_FONT.sans }}>{data.currency} {fmtInv(data.contractPosition.paidToDate)}</Text>
             </View>
             {/* "Remaining to invoice", not "remaining contract value": the figure is what is still to be BILLED (contracted less
                 invoiced), not an amount owed. When part of it is an approved change order nobody has invoiced yet, say so on its own
                 line, so the reader can tell the SOW's instalments from the change order and the agency can see what is unbilled. */}
             <View style={[s.cpRow, { borderTop: '1 solid #F2F0EA', paddingTop: 6, marginTop: 2 }]}>
               <Text style={{ color: '#1A1A1A' }}>Remaining to invoice{data.contractPosition.excludesTax ? ' (excl. tax)' : ''}</Text>
-              <Text style={{ fontFamily: 'Courier-Bold', color: '#1A1A1A' }}>
+              <Text style={{ fontFamily: PDF_FONT.bold, color: '#1A1A1A' }}>
                 {data.currency} {fmtInv(cpRemaining)}
               </Text>
             </View>
             {cpUnbilledCo > 0 && (
               <View style={[s.cpRow, { paddingTop: 0 }]}>
                 <Text style={{ color: '#909090', fontSize: 9 }}>   of which approved change orders not yet invoiced</Text>
-                <Text style={{ fontFamily: 'Courier', color: '#909090', fontSize: 9 }}>{data.currency} {fmtInv(cpUnbilledCo)}</Text>
+                <Text style={{ fontFamily: PDF_FONT.sans, color: '#909090', fontSize: 9 }}>{data.currency} {fmtInv(cpUnbilledCo)}</Text>
               </View>
             )}
           </View>

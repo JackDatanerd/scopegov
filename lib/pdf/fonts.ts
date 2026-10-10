@@ -17,7 +17,8 @@
 // `fontFamily: 'Helvetica-Bold'`-style call sites map 1:1 without touching
 // fontWeight/fontStyle resolution. Still NOT covered: CJK, Arabic/Hebrew (RTL
 // shaping) and emoji — those need much larger fonts and a layout decision.
-// Courier (used only for numeric amounts and document numbers) is unchanged.
+// Amounts and document numbers use the same embedded Noto Sans (its digits are fixed-width, so right-aligned columns still line
+// up). They used Courier, a standard font that is not embedded, so each viewer substituted its own face.
 
 import { Font } from '@react-pdf/renderer'
 import {

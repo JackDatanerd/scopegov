@@ -1,5 +1,6 @@
 export const runtime = 'nodejs'
 
+import { resolveSignerTitle } from '@/lib/documents/signer-title'
 import { resolveReplyTo } from '@/lib/email/reply-to'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
@@ -41,7 +42,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       return NextResponse.json({ error: 'Invalid request' }, { status: 400 })
     const signerName = cleanTextField((reqBody as any).signerName, 120)
     // Optional: the signer's position, and the company they sign on behalf of (printed under the signature).
-    const signerTitle = cleanTextField((reqBody as any).signerTitle, 120) || null
+    const signerTitleEntered = cleanTextField((reqBody as any).signerTitle, 120) || null
     const signerCompany = cleanTextField((reqBody as any).signerCompany, 160) || null
     const signatureData = (reqBody as any).signatureData
     // The audit trail records where the signature came from: the real client hop, not the raw
@@ -120,6 +121,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // unhandled DB error instead of failing cleanly). CAS on status here
     // closes the window: only the request that actually flips the row
     // continues past this point.
+    // The position the agreement already names for this signatory fills a blank title box (see lib/documents/signer-title.ts).
+    const signerTitle = resolveSignerTitle({ entered: signerTitleEntered, signerName, metadata: sow.metadata }) || null
     const { data: updatedSow, error: signUpdateErr } = await (service as any)
       .from('sow_documents')
       .update({
