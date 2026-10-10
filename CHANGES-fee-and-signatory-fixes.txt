@@ -1,0 +1,31 @@
+CHANGES — what the amount means, and who signs, asked where it matters
+
+The same number is a whole project's price on a fixed project and one month's fee on a retainer. The app already stored, invoiced and
+printed a retainer correctly (rate x term; open-ended = months committed), but only once the project WAS a retainer, and nothing in
+front of the person said which of the two they were entering. A user typing "$1,200" for a monthly deal on a Marketing project got a
+$1,200 project. And a SOW with no stated price was only refused on the brief step, with "use Back to add it".
+
+1. One sentence says what the amount means (lib/sow/billing-summary.ts, app/(app)/projects/new/page.tsx)
+   Shown under the amount on Basics, again where the fee is asked on the Brief step, and on the Review step:
+     fixed:   "The whole project is USD 1,200.00, invoiced as one fee or in instalments."
+     monthly: "USD 1,200.00 is invoiced every month until the retainer ends. There is no fixed total."
+              "USD 1,200.00 is invoiced every month for 6 months, USD 7,200.00 in total."
+   With no amount it says what to enter, in the right terms. Same words everywhere the amount appears.
+
+2. The fee is asked on the Brief step, not behind a dead end
+   - An amount box (labelled Monthly retainer amount / Contract value) sits on the Brief step with the sentence above.
+   - A fee the brief states ("$1,200/month") prefills it when none was set. A brief that says "monthly retainer" with NO figure
+     leaves it empty and asks; the app never invents a price.
+   - Accepting "Bill as a monthly retainer" also saves the brief's monthly figure when no amount was entered.
+   - Continue saves the amount to the project before the Review step (the SOW is drafted from the saved project). The old
+     "Use Back to add it" error is replaced by a message pointing at the box.
+
+3. Who signs is remembered per client (app/api/clients/[id]/signatory/route.ts, lib/sow/signatory.ts)
+   Picking a client fills Contracting company (from the client record) and Signer's title (the position the agreement last named for
+   THAT contact; never lent to another person). Fills only empty boxes. Read-only, workspace-scoped, CREATE_PROJECTS.
+   Deliberately NO migration: the position stays on each SOW's metadata. A column on clients would also have to be added to the
+   create-client RPC (088) and the merge-clients function (126), which cannot be validated without a database; the route is the single
+   read point, so moving it later changes one function.
+
+tests/fee-meaning-and-signatory.test.ts (new, 10 tests). Full suite: 343 files / 3371 tests pass; tsc clean.
+Not covered by automated tests: the on-screen flow (try: new project, paste a brief with a monthly fee and no amount typed).

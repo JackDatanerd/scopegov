@@ -1,6 +1,7 @@
 'use client'
 import { effectiveFormStructure } from '@/lib/sow/payment-structure'
 import { retainerSuggestion, type BriefBillingSignals } from '@/lib/sow/brief-signals'
+import { describeBilling } from '@/lib/sow/billing-summary'
 import { useState, useEffect, useRef, Suspense } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { PROJECT_TYPE_ICONS } from '@/lib/utils/format'
@@ -153,6 +154,7 @@ function NewProjectPageInner() {
         const match = list.find((c: Client) => c.id === preselectId)
         if (match) {
           setClientId(match.id); setClientName(match.name); setClientSearch(match.name)
+          loadSignatory(match.id)
         }
       }
     }).catch(() => {})
@@ -333,6 +335,8 @@ function NewProjectPageInner() {
         revisionNote: typeof brief.revisionNote === 'string' ? brief.revisionNote : '',
       })
       setRetainerOfferDismissed(false)
+      // A fee the brief states fills the amount when none is set; it stays editable right there on this step.
+      if (typeof brief.feeAmount === 'number' && brief.feeAmount > 0 && !(parseFloat(contractValue) > 0)) setContractValue(String(brief.feeAmount))
       setRevisionNote(typeof brief.revisionNote === 'string' ? brief.revisionNote : '')
       // A start date the brief states is saved on the project, which is what the SOW is drafted from. The year is resolved by the
       // server (next such date on or after today), never guessed.
@@ -360,6 +364,18 @@ function NewProjectPageInner() {
     } finally { setBriefParsing(false) }
   }
 
+  // Who contracts for this client is asked once and remembered: the company on the client record and the position the agreement
+  // last named for this contact. Fills only boxes the person has not typed in, so it never overwrites what they entered.
+  async function loadSignatory(id: string) {
+    try {
+      const res = await fetch(`/api/clients/${id}/signatory`)
+      if (!res.ok) return
+      const j = await res.json().catch(() => ({} as any))
+      if (typeof j.company === 'string' && j.company) setClientCompany(prev => prev || j.company)
+      if (typeof j.title === 'string' && j.title) setSignerTitle(prev => prev || j.title)
+    } catch { /* optional: the boxes simply stay empty */ }
+  }
+
   // "How is it billed?" is not a kind of work: a Marketing or Web project can be billed as one fixed fee or as the same fee every
   // month. Retainer billing is carried by the Retainer type, so this control moves between that type and the work type the person
   // had chosen, instead of making them guess which of eight tiles means "monthly".
@@ -376,10 +392,15 @@ function NewProjectPageInner() {
     try {
       const res = await fetch(`/api/projects/${projectId}`, {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'retainer', retainerDurationMonths: offer.termMonths ? String(offer.termMonths) : '' }),
+        body: JSON.stringify({
+          type: 'retainer', retainerDurationMonths: offer.termMonths ? String(offer.termMonths) : '',
+          // The brief's monthly figure becomes the retainer amount when none was entered.
+          ...(offer.feeAmount && !(parseFloat(contractValue) > 0) ? { contractValue: offer.feeAmount } : {}),
+        }),
       })
       const j = await res.json().catch(() => ({} as any))
       if (!res.ok) throw new Error(j.error || 'Could not switch this project to monthly billing')
+      if (offer.feeAmount && !(parseFloat(contractValue) > 0)) setContractValue(String(offer.feeAmount))
       setFixedTypeMemory(projectType)
       setProjectType('retainer')
       setRetainerMonths(offer.termMonths ? String(offer.termMonths) : '')
@@ -397,14 +418,27 @@ function NewProjectPageInner() {
   // premature click before that (costed, non-trivial) generation ran. This
   // makes the step real: it advances to a read-only summary first: the
   // actual "Generate SOW" call now happens from here, not from step 1.
-  function goToReview() {
+  async function goToReview() {
     if (!objective && !deliverables) return
-    // POST /api/sow/generate refuses a project whose contract value is not above zero. Step 0 accepts a blank / 0 value, so
-    // that refusal used to arrive only on the very last click, after the brief and review steps were done. Say so here,
-    // while going back to fix it is one click away.
+    // POST /api/sow/generate refuses a project whose contract value is not above zero, and the fee is asked for right here on
+    // the brief step, so what is typed is saved to the project before the review step (the SOW is drafted from the saved project).
     if (!(parseFloat(contractValue) > 0)) {
-      setError(`Set a ${projectType === 'retainer' ? 'monthly retainer amount' : 'contract value'} greater than zero before continuing — a SOW can't be generated without one. Use \u2190 Back to add it.`)
+      setError(`Enter the ${projectType === 'retainer' ? 'monthly retainer amount' : 'contract value'} above before continuing: a SOW can't be drafted without a price.`)
       return
+    }
+    if (projectId) {
+      setLoading(true); setError('')
+      try {
+        const res = await fetch(`/api/projects/${projectId}`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ contractValue: parseFloat(contractValue) || 0, currency }),
+        })
+        const j = await res.json().catch(() => ({} as any))
+        if (!res.ok) throw new Error(j.error || 'Could not save the amount')
+      } catch (err: unknown) {
+        setError(err instanceof Error ? err.message : 'Could not save the amount')
+        return
+      } finally { setLoading(false) }
     }
     setError('')
     setStep(2)
@@ -484,7 +518,7 @@ function NewProjectPageInner() {
                             style={{ display: 'block', width: '100%', textAlign: 'left', padding: '10px 12px', background: 'none', border: 'none',
                               cursor: c.status === 'archived' && projectId ? 'not-allowed' : 'pointer', opacity: c.status === 'archived' && projectId ? 0.55 : 1,
                               borderBottom: '1px solid var(--surface-2)' }}
-                            onClick={() => { if (c.status === 'archived' && projectId) return; setClientId(c.id); setClientName(c.name); setClientSearch(c.name) }}>
+                            onClick={() => { if (c.status === 'archived' && projectId) return; setClientId(c.id); setClientName(c.name); setClientSearch(c.name); setClientCompany(''); setSignerTitle(''); loadSignatory(c.id) }}>
                             <div style={{ fontSize: 13, fontWeight: 500, display: 'flex', alignItems: 'center', gap: 6 }}>
                               {c.name}
                               {/* FIX (re-audit, Clients section): this list showed archived
@@ -505,7 +539,7 @@ function NewProjectPageInner() {
                     <div style={{ marginTop: 6, display: 'flex', alignItems: 'center', gap: 6 }}>
                       <span className="pill pill-green"><i className="ti ti-check" style={{ fontSize: 10 }} /> {clientName}</span>
                       <button type="button" className="auth-link" style={{ fontSize: 11, background: 'none', border: 'none', padding: 0 }}
-                        onClick={() => { setClientId(''); setClientName(''); setClientSearch('') }}>Change</button>
+                        onClick={() => { setClientId(''); setClientName(''); setClientSearch(''); setClientCompany(''); setSignerTitle('') }}>Change</button>
                     </div>
                   )}
                   {!clientId && canCreateClient && (
@@ -609,15 +643,9 @@ function NewProjectPageInner() {
                 <label className="flbl">{projectType === 'retainer' ? 'Monthly retainer amount' : 'Contract value'}</label>
                 <input type="number" className="finp" value={contractValue} min={0} step="0.01" placeholder={projectType === 'retainer' ? '2500' : '5000'}
                   onChange={(e: React.ChangeEvent<HTMLInputElement>) => setContractValue(e.target.value)} />
-                {projectType === 'retainer' && (
-                  <div className="fhint" style={{ marginTop: 4 }}>
-                    Billed every month.{!retainerMonths
-                      ? ' Open-ended: it keeps billing until you complete or archive the project.'
-                      : Number(contractValue) > 0 && Number(retainerMonths) > 0
-                        ? ` Over ${retainerMonths} months that is ${currency} ${(Number(contractValue) * Number(retainerMonths)).toLocaleString('en-US', { maximumFractionDigits: 2 })}.`
-                        : ' Total value = monthly amount × months.'}
-                  </div>
-                )}
+                <div className="fhint" style={{ marginTop: 4 }}>
+                  {describeBilling({ monthly: projectType === 'retainer', amount: contractValue, currency, termMonths: retainerMonths })}
+                </div>
               </div>
               <div className="fgrp">
                 <label className="flbl">Currency</label>
@@ -704,6 +732,15 @@ function NewProjectPageInner() {
                 </button>
               </div>
             )}
+
+            <div className="fgrp">
+              <label className="flbl">{projectType === 'retainer' ? 'Monthly retainer amount' : 'Contract value'} <span className="fhint">({currency}), needed to draft the SOW</span></label>
+              <input type="number" className="finp" value={contractValue} min={0} step="0.01" placeholder={projectType === 'retainer' ? '2500' : '5000'}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setContractValue(e.target.value)} />
+              <div className="fhint" style={{ marginTop: 4 }}>
+                {describeBilling({ monthly: projectType === 'retainer', amount: contractValue, currency, termMonths: retainerMonths })}
+              </div>
+            </div>
 
             {(() => {
               const offer = !retainerOfferDismissed ? retainerSuggestion(briefSignals, projectType) : null
@@ -804,7 +841,7 @@ function NewProjectPageInner() {
                 <div><div style={{ fontSize: 11, color: 'var(--text-3)' }}>Client</div><div>{clientName || '—'}</div></div>
                 <div><div style={{ fontSize: 11, color: 'var(--text-3)' }}>Project</div><div>{projectName || '—'}</div></div>
                 <div><div style={{ fontSize: 11, color: 'var(--text-3)' }}>Type</div><div>{PROJECT_TYPES.find(pt => pt.key === projectType)?.label || projectType}</div></div>
-                <div><div style={{ fontSize: 11, color: 'var(--text-3)' }}>{projectType === 'retainer' ? 'Monthly retainer amount' : 'Contract value'}</div><div>{contractValue ? `${currency} ${contractValue}${projectType === 'retainer' ? '/mo' : ''}` : '—'}</div></div>
+                <div><div style={{ fontSize: 11, color: 'var(--text-3)' }}>{projectType === 'retainer' ? 'Monthly retainer amount' : 'Contract value'}</div><div>{contractValue ? `${currency} ${contractValue}${projectType === 'retainer' ? '/mo' : ''}` : '—'}</div><div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>{describeBilling({ monthly: projectType === 'retainer', amount: contractValue, currency, termMonths: retainerMonths })}</div></div>
                 {/* FIX (re-audit, Projects & Dashboard section 7): this review
                     step — the explicit "last check before Guardian generates
                     the SOW" checkpoint — never showed start date, internal
