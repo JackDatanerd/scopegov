@@ -21,6 +21,9 @@ import ScopeCategories from './ScopeCategories'
 import PricingSection from './PricingSection'
 import MobileCta from './MobileCta'
 
+// The headline's underlined phrase, split so each word's underline can draw in on its own (see .rlWord in marketing.module.css).
+const REDLINE_WORDS = ['Most', 'agencies', 'never', 'send', 'one.']
+
 const w = (pct: string) => ({ ['--w' as string]: pct } as React.CSSProperties)
 
 const LIFECYCLE = [
@@ -66,7 +69,9 @@ export default function MarketingHome() {
           <div className={`${styles.wrap} ${styles.heroGrid}`}>
             <div>
               <p className={styles.eyebrow}>Scope governance for agencies</p>
-              <h1>83% of change orders get approved. <em className={styles.redline}>Most agencies never send one.</em></h1>
+              <h1>83% of change orders get approved. <em className={styles.redline}>{REDLINE_WORDS.map((word, i) => (
+                <span key={word} className={styles.rlWord} style={{ ['--i' as string]: i } as React.CSSProperties}>{word}{i < REDLINE_WORDS.length - 1 ? ' ' : ''}</span>
+              ))}</em></h1>
               <p className={styles.lede}>Scope creep isn&rsquo;t a client problem. It&rsquo;s a paperwork problem. ScopeGov&rsquo;s Guardian reads every client email against your signed Statement of Work, flags what&rsquo;s outside it, and drafts the change order while the ask is still fresh.</p>
               <div className={styles.ctaRow}>
                 <Link className={`${styles.btn} ${styles.btnPrimary} ${styles.btnLg}`} href="/signup">Start free trial</Link>

@@ -81,3 +81,16 @@ describe('homepage in-page links all resolve', () => {
     for (const h of ['#how', '#guardian', '#features', '#portfolio', '#pricing', '#faq']) expect(navHrefs).toContain(h)
   })
 })
+
+describe('hero headline underline', () => {
+  const home = read('components/marketing/MarketingHome.tsx')
+  const css = read('styles/marketing.module.css')
+  it('the per-word split still spells the headline phrase', () => {
+    const m = home.match(/const REDLINE_WORDS = \[(.*?)\]/)!
+    const words = [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1])
+    expect(words.join(' ')).toBe('Most agencies never send one.')
+  })
+  it('the draw-in respects reduced motion', () => {
+    expect(css).toMatch(/prefers-reduced-motion:reduce\)\{\.rlWord::after\{animation:none;clip-path:none\}/)
+  })
+})

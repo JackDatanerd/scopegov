@@ -52,7 +52,19 @@
 .page em{font-style:italic}
 .accent{color:var(--green)}
 .lede{font-size:1.15rem;color:var(--ink-2);max-width:60ch}
-.redline{text-decoration:underline wavy var(--red);text-decoration-thickness:2px;text-underline-offset:9px;text-decoration-skip-ink:none}
+/* Hand-drawn feel: a wavy red underline that draws in word by word, left to right, after the headline has landed.
+   Each word is its own span with an ::after wave; clip-path wipes it in (it clips only the underline, never the text),
+   staggered by --i. Pure CSS; reduced motion shows the finished underline immediately. */
+.rlWord{position:relative}
+.rlWord::after{
+  content:"";position:absolute;left:0;right:0;bottom:-4px;height:6px;
+  background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='6' viewBox='0 0 12 6'%3E%3Cpath d='M0 3Q3 0 6 3T12 3' fill='none' stroke='%23B91C1C' stroke-width='2'/%3E%3C/svg%3E") repeat-x left center;
+  clip-path:inset(0 100% 0 0);
+  animation:redlineDraw .32s ease-out forwards;
+  animation-delay:calc(.7s + var(--i, 0) * .2s);
+}
+@keyframes redlineDraw{to{clip-path:inset(0 0 0 0)}}
+@media (prefers-reduced-motion:reduce){.rlWord::after{animation:none;clip-path:none}}
 .section{padding:96px 0}
 .secHead{max-width:760px;margin-bottom:48px}
 .secHead p{margin:18px 0 0}
