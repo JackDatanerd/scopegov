@@ -3,10 +3,10 @@ import { useEffect, useRef, useState } from 'react'
 import styles from '@/styles/marketing.module.css'
 
 /**
- * Fades and lifts its children into view the first time they cross into the
- * viewport. Server-rendered children pass straight through as `children`,
- * so this stays the only client boundary needed for the scroll effect —
- * everything it wraps can remain a server component.
+ * Fades and lifts its children into view the first time they cross into the viewport. Children stay server-rendered
+ * (they arrive as `children`), so this is the only client boundary the scroll effect needs. Adds `.in`, which also
+ * drives the ledger bars in the before/after section. With scripts disabled the stylesheet shows everything
+ * (@media (scripting: none)); with reduced motion it reveals immediately.
  */
 export default function Reveal({
   children,
@@ -15,15 +15,16 @@ export default function Reveal({
 }: {
   children: React.ReactNode
   className?: string
-  as?: keyof JSX.IntrinsicElements
+  as?: 'div' | 'article' | 'figure' | 'section'
 }) {
-  const ref = useRef<HTMLDivElement>(null)
+  const ref = useRef<HTMLElement | null>(null)
   const [inView, setInView] = useState(false)
 
   useEffect(() => {
     const el = ref.current
     if (!el) return
-    if (!('IntersectionObserver' in window)) {
+    const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    if (reduce || !('IntersectionObserver' in window)) {
       setInView(true)
       return
     }
@@ -36,7 +37,7 @@ export default function Reveal({
           }
         })
       },
-      { threshold: 0.12 }
+      { threshold: 0.12, rootMargin: '0px 0px -6% 0px' }
     )
     io.observe(el)
     return () => io.disconnect()
@@ -44,10 +45,7 @@ export default function Reveal({
 
   const Component = Tag as any
   return (
-    <Component
-      ref={ref}
-      className={`${styles.reveal} ${inView ? styles.revealIn : ''} ${className}`}
-    >
+    <Component ref={ref} className={`${styles.reveal} ${inView ? styles.in : ''} ${className}`.trim()}>
       {children}
     </Component>
   )

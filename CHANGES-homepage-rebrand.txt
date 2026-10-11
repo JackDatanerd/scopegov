@@ -1,0 +1,14 @@
+Homepage rebrand (new look from scopegov-homepage-merged.html)
+
+- styles/marketing.module.css replaced (CSS module, tokens scoped to .page). Only components/marketing/* use it.
+- components/marketing: MarketingHome (page), MarketingHeader + NavMenu (Product / Evidence dropdowns, Pricing, FAQ, mobile menu),
+  MarketingFooter (previous footer layout, new type + tokens), HeroDemo, GuardianDemo, ScopeCategories, PricingSection, CountUp,
+  Reveal, MobileCta, HomeMark, pricing-data.ts (plan data + calculator model, pinned to billing config by tests).
+- Removed: HeroDocMock.tsx, GuardianTryIt.tsx (replaced).
+- Sections kept from the old homepage: How it works, Features (the docket), Guardian, Portfolio, Pricing, FAQ, closing CTA.
+  Not carried over: the 23% / 61% "exhibits" (no source for either figure).
+- Fonts self-hosted: @fontsource-variable/newsreader, @fontsource/instrument-sans, @fontsource/jetbrains-mono (run npm ci).
+- app/page.tsx: page title + description from the new design.
+- Tests: tests/homepage-rebrand.test.ts (new); scope-loss-calculator + trial-subscription-end-pass2 homepage assertions updated.
+- BEFORE PRODUCTION: the proof numbers ($36M, 45,000+, 30,000+, 83%), the named stories and the six quotes are placeholders
+  from the design file. Replace with real figures / real customers or remove.

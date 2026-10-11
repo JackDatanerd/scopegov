@@ -193,12 +193,8 @@ describe('lows', () => {
 })
 
 describe('homepage', () => {
-  it('the calculator is reachable from the hero, the closing call to action, the nav and the footer', () => {
-    const home = read('components/marketing/MarketingHome.tsx')
-    expect(home.match(/href="\/calculator"/g)!.length).toBeGreaterThanOrEqual(3)   // hero + final CTA + pricing note
-    expect(home).toMatch(/styles\.btnGhost\} \$\{styles\.btnLg\}`\}>Estimate your scope loss/)
-    expect(home).toMatch(/styles\.btnOnDark\} \$\{styles\.btnLg\}`\}>Estimate your scope loss/)
-    expect(read('components/marketing/MarketingHeader.tsx')).toContain('href="/calculator"')
+  it('the full calculator is reachable from the pricing section\'s verdict and the footer', () => {
+    expect(read('components/marketing/PricingSection.tsx')).toContain('href="/calculator"')
     expect(read('components/marketing/MarketingFooter.tsx')).toContain('href="/calculator"')
   })
 })

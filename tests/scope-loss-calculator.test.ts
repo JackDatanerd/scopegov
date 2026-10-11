@@ -4,6 +4,7 @@
 // windows, currency), and the wiring (public route, entry points, plan-table drift guards).
 
 import { describe, it, expect, vi } from 'vitest'
+import { HOME_PLANS } from '@/components/marketing/pricing-data'
 import { readFileSync } from 'fs'
 import { join } from 'path'
 import {
@@ -237,18 +238,17 @@ describe('ownRecoveryRate', () => {
 })
 
 describe('drift guards — the model must say what the product really does', () => {
-  const marketing = read('components/marketing/MarketingHome.tsx')
 
   it('seat and project caps come from PLAN_LIMITS, which the pricing table mirrors', () => {
-    expect(marketing).toContain("values: ['1', '2', '4', '10']")
-    expect(marketing).toContain("values: ['2', '5', 'Unlimited', 'Unlimited']")
+    expect(HOME_PLANS.map(p => p.seats)).toEqual([1, 2, 4, 10])
+    expect(HOME_PLANS.map(p => p.projects)).toEqual([2, 5, null, null])
     expect([PLAN_LIMITS.solo.seats, PLAN_LIMITS.starter.seats, PLAN_LIMITS.pro.seats, PLAN_LIMITS.agency.seats]).toEqual([1, 2, 4, 10])
     expect([PLAN_LIMITS.solo.projects, PLAN_LIMITS.starter.projects, PLAN_LIMITS.pro.projects, PLAN_LIMITS.agency.projects]).toEqual([2, 5, null, null])
   })
 
   it('PLAN_FEATURES match the pricing table rows', () => {
-    expect(marketing).toContain("label: 'Full SOW history', values: ['Last 10', 'check', 'check', 'check']")
-    expect(marketing).toContain("label: 'Custom roles & permissions', values: ['dash', 'dash', 'check', 'check']")
+    expect(HOME_PLANS.map(p => p.fullHistory)).toEqual([false, true, true, true])
+    expect(HOME_PLANS.map(p => p.customRoles)).toEqual([false, false, true, true])
     expect(Object.values(PLAN_FEATURES).map(f => f.fullHistory)).toEqual([false, true, true, true])
     expect(Object.values(PLAN_FEATURES).map(f => f.customRoles)).toEqual([false, false, true, true])
   })
@@ -353,7 +353,7 @@ describe('wiring', () => {
     expect(read('app/(app)/layout.tsx')).toContain('href="/plan-calculator"')
     expect(read('components/settings/SettingsClient.tsx')).toContain('href="/plan-calculator"')
     expect(read('app/(app)/dashboard/page.tsx')).toContain('href="/plan-calculator"')
-    expect(read('components/marketing/MarketingHome.tsx')).toContain('href="/calculator"')
+    expect(read('components/marketing/MarketingFooter.tsx')).toContain('href="/calculator"')
   })
 
   it('the UI never promises a result and always shows its assumptions', () => {
