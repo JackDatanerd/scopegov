@@ -1,0 +1,27 @@
+CHANGES — change orders on a retainer
+
+Found by reading a change order for extra copywriting on a $1,200/month retainer: it said every line "recurs monthly", but the app
+bills a change order once and the monthly billing job reads only the retainer's monthly rate, so the promise could never be
+invoiced. It also showed "Timeline +7 days" on a retainer with no end date, a totals block split across two pages, and a
+"Revised Contract Value" that added a monthly amount as if it were one-off.
+
+1. Extra monthly work is added by changing the monthly rate (components/co/CoEditor.tsx, lib/documents/co-retainer.ts)
+   The existing "retainer renewal" machinery already shows Current Monthly Rate / Rate Change / New Monthly Rate, sets the rate on
+   acceptance, and works on open-ended retainers. It is now reachable for this purpose:
+   - The checkbox reads "This changes the monthly rate (a renewal, or extra monthly work)", with a note that unticked = a one-time
+     fee billed once as its own invoice.
+   - Ticking it puts the current monthly retainer first ("Current monthly retainer (unchanged)") so the lines read current + new = the
+     new monthly rate. Un-ticking removes it; an AI draft keeps it; hidden financials add nothing.
+2. The rate follows the tax basis (lib/documents/finalize-co.ts, both CO PDF routes)
+   Acceptance stored co.total as the new monthly rate. Tax included: that is right. Tax added on top: the total contains the added tax,
+   and the monthly invoice adds tax again, so the new rate was taxed twice. The rate is now the fee as entered (inclusive -> total,
+   exclusive -> subtotal) in the stored rate, the new-rate notification, the executed PDF and both live PDFs.
+3. No timeline claims on an open-ended retainer (CO create, edit and draft routes, editor)
+   There is no delivery date to move, so the timeline-impact and revised-delivery-date fields are hidden, ignored if sent, and the
+   AI draft returns none.
+4. CO PDF totals stay together (lib/pdf/renderer.tsx)
+   The totals block no longer splits across a page break, and reads "Subtotal before tax" when the line amounts include tax.
+
+tests/retainer-change-orders.test.ts (12 new). Checked: tsc, next lint (0 errors), full next build, 345 files / 3397 tests.
+No migration. Already-executed change orders keep their frozen PDFs. Not covered by automated tests: the editor on screen (try:
+retainer project > new change order > tick "changes the monthly rate").

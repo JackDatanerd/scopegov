@@ -1,5 +1,6 @@
 export const runtime = 'nodejs'
 
+import { monthlyRateFromCo } from '@/lib/documents/co-retainer'
 import { normalizeLateFeeRate } from '@/lib/documents/late-fee'
 import { createServiceClient } from '@/lib/supabase/server'
 import { lookupMissResponse } from '@/lib/documents/co-lookup'
@@ -155,7 +156,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       // A retainer renewal replaces the monthly rate; it is not "original value + this CO".
       isRetainerRenewal: isRenewalCo,
       renewalTermMonths: isRenewalCo ? renewalTermForDocument(co, co.projects) : null,
-      revisedContractValue: isRenewalCo ? Number(co.total || 0) : null,
+      revisedContractValue: isRenewalCo ? monthlyRateFromCo(co) : null,
       timelineImpactDays: co.timeline_impact_days ?? null,
       revisedDeliveryDate: co.revised_delivery_date ?? null,
       scopeImpactNote:    co.scope_impact_note || null,

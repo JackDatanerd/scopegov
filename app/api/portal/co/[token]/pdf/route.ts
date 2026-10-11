@@ -1,5 +1,6 @@
 export const runtime = 'nodejs'
 
+import { monthlyRateFromCo } from '@/lib/documents/co-retainer'
 import { normalizeLateFeeRate } from '@/lib/documents/late-fee'
 import { checkPortalRateLimit, recordPortalAction } from '@/lib/utils/portal-rate-limit'
 import { getClientIp } from '@/lib/utils/request-ip'
@@ -193,7 +194,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       contractValueBefore,
       isRetainerRenewal: isRenewalCo,
       renewalTermMonths: isRenewalCo ? renewalTermForDocument(co, project) : null,
-      revisedContractValue: isRenewalCo ? Number(co.total || 0) : null,
+      revisedContractValue: isRenewalCo ? monthlyRateFromCo(co) : null,
       timelineImpactDays: co.timeline_impact_days ?? null,
       revisedDeliveryDate: co.revised_delivery_date ?? null,
       scopeImpactNote:    co.scope_impact_note || null,

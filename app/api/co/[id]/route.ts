@@ -1,3 +1,4 @@
+import { isOpenEndedRetainer } from '@/lib/documents/co-retainer'
 import { isUuidString } from '@/lib/utils/uuid'
 import { createServiceClient } from '@/lib/supabase/server'
 import { lookupMissResponse } from '@/lib/documents/co-lookup'
@@ -172,6 +173,11 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     if (parsedFields.fields.scopeImpactNote !== undefined)    update.scope_impact_note = parsedFields.fields.scopeImpactNote
     if (parsedFields.fields.timelineImpactDays !== undefined) update.timeline_impact_days = parsedFields.fields.timelineImpactDays
     if (parsedFields.fields.revisedDeliveryDate !== undefined) update.revised_delivery_date = parsedFields.fields.revisedDeliveryDate
+    if (isOpenEndedRetainer(co.projects)) {
+      // no delivery date exists to move on an open-ended retainer
+      if ('timeline_impact_days' in update) update.timeline_impact_days = null
+      if ('revised_delivery_date' in update) update.revised_delivery_date = null
+    }
     if (note !== undefined)               update.note = sanitizeRichTextOrNull(note)
     if (isRetainerRenewal !== undefined)  update.is_retainer_renewal = isRetainerRenewal
     if (isCredit !== undefined)           update.is_credit = isCredit

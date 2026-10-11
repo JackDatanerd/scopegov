@@ -1,3 +1,4 @@
+import { isOpenEndedRetainer } from '@/lib/documents/co-retainer'
 import { projectTaxBasis } from '@/lib/documents/tax-basis'
 import { createServiceClient } from '@/lib/supabase/server'
 import { parseRenewalTerm } from '@/lib/documents/renewal-term'
@@ -68,7 +69,7 @@ export async function POST(request: NextRequest) {
     // VIEW_OWN_PROJECTS-only holder of CREATE_CHANGE_ORDERS shouldn't be
     // able to create a CO against a project they're not assigned to.
     const { data: project, error: projectErr } = await (service as any)
-      .from('projects').select('id, status, type').eq('id', projectId).eq('workspace_id', session.workspaceId)
+      .from('projects').select('id, status, type, retainer_duration_months').eq('id', projectId).eq('workspace_id', session.workspaceId)
       .is('deleted_at', null).single()
     // A failed read is a retryable 500, not "Project not found".
     if (!project) {
@@ -247,8 +248,9 @@ export async function POST(request: NextRequest) {
         // alongside the rest of the CO at creation, same as note/line
         // items — see the PDF renderer's Impact Analysis section for
         // where this surfaces to the client.
-        timeline_impact_days: parsedFields.fields.timelineImpactDays ?? null,
-        revised_delivery_date: parsedFields.fields.revisedDeliveryDate ?? null,
+        // An open-ended retainer has no delivery date to move, so a timeline impact on its change order would be a false claim.
+        timeline_impact_days: isOpenEndedRetainer(project) ? null : (parsedFields.fields.timelineImpactDays ?? null),
+        revised_delivery_date: isOpenEndedRetainer(project) ? null : (parsedFields.fields.revisedDeliveryDate ?? null),
         scope_impact_note:    parsedFields.fields.scopeImpactNote ?? null,
         created_by:   session.id,
       })

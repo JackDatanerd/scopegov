@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import { formatCoAmount } from '@/lib/documents/co-money'
 import { hasVisibleText } from '@/lib/documents/visible-text'
 import { nanoid } from 'nanoid'
+import { withCurrentRateLine, withoutCurrentRateLine } from '@/lib/documents/co-retainer'
 import { roundCurrency } from '@/lib/utils/format'
 import ClientDetailsWarningModal, { type ClientDetailsInfo, type AgencyDetailsInfo } from '@/components/documents/ClientDetailsWarningModal'
 import { MAX_UPLOAD_BYTES, MAX_UPLOAD_LABEL } from '@/lib/utils/upload-limits'
@@ -70,6 +71,9 @@ export default function CoEditor({ projId, coId }: Props) {
   // extend (an open-ended one has nothing to extend).
   const [projectType, setProjectType] = useState<string | null>(null)
   const [retainerOpenEnded, setRetainerOpenEnded] = useState(false)
+  // The retainer's current monthly rate, so a "changes the monthly rate" change order can show it as its first line. Null until
+  // known (or hidden from a member who cannot see financials).
+  const [currentRate, setCurrentRate] = useState<number | null>(null)
   // How long the client's response link stays valid (server default 30, max 90).
   const [expiresInDays, setExpiresInDays] = useState('30')
   const [renewalTermMonths, setRenewalTermMonths] = useState('')
@@ -113,6 +117,22 @@ export default function CoEditor({ projId, coId }: Props) {
   // whole-unit rounding): these are the figures that get stored and printed — see lib/documents/co-money.ts.
   const money    = (n: number) => formatCoAmount(n, currency, isCredit)
 
+  // Extra work that continues every month is added by changing the monthly rate (a change order is billed once). Ticking the box
+  // puts the current rate first, so the lines read: current retainer + what is new = the new monthly rate.
+  async function onToggleMonthlyRate(on: boolean) {
+    setIsRetainerRenewal(on)
+    if (!on) { setLineItems(prev => withoutCurrentRateLine(prev)); return }
+    let rate = currentRate
+    if (rate == null) {
+      try {
+        const r = await fetch(`/api/projects/${projId}`)
+        const j = await r.json().catch(() => ({} as any))
+        if (j.canViewFinancials !== false && Number(j.project?.contract_value) > 0) { rate = Number(j.project.contract_value); setCurrentRate(rate) }
+      } catch { /* the line is a convenience; the person can still type it */ }
+    }
+    setLineItems(prev => withCurrentRateLine(prev, rate, nanoid()))
+  }
+
   useEffect(() => {
     if (!coId) {
       // Fetch project currency for new CO
@@ -122,6 +142,7 @@ export default function CoEditor({ projId, coId }: Props) {
           if (json.project?.currency) setCurrency(json.project.currency)
           setProjectType(json.project?.type ?? null)
           setRetainerOpenEnded(json.project?.type === 'retainer' && !(Number(json.project?.retainer_duration_months) > 0))
+          if (json.canViewFinancials !== false && Number(json.project?.contract_value) > 0) setCurrentRate(Number(json.project.contract_value))
           if (json.canViewFinancials === false) setPricingLocked(true)
           if (json.canCreateChangeOrders === false) setCanEdit(false)
           if (json.canSendChangeOrders === false) setCanSend(false)
@@ -345,8 +366,8 @@ export default function CoEditor({ projId, coId }: Props) {
         isRetainerRenewal,
         // Only a fixed-term retainer has a term to extend.
         renewalTermMonths: isRetainerRenewal && !retainerOpenEnded && renewalTermMonths.trim() !== '' ? parseInt(renewalTermMonths, 10) : null,
-        timelineImpactDays: timelineImpactDays.trim() !== '' ? timelineImpactDays.trim() : null,
-        revisedDeliveryDate: revisedDeliveryDate.trim() !== '' ? revisedDeliveryDate.trim() : null,
+        timelineImpactDays: !retainerOpenEnded && timelineImpactDays.trim() !== '' ? timelineImpactDays.trim() : null,
+        revisedDeliveryDate: !retainerOpenEnded && revisedDeliveryDate.trim() !== '' ? revisedDeliveryDate.trim() : null,
         scopeImpactNote:    scopeImpactNote.trim() || null,
       }
       // Another save is still creating this CO — wait for it, then update that row rather than creating a second.
@@ -479,9 +500,10 @@ export default function CoEditor({ projId, coId }: Props) {
       // be sent to the client as a claim about this change order.
       setScopeImpactNote(json.scopeImpact || '')
       setTimelineImpactDays(json.timelineImpactDays != null ? String(json.timelineImpactDays) : '')
-      setLineItems(json.lineItems.map((li: any) => ({
+      const drafted = json.lineItems.map((li: any) => ({
         id: nanoid(), description: li.description, quantity: li.quantity || 1, rate: 0, total: 0,
-      })))
+      }))
+      setLineItems(isRetainerRenewal ? withCurrentRateLine(drafted, currentRate, nanoid()) : drafted)
       setAiOpen(false); setAiText('')
     } catch (err: unknown) {
       setAiError(err instanceof Error ? err.message : 'Could not draft this — try again or write it manually.')
@@ -612,6 +634,7 @@ export default function CoEditor({ projId, coId }: Props) {
             placeholder="e.g. NorthPoints API integration added as in-scope; see Appendix A-1" />
         </div>
 
+        {!retainerOpenEnded && (<>
         <div className="fgrp">
           <label className="flbl">Timeline impact <span className="fhint">— optional, net day shift this CO introduces</span></label>
           <input className="finp" type="number" step="1" style={{ maxWidth: 160 }} disabled={isLocked}
@@ -626,6 +649,7 @@ export default function CoEditor({ projId, coId }: Props) {
             value={revisedDeliveryDate}
             onChange={(e: React.ChangeEvent<HTMLInputElement>) => setRevisedDeliveryDate(e.target.value)} />
         </div>
+        </>)}
 
         {/* Line items */}
         {financialsHidden ? (
@@ -752,10 +776,16 @@ export default function CoEditor({ projId, coId }: Props) {
         {projectType === 'retainer' && (
           <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: isCredit ? 'not-allowed' : 'pointer', fontSize: 13, color: 'var(--text-2)', marginBottom: 20, opacity: isCredit ? 0.5 : 1 }}>
             <input type="checkbox" checked={isRetainerRenewal} disabled={isLocked || isCredit}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setIsRetainerRenewal(e.target.checked)}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => { void onToggleMonthlyRate(e.target.checked) }}
               style={{ accentColor: 'var(--green)' }} />
-            This is a retainer renewal
+            This changes the monthly rate (a renewal, or extra monthly work)
           </label>
+        )}
+        {projectType === 'retainer' && isRetainerRenewal && (
+          <p style={{ fontSize: 11, color: 'var(--text-3)', margin: '-8px 0 14px 24px' }}>
+            The first line is the current monthly retainer; add what is new below it. The total becomes the new monthly rate from
+            acceptance. Leave this unticked for a one-time fee, which is billed once as its own invoice.
+          </p>
         )}
         {projectType === 'retainer' && isRetainerRenewal && !retainerOpenEnded && (
           <div className="fgrp" style={{ marginTop: -8, marginBottom: 20 }}>

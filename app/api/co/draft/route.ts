@@ -2,6 +2,7 @@
 export const runtime = 'nodejs'
 export const maxDuration = 60
 
+import { isOpenEndedRetainer } from '@/lib/documents/co-retainer'
 import { MAX_DESCRIPTION_LEN } from '@/lib/documents/co-totals'
 import { isRealLookupFailure } from '@/lib/documents/co-lookup'
 import { createServiceClient } from '@/lib/supabase/server'
@@ -88,7 +89,7 @@ export async function POST(request: NextRequest) {
 
     const { data: project, error: projectErr } = await (service as any)
       .from('projects')
-      .select(`id, name, type, status, contract_value, currency, workspace_id,
+      .select(`id, name, type, status, contract_value, currency, workspace_id, retainer_duration_months,
         project_scope_snapshot(deliverables, out_of_scope)`)
       .eq('id', projectId).eq('workspace_id', session.workspaceId).is('deleted_at', null).single()
 
@@ -224,7 +225,7 @@ Rules:
       title:              truncateText(sanitizePlainText(String(parsed.title ?? '')), 200),
       note:               truncateText(sanitizePlainText(String(parsed.note ?? '')), 2000),
       scopeImpact:        parsed.scopeImpact ? truncateText(sanitizePlainText(String(parsed.scopeImpact)), 1000) : null,
-      timelineImpactDays: Number.isInteger(days) && days >= MIN_CO_TIMELINE_DAYS && days <= MAX_CO_TIMELINE_DAYS ? days : null,
+      timelineImpactDays: !isOpenEndedRetainer(project) && Number.isInteger(days) && days >= MIN_CO_TIMELINE_DAYS && days <= MAX_CO_TIMELINE_DAYS ? days : null,
       lineItems,
     })
   } catch (err) {

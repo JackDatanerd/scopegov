@@ -858,9 +858,9 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
           ))}
 
           {/* Totals */}
-          <View style={s.totals}>
+          <View style={s.totals} wrap={false}>
             <View style={s.totalRow}>
-              <Text>Subtotal</Text>
+              <Text>{data.taxInclusive && tax !== 0 ? 'Subtotal before tax' : 'Subtotal'}</Text>
               <Text style={s.mono}>{data.currency} {fm(data.subtotal)}</Text>
             </View>
             {tax !== 0 && (

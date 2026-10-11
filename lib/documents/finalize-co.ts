@@ -10,6 +10,7 @@
 // created with a captured client signature. This is now the single place
 // both flows go through so they can't drift apart again.
 
+import { monthlyRateFromCo } from '@/lib/documents/co-retainer'
 import { resolveReplyTo } from '@/lib/email/reply-to'
 import { logAudit } from '@/lib/utils/audit'
 import { renderCoPdf } from '@/lib/pdf/renderer'
@@ -170,7 +171,7 @@ export async function finalizeCoAcceptance(service: any, params: {
   if (isRenewal) {
     const { error: renewalErr } = await (service as any)
       .from('projects')
-      .update({ contract_value: co.total, updated_at: now })
+      .update({ contract_value: monthlyRateFromCo(co), updated_at: now })
       .eq('id', co.project_id)
     if (renewalErr) {
       console.error('Retainer renewal contract_value update failed after CO accept:', renewalErr, { coId: co.id })
@@ -209,7 +210,7 @@ export async function finalizeCoAcceptance(service: any, params: {
         eventType: 'project.retainer_renewed', entityType: 'project',
         entityId: co.project_id, entityName: project.name,
         metadata: {
-          change_order_id: co.id, new_monthly_amount: co.total, currency: project.currency || 'USD',
+          change_order_id: co.id, new_monthly_amount: monthlyRateFromCo(co), currency: project.currency || 'USD',
           renewal_term_months: termMonths || null, term_extended_from: termExtension?.from ?? null, term_extended_to: termExtension?.to ?? null,
         },
       })
@@ -393,7 +394,7 @@ export async function finalizeCoAcceptance(service: any, params: {
     }
     // Same inputs the downloadable copy uses, so the executed original and every later download are
     // the same document. (This copy used to omit the SOW number and the Value-impact block.)
-    const revisedContractValue = isRenewal ? Number(co.total) : null
+    const revisedContractValue = isRenewal ? monthlyRateFromCo(co) : null
     const contractValueBefore = isRenewal
       ? previousContractValue
       : await getContractValueBefore(service, co.project_id, co.id, project.contract_value != null ? Number(project.contract_value) : null, { project })
