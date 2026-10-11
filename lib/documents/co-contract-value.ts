@@ -27,6 +27,7 @@
 // this CO's own amendment row (so a CO accepted out of chronological order
 // relative to another still reports the value as it stood at the moment
 // THIS one was accepted, not a value influenced by COs that came later).
+import { netOfTax, projectTaxBasis } from '@/lib/documents/tax-basis'
 import { baseContractValue as projectBaseValue, amendmentImpact, loadRetainerMonthsBilled } from '@/lib/utils/contract-value'
 
 // FIX (CO logic independent pass, CO-1): the comment above describes the ADDITIVE ledger correctly, but the
@@ -77,7 +78,7 @@ export async function getContractValueBefore(
     // "one month" and print a wrong figure (finalize-co freezes this number into the executed PDF).
     billedMonths = (await loadRetainerMonthsBilled(service, [{ id: projectId, ...projectShape }], { strict: true })).get(projectId)
   }
-  const start = projectBaseValue(projectShape, billedMonths)
+  const startGross = projectBaseValue(projectShape, billedMonths)
 
   // FIX (section-10 audit, 10-B1): a pending CO's "before" is the base plus every amendment accepted to date
   // (nothing ever increments projects.contract_value). A CO already accepted reports the value as it stood at
@@ -94,6 +95,9 @@ export async function getContractValueBefore(
   // step is already guarded and falls back to a later live render rather than freezing a wrong figure.
   if (amendmentsErr) throw new Error(`contract value lookup failed: ${amendmentsErr.message}`)
 
+  // Pre-tax, like every contract value: a fee the SOW states as tax-inclusive is netted (see lib/reports/contract-position.ts).
+  // Read last, after the amendments, so a failure of this lookup can never mask the failures above that must throw.
+  const start = netOfTax(startGross, await projectTaxBasis(service, projectId))
   return Math.max(0, start + amendmentImpact(amendments, projectShape.type))
 }
 

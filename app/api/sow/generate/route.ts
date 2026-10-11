@@ -23,6 +23,7 @@ import { applyAgencyStandards, ensureContractValueStated, ensureTaxStated, ensur
 import { workspaceTaxDefaults } from '@/lib/documents/tax-defaults'
 import { sowDateStyle } from '@/lib/utils/date-style'
 import { normalizeRevisionNote } from '@/lib/sow/brief-signals'
+import { parseStatedTax } from '@/lib/documents/tax-basis'
 import { normalizeLateFeeRate } from '@/lib/documents/late-fee'
 import { normalizeLiabilityCap } from '@/lib/documents/liability-cap'
 import { pickAgencyStandards } from '@/lib/utils/agency-standards'
@@ -121,6 +122,9 @@ export async function POST(request: NextRequest) {
     // metadata that the Revision Policy section is written against.
     // How the brief counts revisions when it is not just "N rounds" ("per post"); described beside the exact count, never replacing it.
     const revisionNote = normalizeRevisionNote(body.revisionNote)
+    // Tax terms the person stated for THIS engagement (the wizard asks). Not stated = the workspace default, as before.
+    const statedTax = parseStatedTax(body.taxRate, body.taxInclusive)
+    if (!statedTax.ok) return NextResponse.json({ error: statedTax.error }, { status: 400 })
     const parsedRounds   = Math.trunc(Number(body.revisionRounds))
     const revisionRounds = Number.isFinite(parsedRounds) && parsedRounds >= 1 && parsedRounds <= 10
       ? parsedRounds
@@ -235,7 +239,7 @@ export async function POST(request: NextRequest) {
     const clientName    = clientCompany || project.clients?.name || 'Client'
     // When the Client is a company, the named contact is the person who signs for it.
     const clientRepresentative = clientCompany ? (project.clients?.name || null) : null
-    const taxDefaults   = await workspaceTaxDefaults(service, session.workspaceId)
+    const taxDefaults   = statedTax.value ?? await workspaceTaxDefaults(service, session.workspaceId)
     // Late fee (migration 158) — its own tolerant read so a deploy that runs ahead of the migration only loses this term.
     let lateFeeRate: number | null = null
     try {

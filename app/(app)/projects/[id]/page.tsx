@@ -1,3 +1,4 @@
+import { projectTaxBasis } from '@/lib/documents/tax-basis'
 import { isUuidString } from '@/lib/utils/uuid'
 import { loadProjectActivity } from '@/lib/utils/project-activity'
 import { canReadProject } from '@/lib/utils/project-access'
@@ -371,6 +372,9 @@ export default async function ProjectPage({ params, searchParams }: Props) {
         taxInclusive: rate > 0 ? (bd.default_tax_inclusive ?? true) : false,
         paymentTermsDays: bd.default_payment_terms_days ?? null,
       }
+      // The engagement's SOW states the tax basis; invoices start from it rather than from the workspace default.
+      const sowBasis = await projectTaxBasis(service, id)
+      if (sowBasis) billingDefaults = { ...billingDefaults, taxRate: sowBasis.taxRate, taxInclusive: sowBasis.taxInclusive }
     }
   }
 

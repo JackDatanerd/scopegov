@@ -54,7 +54,11 @@ describe('change order drafting is bounded', () => {
   })
   it('knows when the project is a retainer and what that means for timeline and fees', () => {
     expect(src).toContain("project.type === 'retainer'")
-    expect(src).toContain('one-time fee or recurs monthly')
+    // a change order is billed once: the draft never promises a recurring fee the billing cannot deliver
+    expect(src).toContain('A change order is billed once')
+    expect(src).toContain('never use recurring wording')
     expect(src).toContain('leave timelineImpactDays null')
+    expect(src).toContain('licenses')
+    expect(src).not.toContain('licences')
   })
 })

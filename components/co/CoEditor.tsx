@@ -129,7 +129,7 @@ export default function CoEditor({ projId, coId }: Props) {
         .catch(() => {})
       // Workspace billing defaults (Settings → Workspace → Billing defaults) pre-fill a new CO's tax
       // terms. Only applied while the rate is still untouched, and only when a rate is configured.
-      fetch('/api/workspace/billing-defaults')
+      fetch(`/api/workspace/billing-defaults?projectId=${encodeURIComponent(projId)}`)
         .then(r => r.ok ? r.json() : null)
         .then(json => {
           if (json && Number(json.taxRate) > 0) {

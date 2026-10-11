@@ -1,0 +1,33 @@
+CHANGES — one tax basis for the whole engagement
+
+Found by reading a signed SOW, its change order and its invoice together. The SOW said nothing about tax; the change order and invoice
+treated the $1,200 fee as tax-inclusive; and the invoice's contract position counted that tax-inclusive $1,200 as if it were pre-tax,
+so after the only invoice was paid it still showed "Remaining to invoice $460.97" (369.52 of change order plus a phantom 91.45 = the
+tax already inside the fee). Each document picked its tax on its own, from the workspace default or from whatever was chosen on that form.
+
+1. The engagement has ONE tax basis: the one its SOW states (lib/documents/tax-basis.ts)
+   A signed SOW's tax terms win, else a live SOW's, else the workspace default. A change order and an invoice START from it (it
+   is still editable on the form). Applied server-side as well as in the forms:
+   - POST /api/co and POST /api/invoices: no tax stated and none carried from a change order -> the SOW's basis (CO reads strictly).
+   - GET /api/workspace/billing-defaults?projectId= returns the SOW's basis (workspace permission + project read check unchanged).
+     The CO editor now passes the project; the project page seeds the invoice form the same way.
+2. The SOW states tax from the first draft
+   - New-project wizard: "Sales tax" (rate, included / added on top), prefilled from the workspace default, sent with the first
+     generation. The same sentence under the amount now says "This includes 8.25% sales tax" or "Sales tax of 8.25% is added on top".
+   - Regenerate modal: keeps what the SOW already stated (a later change to the workspace default never silently rewrites a
+     contract) and shows the row. POST /api/sow/generate validates stated terms (0-100); blank = workspace default; 0 = no tax.
+3. The contract position nets a tax-inclusive fee (lib/reports/contract-position.ts, lib/documents/co-contract-value.ts)
+   Contract values are defined as pre-tax and change orders are recorded net; only the base fee could still contain tax. It is now
+   netted when the SOW states it inclusive: 1,200 -> 1,108.55, contracted 1,478.07, remaining 369.52 (the change order only).
+   The CO's "Original Contract Value (excl. tax)" uses the same figure. Display paths degrade to "no basis" if the SOW read fails
+   (rollup stays strict); in the CO value function the lookup runs after the amendment reads so it can never mask their failures.
+   Frozen (already executed) PDFs keep their numbers; new renders use the corrected ones.
+4. Change-order drafts no longer promise recurring fees (app/api/co/draft/route.ts)
+   A change order is billed once and the monthly billing job does not read change orders, but the draft said "recurs monthly" (added
+   by the previous documents package). Drafts now write one-time fees only; ongoing monthly work is raised through the monthly
+   retainer rate (next package). Also: "licences" -> "licenses" (US spelling).
+
+Tests: tests/tax-basis-and-position.test.ts (14, including the exact $1,200 inclusive case); billing-defaults tests now pass a request.
+Checked: tsc, next lint (0 errors), full next build, 344 files / 3385 tests. No migration.
+Not covered: the on-screen flow. Existing SOWs that never stated tax stay silent until regenerated; their change orders and invoices
+keep using the workspace default as before.

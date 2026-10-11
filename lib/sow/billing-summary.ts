@@ -11,6 +11,8 @@ export interface BillingSummaryInput {
   currency: string
   /** Retainer term in months; null/0/undefined = open-ended. Ignored for a fixed project. */
   termMonths?: number | string | null
+  /** The tax basis the SOW will state, when one is set. Said in the same sentence so the number is never ambiguous. */
+  tax?: { rate: number | string; inclusive: boolean } | null
 }
 
 const money = (n: number) => n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -22,9 +24,11 @@ export function describeBilling(input: BillingSummaryInput): string {
   const cur = input.currency || ''
   if (!Number.isFinite(amount) || amount <= 0)
     return input.monthly ? 'Enter the fee for one month. It is invoiced every month.' : 'Enter the price of the whole project.'
-  if (!input.monthly) return `The whole project is ${cur} ${money(amount)}, invoiced as one fee or in instalments.`
+  const rate = Number(input.tax?.rate)
+  const taxNote = rate > 0 ? (input.tax?.inclusive ? ` This includes ${rate}% sales tax.` : ` Sales tax of ${rate}% is added on top.`) : ''
+  if (!input.monthly) return `The whole project is ${cur} ${money(amount)}, invoiced as one fee or in instalments.${taxNote}`
   const total = Math.round(amount * (term || 0) * 100) / 100
   return term
-    ? `${cur} ${money(amount)} is invoiced every month for ${term} month${term === 1 ? '' : 's'}, ${cur} ${money(total)} in total.`
-    : `${cur} ${money(amount)} is invoiced every month until the retainer ends. There is no fixed total.`
+    ? `${cur} ${money(amount)} is invoiced every month for ${term} month${term === 1 ? '' : 's'}, ${cur} ${money(total)} in total.${taxNote}`
+    : `${cur} ${money(amount)} is invoiced every month until the retainer ends. There is no fixed total.${taxNote}`
 }

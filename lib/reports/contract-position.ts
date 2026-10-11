@@ -21,6 +21,7 @@
 // (projects.contract_value is overwritten and migration 061 records previous_contract_value), so its
 // amendment must not also be added on top — historical renewal amendments still carry the full total.
 
+import { projectTaxBases, netOfTax } from '@/lib/documents/tax-basis'
 import { fetchAll } from '@/lib/utils/fetch-all'
 import { amendmentImpact, baseContractValue, loadRetainerMonthsBilled, unbilledChangeOrderValue, type PositionProject } from '@/lib/utils/contract-value'
 
@@ -88,6 +89,11 @@ export async function computeContractPositions(
 
     // Open-ended retainers (no term): their contracted value is the months committed so far.
     const monthsBilled = await loadRetainerMonthsBilled(service, chunk.map(id => byId.get(id)!), { strict: !!opts.strict })
+    // Contract values here are PRE-TAX ("tax is never part of what was scoped"), and change-order amendments are recorded net.
+    // The base is whatever the fee was entered as: when the SOW states the fee as tax-INCLUSIVE, that figure still contains the
+    // tax, so it is netted here. Without this a $1,200 tax-inclusive retainer was "contracted" at $1,200 against $1,108.55
+    // invoiced, leaving a phantom $91.45 "remaining to invoice".
+    const taxBases = await projectTaxBases(service, chunk, { strict: !!opts.strict })
 
     for (const id of chunk) {
       const project = byId.get(id)!
@@ -112,7 +118,7 @@ export async function computeContractPositions(
       const paidEligible = invoices.filter((inv: any) => inv.project_id === id && inv.status !== 'draft')
       out.set(id, {
         // Floored at zero like effectiveContractValue (contract-value.ts) — the two are documented as one definition.
-        contractedValue: Math.max(0, baseContractValue(project, monthsBilled.get(id)) + amendmentTotal),
+        contractedValue: Math.max(0, netOfTax(baseContractValue(project, monthsBilled.get(id)), taxBases.get(id)) + amendmentTotal),
         invoicedToDate:  billed.reduce((s: number, inv: any) => s + (Number(inv.subtotal ?? inv.amount) || 0), 0),
         paidToDate:      paidEligible.reduce((s: number, inv: any) => s + (Number(inv.amount_paid) || 0), 0),
         paidToDateNet:   paidEligible.reduce((s: number, inv: any) => {

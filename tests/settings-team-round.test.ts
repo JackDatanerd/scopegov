@@ -540,11 +540,11 @@ describe('GET /api/workspace/billing-defaults', () => {
     session = mkSession(['VIEW_OWN_PROJECTS'])
     resolver = () => ({ data: { default_tax_rate: '16.00', default_tax_inclusive: false, default_payment_terms_days: 14 }, error: null })
     const { GET } = await import('@/app/api/workspace/billing-defaults/route')
-    expect(await (await GET()).json()).toEqual({ taxRate: 16, taxInclusive: false, paymentTermsDays: 14 })
+    expect(await (await GET(new NextRequest('http://localhost/api/workspace/billing-defaults'))).json()).toEqual({ taxRate: 16, taxInclusive: false, paymentTermsDays: 14 })
   })
   it('401s when signed out', async () => {
     session = null
     const { GET } = await import('@/app/api/workspace/billing-defaults/route')
-    expect((await GET()).status).toBe(401)
+    expect((await GET(new NextRequest('http://localhost/api/workspace/billing-defaults'))).status).toBe(401)
   })
 })

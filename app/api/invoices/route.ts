@@ -1,5 +1,6 @@
 export const runtime = 'nodejs'
 
+import { projectTaxBasis } from '@/lib/documents/tax-basis'
 import { MEMBER_PROJECT_EMBED_SUFFIX, scopeToMemberProjects } from '@/lib/utils/member-project-scope'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
@@ -216,6 +217,13 @@ export async function POST(request: NextRequest) {
       if (taxRate === undefined) coTaxDefaults = { taxRate: Number(co.tax_rate) || 0, taxInclusive: !!co.tax_inclusive }
       coSubtotalCap = Number(co.subtotal)
       sourceKind = 'co'; sourceId = coId
+    }
+
+    // No tax terms stated and none carried from a change order: start from the engagement's SOW, so the invoice agrees with the
+    // contract instead of with whatever the workspace default is today.
+    if (taxRate === undefined && taxInclusive === undefined && !coTaxDefaults) {
+      const sowBasis = await projectTaxBasis(service, projectId)
+      if (sowBasis) coTaxDefaults = sowBasis
     }
 
     // One validated, rounding implementation (lib/documents/invoice-totals.ts).

@@ -1,14 +1,17 @@
 export const runtime = 'nodejs'
 
+import { projectTaxBasis } from '@/lib/documents/tax-basis'
+import { canReadProject } from '@/lib/utils/project-access'
+import { isUuidString } from '@/lib/utils/uuid'
 import { createServiceClient } from '@/lib/supabase/server'
-import { NextResponse } from 'next/server'
+import { NextResponse, type NextRequest } from 'next/server'
 import { getSession } from '@/lib/auth/session'
 
 // Read-only: the workspace's billing defaults (Settings → Workspace → Billing defaults) that
 // pre-fill new invoices and change orders. Any signed-in member may read them — they are
 // starting values for a form, not financial data — and the write path is
 // PATCH /api/workspace/settings behind MANAGE_WORKSPACE_SETTINGS.
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -37,10 +40,19 @@ export async function GET() {
     // invoices — but it's the actual source of the wrong default for the CO editor,
     // which has no equivalent forcing step.
     const rate = Number(data.default_tax_rate) || 0
+    // With ?projectId=, the tax terms the engagement's SOW states take precedence: a change order or invoice starts from what was
+    // agreed, not from whatever the workspace default happens to be today (see lib/documents/tax-basis.ts).
+    let basis: { taxRate: number; taxInclusive: boolean } | null = null
+    const projectId = request.nextUrl.searchParams.get('projectId')
+    if (projectId && isUuidString(projectId)) {
+      const { data: proj } = await (service as any).from('projects').select('id').eq('id', projectId).eq('workspace_id', session.workspaceId).maybeSingle()
+      if (proj && (await canReadProject(service, session, projectId))) basis = await projectTaxBasis(service, projectId)
+    }
     return NextResponse.json({
-      taxRate: rate,
-      taxInclusive: rate > 0 ? (data.default_tax_inclusive ?? true) : false,
+      taxRate: basis ? basis.taxRate : rate,
+      taxInclusive: basis ? basis.taxInclusive : (rate > 0 ? (data.default_tax_inclusive ?? true) : false),
       paymentTermsDays: data.default_payment_terms_days ?? null,
+      ...(projectId ? { taxSource: basis ? 'sow' : 'workspace' } : {}),
     })
   } catch (err) {
     console.error('Billing defaults error:', err)

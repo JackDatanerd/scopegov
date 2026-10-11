@@ -163,8 +163,8 @@ Rules:
 - Any quantity named in note or scopeImpact (pages, rounds, hours) must equal the line-item quantities exactly. Never write "a round" or "one" when a line item says 2. If a line item adds revision rounds, say they are in addition to any revision rounds already included in the SOW.
 - Bound every line item: its description must state its limit (for example the number of creators, outreach rounds, pages or posts) so the extra work cannot grow open-ended. If the request gives no number, choose a small sensible one and state it.
 - If the work is listed under "Already excluded", say in scopeImpact that this change order brings it into scope by amending that exclusion, for the described work only; every other exclusion stays.
-- Costs paid to third parties (creator fees, ad spend, licences, tools) are not part of the Provider's fee unless the request says so; say who bears them in the note.
-- For a retainer, say in the note whether each line is a one-time fee or recurs monthly. For an ongoing engagement with no end date, leave timelineImpactDays null unless the request names a delay.
+- Costs paid to third parties (creator fees, ad spend, licenses, tools) are not part of the Provider's fee unless the request says so; say who bears them in the note.
+- A change order is billed once. Write every line item as a one-time fee and never use recurring wording (monthly, per month, recurring). Limits may be per month of the existing engagement (for example \"up to 4 posts\"), but the fee itself is one-time. For an ongoing engagement with no end date, leave timelineImpactDays null unless the request names a delay.
 - scopeImpact should name the specific deliverable or SOW section this falls outside of, quoting the section by its printed title (for example the "Out of Scope" section), not just restate the note.`
 
     // createWithTool: some models (e.g. a newer ANTHROPIC_MODEL) reject a forced tool_choice with a 400 — it retries

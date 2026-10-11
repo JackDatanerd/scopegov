@@ -1,3 +1,4 @@
+import { projectTaxBasis } from '@/lib/documents/tax-basis'
 import { createServiceClient } from '@/lib/supabase/server'
 import { parseRenewalTerm } from '@/lib/documents/renewal-term'
 import { NextResponse, type NextRequest } from 'next/server'
@@ -178,8 +179,13 @@ export async function POST(request: NextRequest) {
     let effTaxRate: unknown = taxRate
     let effTaxInclusive: unknown = taxInclusive
     if (taxRate === undefined && taxInclusive === undefined) {
-      const d = await workspaceTaxDefaults(service, session.workspaceId, { strict: true })
-      effTaxRate = d.taxRate; effTaxInclusive = d.taxInclusive
+      // The engagement's SOW states the tax basis; a change order starts from that, then from the workspace default.
+      const sowBasis = await projectTaxBasis(service, projectId, { strict: true })
+      if (sowBasis) { effTaxRate = sowBasis.taxRate; effTaxInclusive = sowBasis.taxInclusive }
+      else {
+        const d = await workspaceTaxDefaults(service, session.workspaceId, { strict: true })
+        effTaxRate = d.taxRate; effTaxInclusive = d.taxInclusive
+      }
     }
     const totals = computeCoTotals(lineItems || [], effTaxRate ?? 0, effTaxInclusive, undefined, { credit: isCredit === true })
     if (!totals.ok) return NextResponse.json({ error: totals.error }, { status: 400 })

@@ -1216,6 +1216,18 @@ function GenerateSowModal({ project, existingSow, onClose, onDone }: any) {
   const [generating,       setGenerating]        = useState(false)
   const [error,            setError]             = useState('')
   const [revisionNote,     setRevisionNote]      = useState<string>(existingSow?.metadata?.revisionNote || '')
+  // The tax terms this SOW states. Regenerating keeps what the SOW already said (the workspace default is only the starting
+  // point for a first draft), so a later change to the default never silently rewrites an engagement's contract.
+  const [taxRateStr,       setTaxRateStr]        = useState<string>(Number(existingSow?.metadata?.taxRate) > 0 ? String(existingSow.metadata.taxRate) : '')
+  const [taxInclusive,     setTaxInclusive]      = useState<boolean>(typeof existingSow?.metadata?.taxInclusive === 'boolean' ? existingSow.metadata.taxInclusive : true)
+  useEffect(() => {
+    if (existingSow) return
+    fetch('/api/workspace/billing-defaults')
+      .then(r => (r.ok ? r.json() : null))
+      .then(j => { if (j && Number(j.taxRate) > 0) { setTaxRateStr(prev => prev || String(j.taxRate)); setTaxInclusive(j.taxInclusive !== false) } })
+      .catch(() => { /* optional */ })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
   const [briefSignals,     setBriefSignals]      = useState<BriefBillingSignals | null>(null)
   const [offerDismissed,   setOfferDismissed]    = useState(false)
   const [switching,        setSwitching]         = useState(false)
@@ -1316,6 +1328,7 @@ function GenerateSowModal({ project, existingSow, onClose, onDone }: any) {
         body: JSON.stringify({
           projectId: project.id, projectType: billingType,
           objective, deliverables, outOfScope, timeline, revisionNote: revisionNote.trim(),
+          taxRate: parseFloat(taxRateStr) || 0, taxInclusive,
           clientCompany: clientCompany.trim(), clientRepresentativeTitle: signerTitle.trim(),
           paymentStructure: effStructure, revisionRounds: parseInt(revisionRounds) || 2,
           contractValue: project.contract_value || 0, currency: project.currency || 'USD',
@@ -1424,6 +1437,19 @@ function GenerateSowModal({ project, existingSow, onClose, onDone }: any) {
                     to manually reach 6-10 through the spinner even though the server accepts it. */}
                 <input type="number" className="finp" min={1} max={10} value={revisionRounds}
                   onChange={(e: React.ChangeEvent<HTMLInputElement>) => setRevisionRounds(e.target.value)} />
+              </div>
+            </div>
+            <div className="fgrp">
+              <label className="flbl">Sales tax <span className="fhint">(optional, stated in the SOW and carried to change orders and invoices)</span></label>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <input type="number" className="finp" style={{ maxWidth: 110 }} value={taxRateStr} min={0} max={100} step="0.001" placeholder="0"
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTaxRateStr(e.target.value)} />
+                <span style={{ fontSize: 13 }}>%</span>
+                <select className="finp" style={{ maxWidth: 190 }} value={taxInclusive ? 'inclusive' : 'exclusive'} disabled={!(Number(taxRateStr) > 0)}
+                  onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setTaxInclusive(e.target.value === 'inclusive')}>
+                  <option value="inclusive">Included in the amount</option>
+                  <option value="exclusive">Added on top</option>
+                </select>
               </div>
             </div>
             <div className="fgrp">

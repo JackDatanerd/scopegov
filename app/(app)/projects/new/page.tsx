@@ -85,6 +85,11 @@ function NewProjectPageInner() {
   const [projectDisc,  setProjectDisc]  = useState('')
   const [projectType,  setProjectType]  = useState<ProjectType>('web')
   const [contractValue, setContractValue] = useState('')
+  // Sales tax for THIS engagement, asked before drafting so the SOW states it and change orders and invoices start from it.
+  // Prefilled from the workspace's billing defaults; whatever is set here is what the contract says.
+  const [taxRateStr,       setTaxRateStr]       = useState('')
+  const [taxInclusive,     setTaxInclusive]     = useState(true)
+  const [taxTouched,       setTaxTouched]       = useState(false)
   const [currency,     setCurrency]     = useState('USD')
   const [startDate,    setStartDate]    = useState('')
   const [internalRef,  setInternalRef]  = useState('')
@@ -130,6 +135,18 @@ function NewProjectPageInner() {
     'Change orders drafted from flags',
     'Amendments tracked against original scope',
   ]
+
+  useEffect(() => {
+    if (taxTouched) return
+    fetch('/api/workspace/billing-defaults')
+      .then(r => (r.ok ? r.json() : null))
+      .then(j => {
+        if (!j || taxTouched) return
+        if (Number(j.taxRate) > 0) { setTaxRateStr(String(j.taxRate)); setTaxInclusive(j.taxInclusive !== false) }
+      })
+      .catch(() => { /* optional: the row simply starts empty */ })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   useEffect(() => {
     fetch('/api/clients').then(r => r.json()).then(json => {
@@ -455,6 +472,7 @@ function NewProjectPageInner() {
           paymentStructure: effStructure, revisionRounds: parseInt(revisionRounds),
           revisionNote: revisionNote.trim(),
           clientCompany: clientCompany.trim(), clientRepresentativeTitle: signerTitle.trim(),
+          taxRate: parseFloat(taxRateStr) || 0, taxInclusive,
           contractValue: parseFloat(contractValue) || 0, currency,
         }),
       })
@@ -644,13 +662,27 @@ function NewProjectPageInner() {
                 <input type="number" className="finp" value={contractValue} min={0} step="0.01" placeholder={projectType === 'retainer' ? '2500' : '5000'}
                   onChange={(e: React.ChangeEvent<HTMLInputElement>) => setContractValue(e.target.value)} />
                 <div className="fhint" style={{ marginTop: 4 }}>
-                  {describeBilling({ monthly: projectType === 'retainer', amount: contractValue, currency, termMonths: retainerMonths })}
+                  {describeBilling({ monthly: projectType === 'retainer', amount: contractValue, currency, termMonths: retainerMonths, tax: Number(taxRateStr) > 0 ? { rate: taxRateStr, inclusive: taxInclusive } : null })}
                 </div>
               </div>
               <div className="fgrp">
                 <label className="flbl">Currency</label>
                 <select className="finp" value={currency} onChange={(e: React.ChangeEvent<HTMLSelectElement>) => { setCurrencyTouched(true); setCurrency(e.target.value) }}>
                   {CURRENCIES.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </div>
+            </div>
+
+            <div className="fgrp">
+              <label className="flbl">Sales tax <span className="fhint">— optional, stated in the SOW and carried to change orders and invoices</span></label>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <input type="number" className="finp" style={{ maxWidth: 110 }} value={taxRateStr} min={0} max={100} step="0.001" placeholder="0"
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => { setTaxTouched(true); setTaxRateStr(e.target.value) }} />
+                <span style={{ fontSize: 13 }}>%</span>
+                <select className="finp" style={{ maxWidth: 190 }} value={taxInclusive ? 'inclusive' : 'exclusive'} disabled={!(Number(taxRateStr) > 0)}
+                  onChange={(e: React.ChangeEvent<HTMLSelectElement>) => { setTaxTouched(true); setTaxInclusive(e.target.value === 'inclusive') }}>
+                  <option value="inclusive">Included in the amount</option>
+                  <option value="exclusive">Added on top</option>
                 </select>
               </div>
             </div>
@@ -738,7 +770,7 @@ function NewProjectPageInner() {
               <input type="number" className="finp" value={contractValue} min={0} step="0.01" placeholder={projectType === 'retainer' ? '2500' : '5000'}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => setContractValue(e.target.value)} />
               <div className="fhint" style={{ marginTop: 4 }}>
-                {describeBilling({ monthly: projectType === 'retainer', amount: contractValue, currency, termMonths: retainerMonths })}
+                {describeBilling({ monthly: projectType === 'retainer', amount: contractValue, currency, termMonths: retainerMonths, tax: Number(taxRateStr) > 0 ? { rate: taxRateStr, inclusive: taxInclusive } : null })}
               </div>
             </div>
 
@@ -841,7 +873,7 @@ function NewProjectPageInner() {
                 <div><div style={{ fontSize: 11, color: 'var(--text-3)' }}>Client</div><div>{clientName || '—'}</div></div>
                 <div><div style={{ fontSize: 11, color: 'var(--text-3)' }}>Project</div><div>{projectName || '—'}</div></div>
                 <div><div style={{ fontSize: 11, color: 'var(--text-3)' }}>Type</div><div>{PROJECT_TYPES.find(pt => pt.key === projectType)?.label || projectType}</div></div>
-                <div><div style={{ fontSize: 11, color: 'var(--text-3)' }}>{projectType === 'retainer' ? 'Monthly retainer amount' : 'Contract value'}</div><div>{contractValue ? `${currency} ${contractValue}${projectType === 'retainer' ? '/mo' : ''}` : '—'}</div><div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>{describeBilling({ monthly: projectType === 'retainer', amount: contractValue, currency, termMonths: retainerMonths })}</div></div>
+                <div><div style={{ fontSize: 11, color: 'var(--text-3)' }}>{projectType === 'retainer' ? 'Monthly retainer amount' : 'Contract value'}</div><div>{contractValue ? `${currency} ${contractValue}${projectType === 'retainer' ? '/mo' : ''}` : '—'}</div><div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>{describeBilling({ monthly: projectType === 'retainer', amount: contractValue, currency, termMonths: retainerMonths, tax: Number(taxRateStr) > 0 ? { rate: taxRateStr, inclusive: taxInclusive } : null })}</div></div>
                 {/* FIX (re-audit, Projects & Dashboard section 7): this review
                     step — the explicit "last check before Guardian generates
                     the SOW" checkpoint — never showed start date, internal
