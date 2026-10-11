@@ -809,7 +809,7 @@ function NewProjectPageInner() {
                   </div>
                 </div>
                 <div className="fgrp">
-                  <label className="flbl">How revisions are counted <span className="fhint">— optional, e.g. "per post" or "per deliverable"</span></label>
+                  <label className="flbl">How revisions are counted <span className="fhint">— optional, e.g. &quot;per post&quot; or &quot;per deliverable&quot;</span></label>
                   <input className="finp" value={revisionNote} maxLength={200} placeholder="Leave blank to count rounds across the whole engagement"
                     onChange={(e: React.ChangeEvent<HTMLInputElement>) => setRevisionNote(e.target.value)} />
                 </div>

@@ -29,3 +29,9 @@ $1,200 project. And a SOW with no stated price was only refused on the brief ste
 
 tests/fee-meaning-and-signatory.test.ts (new, 10 tests). Full suite: 343 files / 3371 tests pass; tsc clean.
 Not covered by automated tests: the on-screen flow (try: new project, paste a brief with a monthly fee and no amount typed).
+
+BUILD FIX (also in this package): app/(app)/projects/new/page.tsx line ~812 had raw double quotes inside JSX text
+("per post" or "per deliverable"), which next lint rejects (react/no-unescaped-entities), failing the Vercel build for the
+earlier intake-billing commit. Now &quot;. `next lint` reports 0 errors and a full `next build` completes.
+Process change: every package is now checked with `next lint` and `next build` as well as tsc and the tests, since Vercel's
+build runs the linter and the tests do not.
