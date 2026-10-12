@@ -25,7 +25,7 @@ export default function CoEditor({ projId, coId }: Props) {
   const [loading,      setLoading]      = useState(!!coId)
   const [saving,       setSaving]       = useState(false)
   const [sending,      setSending]      = useState(false)
-  const [clientWarn,   setClientWarn]   = useState<{ info: ClientDetailsInfo | null; agency: AgencyDetailsInfo | null; warnings: string[] } | null>(null)
+  const [clientWarn,   setClientWarn]   = useState<{ taxOnly?: boolean; info: ClientDetailsInfo | null; agency: AgencyDetailsInfo | null; warnings: string[] } | null>(null)
   const [error,        setError]        = useState('')
   const [saveStatus,   setSaveStatus]   = useState<'idle'|'saving'|'saved'|'error'>('idle')
   const [title,        setTitle]        = useState('')
@@ -367,7 +367,7 @@ export default function CoEditor({ projId, coId }: Props) {
         // Only a fixed-term retainer has a term to extend.
         renewalTermMonths: isRetainerRenewal && !retainerOpenEnded && renewalTermMonths.trim() !== '' ? parseInt(renewalTermMonths, 10) : null,
         timelineImpactDays: !retainerOpenEnded && timelineImpactDays.trim() !== '' ? timelineImpactDays.trim() : null,
-        revisedDeliveryDate: !retainerOpenEnded && revisedDeliveryDate.trim() !== '' ? revisedDeliveryDate.trim() : null,
+        revisedDeliveryDate: !(retainerOpenEnded && isRetainerRenewal) && revisedDeliveryDate.trim() !== '' ? revisedDeliveryDate.trim() : null,
         scopeImpactNote:    scopeImpactNote.trim() || null,
       }
       // Another save is still creating this CO — wait for it, then update that row rather than creating a second.
@@ -449,8 +449,8 @@ export default function CoEditor({ projId, coId }: Props) {
         body: JSON.stringify({ expiresInDays: parseInt(expiresInDays, 10) || 30, ...(alreadyAcknowledged ? { acknowledgeWarnings: true } : {}) }),
       })
       const json = await res.json().catch(() => ({} as any))
-      if (res.status === 409 && json.needsAcknowledgement && (json.clientDetails || json.agencyDetails)) {
-        setClientWarn({ info: json.clientDetails || null, agency: json.agencyDetails || null, warnings: Array.isArray(json.warnings) && json.warnings.length ? json.warnings : [json.error] })
+      if (res.status === 409 && json.needsAcknowledgement && (json.clientDetails || json.agencyDetails || json.taxBasisWarning)) {
+        setClientWarn({ taxOnly: !json.clientDetails && !json.agencyDetails, info: json.clientDetails || null, agency: json.agencyDetails || null, warnings: Array.isArray(json.warnings) && json.warnings.length ? json.warnings : [json.error] })
         return
       }
       if (!res.ok) throw new Error(json.error || 'Send failed')
@@ -634,7 +634,7 @@ export default function CoEditor({ projId, coId }: Props) {
             placeholder="e.g. NorthPoints API integration added as in-scope; see Appendix A-1" />
         </div>
 
-        {!retainerOpenEnded && (<>
+        {!retainerOpenEnded && (
         <div className="fgrp">
           <label className="flbl">Timeline impact <span className="fhint">— optional, net day shift this CO introduces</span></label>
           <input className="finp" type="number" step="1" style={{ maxWidth: 160 }} disabled={isLocked}
@@ -642,14 +642,18 @@ export default function CoEditor({ projId, coId }: Props) {
             onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTimelineImpactDays(e.target.value)}
             placeholder="e.g. 18 or -5" />
         </div>
+        )}
 
+        {(!retainerOpenEnded || !isRetainerRenewal) && (
         <div className="fgrp">
-          <label className="flbl">Revised delivery date <span className="fhint">— optional, the new date when the timeline moves</span></label>
+          {retainerOpenEnded
+            ? <label className="flbl">Delivery date <span className="fhint">— optional, when this one-time work will be delivered</span></label>
+            : <label className="flbl">Revised delivery date <span className="fhint">— optional, the new date when the timeline moves</span></label>}
           <input className="finp" type="date" style={{ maxWidth: 200 }} disabled={isLocked}
             value={revisedDeliveryDate}
             onChange={(e: React.ChangeEvent<HTMLInputElement>) => setRevisedDeliveryDate(e.target.value)} />
         </div>
-        </>)}
+        )}
 
         {/* Line items */}
         {financialsHidden ? (
@@ -774,17 +778,25 @@ export default function CoEditor({ projId, coId }: Props) {
           </p>
         )}
         {projectType === 'retainer' && (
-          <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: isCredit ? 'not-allowed' : 'pointer', fontSize: 13, color: 'var(--text-2)', marginBottom: 20, opacity: isCredit ? 0.5 : 1 }}>
-            <input type="checkbox" checked={isRetainerRenewal} disabled={isLocked || isCredit}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) => { void onToggleMonthlyRate(e.target.checked) }}
-              style={{ accentColor: 'var(--green)' }} />
-            This changes the monthly rate (a renewal, or extra monthly work)
-          </label>
+          <fieldset style={{ border: 'none', padding: 0, margin: '0 0 20px', opacity: isCredit ? 0.5 : 1 }}>
+            <legend className="flbl" style={{ padding: 0, marginBottom: 6 }}>What does this change order do?</legend>
+            {([
+              { monthly: false, label: 'One-time fee', hint: 'Billed once, as its own invoice. The monthly retainer stays exactly as it is.' },
+              { monthly: true,  label: 'Changes the monthly fee', hint: 'Extra monthly work, or a renewal. The total becomes the new monthly rate from acceptance.' },
+            ] as const).map(opt => (
+              <label key={opt.label} style={{ display: 'flex', alignItems: 'flex-start', gap: 8, cursor: (isLocked || isCredit) ? 'not-allowed' : 'pointer', fontSize: 13, color: 'var(--text-2)', marginBottom: 6 }}>
+                <input type="radio" name="co-retainer-kind" checked={isRetainerRenewal === opt.monthly} disabled={isLocked || isCredit}
+                  onChange={() => { void onToggleMonthlyRate(opt.monthly) }}
+                  style={{ accentColor: 'var(--green)', marginTop: 3 }} />
+                <span><strong style={{ fontWeight: 600 }}>{opt.label}</strong><br /><span style={{ fontSize: 11, color: 'var(--text-3)' }}>{opt.hint}</span></span>
+              </label>
+            ))}
+          </fieldset>
         )}
         {projectType === 'retainer' && isRetainerRenewal && (
           <p style={{ fontSize: 11, color: 'var(--text-3)', margin: '-8px 0 14px 24px' }}>
             The first line is the current monthly retainer; add what is new below it. The total becomes the new monthly rate from
-            acceptance. Leave this unticked for a one-time fee, which is billed once as its own invoice.
+            acceptance.
           </p>
         )}
         {projectType === 'retainer' && isRetainerRenewal && !retainerOpenEnded && (
@@ -828,7 +840,7 @@ export default function CoEditor({ projId, coId }: Props) {
 
       {clientWarn && (
         <ClientDetailsWarningModal
-          info={clientWarn.info} agency={clientWarn.agency} warnings={clientWarn.warnings} docLabel="change order" busy={sending}
+          info={clientWarn.info} agency={clientWarn.agency} warnings={clientWarn.warnings} taxOnly={clientWarn.taxOnly} docLabel="change order" busy={sending}
           onCancel={() => setClientWarn(null)}
           onSendAnyway={async () => { await handleSend(true); setClientWarn(null) }}
         />

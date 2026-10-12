@@ -70,7 +70,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const { data: sow } = await (service as any)
       .from('sow_documents')
       .select(`id, version, status, sections, metadata, expires_at, project_id, workspace_id, document_number,
-        projects(id, name, disc, currency, contract_value, type, retainer_duration_months, client_id, created_by, guardian_email,
+        projects(id, name, disc, currency, contract_value, type, retainer_duration_months, start_date, client_id, created_by, guardian_email,
           clients(name, email, cc_emails, company_name, billing_address, vat_number),
           workspaces(timezone, id, agency_name, brand_colour, logo_storage_path, agency_signature_data, agency_signatory_name, agency_signatory_title,
             first_sow_signed_at, legal_address, tax_id, phone, website))`)
@@ -282,7 +282,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     // ── 6. Create payment milestones from SOW metadata ────────
     await createSowMilestones(service, project.id, sow.id, sow.workspace_id, sow.metadata, project.contract_value, project.currency, sow.sections || [],
-      undefined, project.type)
+      undefined, project.type, project.start_date ?? null)
 
     // ── 6b. Fingerprint what was agreed ───────────────────────
     // SHA-256 over the exact content the client signed (sections incl. tables, metadata,

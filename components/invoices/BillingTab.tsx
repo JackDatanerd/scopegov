@@ -46,7 +46,7 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
   const [voidingId, setVoidingId] = useState<string | null>(null)
   const [paymentsOpenId, setPaymentsOpenId] = useState<string | null>(null)
   const [busyId, setBusyId]       = useState<string | null>(null)
-  const [clientWarn, setClientWarn] = useState<{ id: string; info: ClientDetailsInfo | null; agency: AgencyDetailsInfo | null; warnings: string[] } | null>(null)
+  const [clientWarn, setClientWarn] = useState<{ id: string; taxOnly?: boolean; info: ClientDetailsInfo | null; agency: AgencyDetailsInfo | null; warnings: string[] } | null>(null)
   const [error, setError]         = useState('')
 
   if (!permissions.viewFinancials) {
@@ -190,8 +190,8 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
         body: JSON.stringify(alreadyAcknowledged ? { acknowledgeWarnings: true } : {}),
       })
       const j = await res.json().catch(() => ({}))
-      if (res.status === 409 && j.needsAcknowledgement && (j.clientDetails || j.agencyDetails)) {
-        setClientWarn({ id, info: j.clientDetails || null, agency: j.agencyDetails || null, warnings: Array.isArray(j.warnings) && j.warnings.length ? j.warnings : [j.error] })
+      if (res.status === 409 && j.needsAcknowledgement && (j.clientDetails || j.agencyDetails || j.taxBasisWarning)) {
+        setClientWarn({ id, taxOnly: !j.clientDetails && !j.agencyDetails, info: j.clientDetails || null, agency: j.agencyDetails || null, warnings: Array.isArray(j.warnings) && j.warnings.length ? j.warnings : [j.error] })
         return
       }
       if (!res.ok) throw new Error(j.error || 'Failed to send invoice')
@@ -316,7 +316,7 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
       {error && <div className="auth-error" style={{ marginBottom: 16 }}>{error}</div>}
       {clientWarn && (
         <ClientDetailsWarningModal
-          info={clientWarn.info} agency={clientWarn.agency} warnings={clientWarn.warnings} docLabel="invoice" busy={busyId === clientWarn.id}
+          info={clientWarn.info} agency={clientWarn.agency} warnings={clientWarn.warnings} taxOnly={clientWarn.taxOnly} docLabel="invoice" busy={busyId === clientWarn.id}
           onCancel={() => setClientWarn(null)}
           onSendAnyway={async () => { const id = clientWarn.id; await sendInvoice(id, true); setClientWarn(null) }}
         />
@@ -896,7 +896,13 @@ function CreateInvoiceModal({ projectId, projectCurrency, milestones, sows, cos,
         // against a milestone required retyping tax terms and a due date
         // the system already had on file. Same failure pattern as the
         // payment-instructions field before that got wired to Settings.
-        setDueDate(m.due_date || defaultDue)
+        // The contract's payment period ("due within N days of issue") is a floor: a milestone date that falls EARLIER than that
+        // (a retainer row stamped with the signing day, say) must not make the invoice due sooner than the SOW allows, so the
+        // later of the two wins. A milestone with no date, or a workspace with no standard term, behaves as before.
+        {
+          const ms = m.due_date ? String(m.due_date).slice(0, 10) : ''
+          setDueDate(ms && defaultDue ? (ms > defaultDue ? ms : defaultDue) : (ms || defaultDue))
+        }
         // payment_milestones.tax_rate is NOT NULL DEFAULT 0 and nothing in the product sets it, so a
         // milestone's 0% means "no tax terms of its own", not "tax-free on purpose": fall back to the
         // workspace's billing defaults, and only let a milestone that really carries a rate win.

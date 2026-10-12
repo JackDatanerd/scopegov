@@ -176,8 +176,11 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     if (isOpenEndedRetainer(co.projects)) {
       // no delivery date exists to move on an open-ended retainer
       if ('timeline_impact_days' in update) update.timeline_impact_days = null
-      if ('revised_delivery_date' in update) update.revised_delivery_date = null
+      // A delivery date is kept for one-time work; a monthly-rate change (renewal) has none.
+      if ('revised_delivery_date' in update && effIsRenewal) update.revised_delivery_date = null
     }
+    // Switching a CO TO a monthly-rate change drops a delivery date it may already carry (open-ended retainer only).
+    if (isOpenEndedRetainer(co.projects) && effIsRenewal && isRetainerRenewal === true && !('revised_delivery_date' in update)) update.revised_delivery_date = null
     if (note !== undefined)               update.note = sanitizeRichTextOrNull(note)
     if (isRetainerRenewal !== undefined)  update.is_retainer_renewal = isRetainerRenewal
     if (isCredit !== undefined)           update.is_credit = isCredit

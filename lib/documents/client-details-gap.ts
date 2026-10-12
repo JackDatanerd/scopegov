@@ -3,6 +3,7 @@
 // Used as an acknowledgeable warning (never a hard block) — see the SOW and CO send routes.
 
 import type { LegalAddress } from '@/lib/utils/format'
+import { loadTaxBasisWarning } from '@/lib/documents/tax-basis-gap'
 
 function filled(v: unknown): boolean {
   return typeof v === 'string' && v.trim().length > 0
@@ -64,16 +65,24 @@ export function agencyDetailsGaps(ws: { legal_address?: LegalAddress | null; age
 
 const DOC_NAME: Record<SendDocKind, string> = { sow: 'SOW', co: 'change order', invoice: 'invoice' }
 
-export async function loadSendDetailsWarnings(service: any, workspaceId: string, clientId: string | null | undefined, kind: SendDocKind) {
+// `tax` (invoice / change order only): the document's own tax terms, compared with the tax the engagement's SOW states.
+export async function loadSendDetailsWarnings(
+  service: any, workspaceId: string, clientId: string | null | undefined, kind: SendDocKind,
+  tax?: { projectId: string | null | undefined; taxRate: unknown; taxInclusive: unknown },
+) {
   const clientDetails = await loadClientDetailsWarning(service, workspaceId, clientId)
   let agencyDetails: AgencyDetailsInfo | null = null
   const { data: ws, error } = await service
     .from('workspaces').select('legal_address, agency_signature_data, agency_signatory_name').eq('id', workspaceId).maybeSingle()
   if (!error && ws) agencyDetails = agencyDetailsGaps(ws, kind)
-  if (!clientDetails && !agencyDetails) return null
+  const taxBasisWarning = tax && kind !== 'sow'
+    ? await loadTaxBasisWarning(service, tax.projectId, kind === 'co' ? 'change order' : 'invoice', tax)
+    : null
+  if (!clientDetails && !agencyDetails && !taxBasisWarning) return null
   const doc = DOC_NAME[kind]
   const messages: string[] = []
+  if (taxBasisWarning) messages.push(taxBasisWarning)
   if (agencyDetails) messages.push(`Your agency has no ${agencyDetails.missing.join(' or ')} on file, so the ${doc} will go out without it.`)
   if (clientDetails) messages.push(`${clientDetails.clientName} has no ${clientDetails.missing.join(' or ')} on file, so the ${doc} will go out without it.`)
-  return { clientDetails, agencyDetails, messages }
+  return { clientDetails, agencyDetails, taxBasisWarning, messages }
 }

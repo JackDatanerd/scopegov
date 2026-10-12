@@ -16,7 +16,7 @@ export interface AgencyDetailsInfo {
 }
 
 export default function ClientDetailsWarningModal({
-  info, agency, warnings, docLabel, busy, onSendAnyway, onCancel,
+  info, agency, warnings, docLabel, busy, onSendAnyway, onCancel, taxOnly,
 }: {
   info?: ClientDetailsInfo | null
   agency?: AgencyDetailsInfo | null
@@ -25,6 +25,8 @@ export default function ClientDetailsWarningModal({
   busy?: boolean
   onSendAnyway: () => void
   onCancel: () => void
+  // Only a tax-basis mismatch is being flagged (no missing details): different heading and closing line.
+  taxOnly?: boolean
 }) {
   return (
     <div role="dialog" aria-modal="true" aria-labelledby="cdw-title"
@@ -37,7 +39,7 @@ export default function ClientDetailsWarningModal({
         <div style={{ fontSize: 13, color: 'var(--text-2)', lineHeight: 1.6 }}>
           {warnings.map((w, i) => <p key={i} style={{ margin: '0 0 8px' }}>{w}</p>)}
           <p style={{ margin: '8px 0 0' }}>
-            Add them now so your {docLabel} is complete, or send it as is.
+            {taxOnly ? `Correct the tax setting on your ${docLabel} first, or send it as it is.` : `Add them now so your ${docLabel} is complete, or send it as is.`}
           </p>
         </div>
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap', marginTop: 20 }}>

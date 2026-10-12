@@ -60,10 +60,10 @@ describe('B1 — payment structure must agree with how the project is billed', (
     const gen = read('app/api/sow/generate/route.ts')
     expect(gen).toMatch(/structureForProject\(project\.type, requestedStructure\)/)
     expect(gen).toMatch(/paymentStructureError\(project\.type, paymentStructure\)/)
-    expect(read('app/api/portal/sow/[token]/sign/route.ts')).toMatch(/undefined, project\.type\)/)
+    expect(read('app/api/portal/sow/[token]/sign/route.ts')).toMatch(/undefined, project\.type, project\.start_date/)
     const integrity = read('lib/documents/signing-integrity.ts')
-    expect(integrity).toMatch(/currency, type, guardian_email/)
-    expect(integrity).toMatch(/project\.type,\n\s*\)/)
+    expect(integrity).toMatch(/currency, type, start_date, guardian_email/)
+    expect(integrity).toMatch(/project\.type, project\.start_date \?\? null,\n\s*\)/)
   })
   it('signing creates only the monthly row for a retainer, whatever structure the SOW carries', () => {
     expect(read('lib/documents/post-signing.ts')).toMatch(/projectType === 'retainer' \? 'monthly' : \(metadata\?\.paymentStructure \|\| '50_50'\)/)

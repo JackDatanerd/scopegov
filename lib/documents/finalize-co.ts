@@ -28,7 +28,8 @@ import { computeContentHash, storeExecutedPdf } from '@/lib/documents/executed-p
 import { isAdjustmentLine } from '@/lib/utils/rescale-line-items'
 import { parseStoredLineItems } from '@/lib/documents/co-totals'
 import { coPdfFilename } from '@/lib/documents/co-pdf-name'
-import { getContractValueBefore, coNetImpact } from '@/lib/documents/co-contract-value'
+import { resolveCoSignerTitle } from '@/lib/documents/signer-title'
+import { getContractValueBefore, coNetImpact, retainerMonthlyNetForOneTimeCo } from '@/lib/documents/co-contract-value'
 import { createHash } from 'node:crypto'
 import { isTerminalStatus } from '@/lib/utils/project-status'
 import { findSignedSow, SIGNED_SOW_LOOKUP_FAILED } from '@/lib/documents/signed-sow'
@@ -67,7 +68,7 @@ export async function finalizeCoAcceptance(service: any, params: {
   expectedStatus: string | string[]
 }) {
   const { co, signerName, signatureData, source, signerIp, expectedStatus } = params
-  const signerTitle = params.signerTitle || null
+  const signerTitle = await resolveCoSignerTitle(service, co.project_id, params.signerTitle || null, signerName)
   const signerCompany = params.signerCompany || null
   const project = co.projects
   const client  = project.clients
@@ -398,6 +399,7 @@ export async function finalizeCoAcceptance(service: any, params: {
     const contractValueBefore = isRenewal
       ? previousContractValue
       : await getContractValueBefore(service, co.project_id, co.id, project.contract_value != null ? Number(project.contract_value) : null, { project })
+    const retainerMonthlyNet = await retainerMonthlyNetForOneTimeCo(service, co.project_id, project, { isRenewal, isCredit: !!co.is_credit })
     // FIX (section-12 trace — bug, CO side): the executed copy never got the workspace timezone, so its
     // "Accepted" and "Generated" dates printed in UTC (a CO accepted 00:00-03:00 EAT showed the previous day)
     // while every later download printed them in the workspace's zone. Looked up here because the callers'
@@ -448,6 +450,7 @@ export async function finalizeCoAcceptance(service: any, params: {
       scopeImpactNote:    co.scope_impact_note || null,
       sowNumber:          signedSow.document_number || null,
       contractValueBefore,
+      retainerMonthlyNet,
       isRetainerRenewal:  isRenewal,
       revisedContractValue,
       renewalTermMonths:  isRenewal ? renewalTermForDocument(co, project) : null,

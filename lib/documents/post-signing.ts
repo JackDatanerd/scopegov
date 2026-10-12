@@ -11,6 +11,7 @@
 // and each of these can fail on its own after the signature has already been recorded. They report their
 // outcome so the caller can log it AND so the repair sweep can tell what is missing and redo just that.
 
+import { firstRetainerMonth, retainerMonthKey, retainerMonthLabel } from '@/lib/documents/retainer-period'
 import { logAudit } from '@/lib/utils/audit'
 import { parseTableAmount, milestoneName } from '@/lib/sow/table-schema'
 import { roundCurrency } from '@/lib/utils/format'
@@ -129,6 +130,8 @@ export async function createSowMilestones(
   // whatever structure the SOW carries, signing creates ONLY the signing month's retainer row — any other structure
   // here would add a second set of milestones on top of the cron's monthly ones (the signing month billed twice).
   projectType?: string | null,
+  // The engagement's start date. A retainer's first monthly fee pays for the month it starts in (lib/documents/retainer-period.ts).
+  startDate?: string | null,
 ): Promise<{ ok: boolean; error?: string }> {
   try {
     const structure = projectType === 'retainer' ? 'monthly' : (metadata?.paymentStructure || '50_50')
@@ -172,7 +175,17 @@ export async function createSowMilestones(
       // this row still suppresses a second one for the same month.
       const signedOn = signedAt ?? new Date()
       const signingDay = `${signedOn.getUTCFullYear()}-${String(signedOn.getUTCMonth() + 1).padStart(2, '0')}-${String(signedOn.getUTCDate()).padStart(2, '0')}`
-      milestones.push({ title: 'Monthly retainer', amount: roundCurrency(contractValue), trigger: 'Monthly — first of month', type: 'retainer_monthly', percentage: null, dueDate: signingDay })
+      // The first fee pays for the month the engagement STARTS in, named on the row so the invoice states its service period. When
+      // that month is after the signing month the row is due on its first day (the monthly job then counts that month as billed
+      // and does not add a second one).
+      const firstMonth = firstRetainerMonth(signedOn, startDate)
+      const signingMonthKey = retainerMonthKey({ year: signedOn.getUTCFullYear(), month0: signedOn.getUTCMonth() })
+      const firstKey = retainerMonthKey(firstMonth)
+      const label = retainerMonthLabel(firstMonth)
+      milestones.push({
+        title: `Monthly retainer — ${label}`, amount: roundCurrency(contractValue), trigger: `Monthly retainer payment — ${label}`,
+        type: 'retainer_monthly', percentage: null, dueDate: firstKey === signingMonthKey ? signingDay : `${firstKey}-01`,
+      })
     } else if (structure === 'milestones') {
       // FIX (section-9 audit, real bug — now genuinely fixed): 'milestones'
       // is a selectable payment structure (the SOW boilerplate literally

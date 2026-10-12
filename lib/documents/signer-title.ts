@@ -20,3 +20,27 @@ export function resolveSignerTitle(input: {
   if (title && rep && rep === norm(input.signerName)) return title
   return null
 }
+
+/**
+ * The same rule for a change order. A CO is signed by the person the SOW names, but the CO's signature block only printed what was
+ * typed into the optional title box, so the SOW said "Faith Christine, Director" and the change order just "Faith Christine". The
+ * position named in the project's signed SOW (else its newest SOW) is used when the signer is that person. Never throws: a failed
+ * lookup leaves the title as entered.
+ */
+export async function resolveCoSignerTitle(
+  service: any, projectId: string | null | undefined, entered: string | null | undefined, signerName: string | null | undefined,
+): Promise<string | null> {
+  const typed = typeof entered === 'string' ? entered.trim() : ''
+  if (typed) return typed
+  if (!projectId || !signerName) return null
+  try {
+    const { data } = await service.from('sow_documents')
+      .select('status, metadata, created_at').eq('project_id', projectId)
+    const rows = [...(data || [])].sort((a: any, b: any) => (a?.status === 'signed' ? 0 : 1) - (b?.status === 'signed' ? 0 : 1) || String(b?.created_at ?? '').localeCompare(String(a?.created_at ?? '')))
+    for (const r of rows) {
+      const title = resolveSignerTitle({ entered: null, signerName, metadata: r?.metadata })
+      if (title) return title
+    }
+  } catch { /* leave the title as entered */ }
+  return null
+}

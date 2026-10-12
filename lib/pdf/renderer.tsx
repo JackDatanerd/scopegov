@@ -161,6 +161,8 @@ export interface CoPdfData {
   // assumed contract_value itself already accumulated prior COs, which it
   // never has — that's tracked in the separate `amendments` table instead).
   contractValueBefore?: number | null
+  // One-time change order on an open-ended retainer: the monthly retainer (net of tax), stated instead of a contract value.
+  retainerMonthlyNet?: number | null
   // Retainer renewal: the CO REPLACES the monthly rate rather than adding to a contract value, so the
   // Impact block shows current → new rate instead of "original + this change order".
   isRetainerRenewal?: boolean
@@ -215,7 +217,7 @@ export interface InvoicePdfData {
   sentAt?:      string | null
   paymentInstructions?: string | null
   payments:     Array<{ amount: number; paidAt: string; method: string; referenceNote?: string | null }>
-  contractPosition?: { contractedValue: number; invoicedToDate: number; paidToDate: number; excludesTax?: boolean; unbilledChangeOrders?: number } | null
+  contractPosition?: { contractedValue: number; invoicedToDate: number; paidToDate: number; excludesTax?: boolean; unbilledChangeOrders?: number; openEndedRetainer?: boolean } | null
   // Cross-references (doc-quality audit round 2) — the underlying
   // sow_id/co_id FKs already existed on `invoices`, just weren't being
   // read into the PDF. Mirrors Meridian sample's "For services rendered
@@ -756,7 +758,8 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
   // timeline or scope impact with no financial component at all.
   const hasScopeImpact    = !!data.scopeImpactNote
   const hasTimelineImpact = (data.timelineImpactDays != null && data.timelineImpactDays !== 0) || !!data.revisedDeliveryDate
-  const hasValueImpact    = data.contractValueBefore != null
+  const oneTimeOnRetainer = data.retainerMonthlyNet != null
+  const hasValueImpact    = data.contractValueBefore != null || oneTimeOnRetainer
   // CO-1: a renewal's term is a binding part of what the client signs, so it is stated in its own row (independent of the
   // value block, which needs a known "before" figure) and is enough on its own to produce the Impact Analysis section.
   const renewalTerm = data.isRetainerRenewal && (data.renewalTermMonths || 0) > 0 ? Number(data.renewalTermMonths) : null
@@ -902,7 +905,7 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
               )}
               {data.revisedDeliveryDate && (
                 <View style={s.impactRow}>
-                  <Text style={{ color: '#909090' }}>Revised delivery date</Text>
+                  <Text style={{ color: '#909090' }}>{oneTimeOnRetainer ? 'Delivery date' : 'Revised delivery date'}</Text>
                   <Text style={s.mono}>{fd(data.revisedDeliveryDate)}</Text>
                 </View>
               )}
@@ -912,7 +915,19 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
                   <Text style={s.mono}>Extended by {formatRenewalTerm(renewalTerm)}</Text>
                 </View>
               )}
-              {hasValueImpact && revisedValue != null && (
+              {oneTimeOnRetainer && (
+                <View style={(hasScopeImpact || hasTimelineImpact || renewalTerm != null) ? { marginTop: 6, paddingTop: 6, borderTop: '1 solid #F2F0EA' } : undefined}>
+                  <View style={s.impactRow}>
+                    <Text style={{ color: '#909090' }}>Monthly retainer (unchanged){exTax}</Text>
+                    <Text style={s.mono}>{data.currency} {fm(data.retainerMonthlyNet!)}</Text>
+                  </View>
+                  <View style={s.impactGrand}>
+                    <Text>One-time fee, billed once{exTax}</Text>
+                    <Text style={{ fontFamily: PDF_FONT.bold, color: c }}>+{data.currency} {fm(netChange)}</Text>
+                  </View>
+                </View>
+              )}
+              {!oneTimeOnRetainer && hasValueImpact && revisedValue != null && (
                 <View style={(hasScopeImpact || hasTimelineImpact || renewalTerm != null) ? { marginTop: 6, paddingTop: 6, borderTop: '1 solid #F2F0EA' } : undefined}>
                   <View style={s.impactRow}>
                     <Text style={{ color: '#909090' }}>{isRenewalDoc ? 'Current Monthly Rate' : `Original Contract Value${exTax}`}</Text>
@@ -1259,10 +1274,12 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
         {data.contractPosition && data.status !== 'void' && (
           <View style={s.section}>
             <Text style={s.secTitle}>Contract position</Text>
-            <View style={s.cpRow}>
-              <Text>Contracted value{data.contractPosition.excludesTax ? ' (excl. tax)' : ''}</Text>
-              <Text style={{ fontFamily: PDF_FONT.sans }}>{data.currency} {fmtInv(data.contractPosition.contractedValue)}</Text>
-            </View>
+            {!data.contractPosition.openEndedRetainer && (
+              <View style={s.cpRow}>
+                <Text>Contracted value{data.contractPosition.excludesTax ? ' (excl. tax)' : ''}</Text>
+                <Text style={{ fontFamily: PDF_FONT.sans }}>{data.currency} {fmtInv(data.contractPosition.contractedValue)}</Text>
+              </View>
+            )}
             <View style={s.cpRow}>
               <Text>Invoiced to date (incl. this invoice{data.contractPosition.excludesTax ? ', excl. tax' : ''})</Text>
               <Text style={{ fontFamily: PDF_FONT.sans }}>{data.currency} {fmtInv(data.contractPosition.invoicedToDate)}</Text>
@@ -1274,18 +1291,26 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
             {/* "Remaining to invoice", not "remaining contract value": the figure is what is still to be BILLED (contracted less
                 invoiced), not an amount owed. When part of it is an approved change order nobody has invoiced yet, say so on its own
                 line, so the reader can tell the SOW's instalments from the change order and the agency can see what is unbilled. */}
-            <View style={[s.cpRow, { borderTop: '1 solid #F2F0EA', paddingTop: 6, marginTop: 2 }]}>
-              <Text style={{ color: '#1A1A1A' }}>Remaining to invoice{data.contractPosition.excludesTax ? ' (excl. tax)' : ''}</Text>
-              <Text style={{ fontFamily: PDF_FONT.bold, color: '#1A1A1A' }}>
-                {data.currency} {fmtInv(cpRemaining)}
-              </Text>
-            </View>
-            {cpUnbilledCo > 0 && (
-              <View style={[s.cpRow, { paddingTop: 0 }]}>
-                <Text style={{ color: '#909090', fontSize: 9 }}>   of which approved change orders not yet invoiced</Text>
-                <Text style={{ fontFamily: PDF_FONT.sans, color: '#909090', fontSize: 9 }}>{data.currency} {fmtInv(cpUnbilledCo)}</Text>
+            {/* An open-ended retainer has no contract total, so there is no \"remaining\"; only what is approved but not yet billed. */}
+            {!data.contractPosition.openEndedRetainer && (
+              <View style={[s.cpRow, { borderTop: '1 solid #F2F0EA', paddingTop: 6, marginTop: 2 }]}>
+                <Text style={{ color: '#1A1A1A' }}>Remaining to invoice{data.contractPosition.excludesTax ? ' (excl. tax)' : ''}</Text>
+                <Text style={{ fontFamily: PDF_FONT.bold, color: '#1A1A1A' }}>
+                  {data.currency} {fmtInv(cpRemaining)}
+                </Text>
               </View>
             )}
+            {(data.contractPosition.openEndedRetainer ? r2(data.contractPosition.unbilledChangeOrders || 0) : cpUnbilledCo) > 0 && (() => {
+              const net = data.contractPosition!.openEndedRetainer ? r2(data.contractPosition!.unbilledChangeOrders || 0) : cpUnbilledCo
+              // The client is billed the tax-inclusive figure: show it beside the net one when tax is charged on top.
+              const gross = data.contractPosition!.excludesTax && (data.taxRate ?? 0) > 0 ? r2(net * (1 + (data.taxRate ?? 0) / 100)) : null
+              return (
+                <View style={[s.cpRow, data.contractPosition!.openEndedRetainer ? { borderTop: '1 solid #F2F0EA', paddingTop: 6, marginTop: 2 } : { paddingTop: 0 }]}>
+                  <Text style={{ color: '#909090', fontSize: 9 }}>{data.contractPosition!.openEndedRetainer ? 'Approved change orders not yet invoiced' : '   of which approved change orders not yet invoiced'}{data.contractPosition!.excludesTax ? ' (excl. tax)' : ''}</Text>
+                  <Text style={{ fontFamily: PDF_FONT.sans, color: '#909090', fontSize: 9 }}>{data.currency} {fmtInv(net)}{gross != null ? ` (${data.currency} ${fmtInv(gross)} incl. tax)` : ''}</Text>
+                </View>
+              )
+            })()}
           </View>
         )}
 

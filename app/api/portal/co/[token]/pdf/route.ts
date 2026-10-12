@@ -12,7 +12,8 @@ import { coWatermarkLabel } from '@/lib/pdf/co-watermark'
 import { coPdfFilename } from '@/lib/documents/co-pdf-name'
 import { parseStoredLineItems } from '@/lib/documents/co-totals'
 import { getWorkspaceJwtSecret, isWorkspaceDeleted } from '@/lib/utils/workspace-secret'
-import { getContractValueBefore } from '@/lib/documents/co-contract-value'
+import { resolveCoSignerTitle } from '@/lib/documents/signer-title'
+import { getContractValueBefore, retainerMonthlyNetForOneTimeCo } from '@/lib/documents/co-contract-value'
 import { renewalTermForDocument } from '@/lib/documents/co-renewal-term'
 import { fetchExecutedPdf } from '@/lib/documents/executed-pdf'
 import { sanitizeRichTextOrNull } from '@/lib/utils/sanitize'
@@ -149,6 +150,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const contractValueBefore = await getContractValueBefore(
       service, co.project_id, co.id, project?.contract_value ?? null, { isRenewal: isRenewalCo, project }
     )
+    const retainerMonthlyNet = await retainerMonthlyNetForOneTimeCo(service, co.project_id, project, { isRenewal: isRenewalCo, isCredit: !!co.is_credit })
 
     const pdfBuffer = await renderCoPdf({
       timeZone: ws?.timezone,
@@ -182,7 +184,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       currency:      project?.currency || 'USD',
       status:        co.status,
       acceptedBy:    co.accepted_by,
-      clientSignerTitle:   co.accepted_by_title || null,
+      clientSignerTitle:   co.accepted_at ? await resolveCoSignerTitle(service, co.project_id, co.accepted_by_title, co.accepted_by) : (co.accepted_by_title || null),
       clientSignerCompany: co.accepted_by_company || null,
       acceptedAt:    co.accepted_at,
       agencySignatureData: ws?.agency_signature_data || null,
@@ -192,6 +194,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       documentNumber: co.document_number || null,
       sowNumber:     sow?.document_number || null,
       contractValueBefore,
+      retainerMonthlyNet,
       isRetainerRenewal: isRenewalCo,
       renewalTermMonths: isRenewalCo ? renewalTermForDocument(co, project) : null,
       revisedContractValue: isRenewalCo ? monthlyRateFromCo(co) : null,

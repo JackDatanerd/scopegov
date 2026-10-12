@@ -3,6 +3,7 @@ export const runtime = 'nodejs'
 export const maxDuration = 60
 
 import { isOpenEndedRetainer } from '@/lib/documents/co-retainer'
+import { normalizeDraftQuantity } from '@/lib/documents/co-draft-quantity'
 import { MAX_DESCRIPTION_LEN } from '@/lib/documents/co-totals'
 import { isRealLookupFailure } from '@/lib/documents/co-lookup'
 import { createServiceClient } from '@/lib/supabase/server'
@@ -158,7 +159,7 @@ Rules:
 - Break the work into 1-4 clear, specific line items — not one vague catch-all line.
 - Never set a dollar rate. Pricing always comes from the agency, not the model.
 - Only include work that is genuinely NOT already covered by "Already in scope" above.
-- quantity should reflect a sensible unit (e.g. hours, pages, revisions) — default to 1 if unclear.
+- quantity is how many times the line's fee applies. One document, brief, report or shortlist is quantity 1, however many items it contains; put that limit in the description (for example \"up to 15 candidates\"), never in the quantity. Use a quantity above 1 only when each unit is a real repeated unit (hours, posts, candidates contacted) and the description says what one unit is (\"per candidate\"). Default to 1 if unclear.
 - Keep title and note client-facing and professional — no internal jargon.
 - Write note and scopeImpact in the third person, as a contract would: refer to "the Provider" and "the Client" and never use "we", "us", "you" or "your".
 - Any quantity named in note or scopeImpact (pages, rounds, hours) must equal the line-item quantities exactly. Never write "a round" or "one" when a line item says 2. If a line item adds revision rounds, say they are in addition to any revision rounds already included in the SOW.
@@ -200,9 +201,11 @@ Rules:
     // pricing comes from the agency, never the model.
     const lineItems = (Array.isArray(parsed.lineItems) ? parsed.lineItems : []).slice(0, 6).map(l => {
       const q = Number(l?.quantity)
+      const description = truncateText(sanitizePlainText(String(l?.description ?? '')), MAX_DESCRIPTION_LEN)
       return {
-        description: truncateText(sanitizePlainText(String(l?.description ?? '')), MAX_DESCRIPTION_LEN),
-        quantity: Number.isFinite(q) && q > 0 && q <= 10_000 ? q : 1,
+        description,
+        // One named deliverable is one unit, whatever limit its description states ("up to 15 candidates").
+        quantity: normalizeDraftQuantity(description, Number.isFinite(q) && q > 0 && q <= 10_000 ? q : 1),
         rate: 0,
       }
     }).filter(l => l.description)

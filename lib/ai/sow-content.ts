@@ -243,8 +243,19 @@ export function applyAgencyStandards(
     const missing = clauses.filter(c => !existing.includes(norm(c)))
     if (missing.length) out[id] = `${out[id] || ''}<ul>${missing.map(c => `<li>${escapeHtml(c)}</li>`).join('')}</ul>`
   }
+  // Sentence-level: the model often already wrote a standard sentence in its own words ("...7 days overdue, and resumes once
+  // paid."). Comparing the whole standard, punctuation included, missed that and printed the sentence twice, so only the
+  // sentences whose text is not already in the section are appended.
+  const stripEnd = (t: string) => t.replace(/[\s.!?;:,]+$/g, '')
   const addParagraph = (id: string, text: string) => {
-    if (text && !norm(out[id] || '').includes(norm(text).slice(0, 80))) out[id] = `${out[id] || ''}<p>${escapeHtml(text)}</p>`
+    if (!text) return
+    const existing = norm(out[id] || '')
+    if (existing.includes(norm(text).slice(0, 80))) return
+    const missing = text.split(/(?<=[.!?])\s+/).map(x => x.trim()).filter(Boolean).filter(x => {
+      const n = stripEnd(norm(x))
+      return !n || !existing.includes(n)
+    })
+    if (missing.length) out[id] = `${out[id] || ''}<p>${escapeHtml(missing.join(' '))}</p>`
   }
   addList('oos', cleanClauses(standards.outOfScopeClauses))
   addList('assumptions', cleanClauses(standards.assumptions))
@@ -353,13 +364,18 @@ export function structureInstalments(structure: string, contractValue: number): 
 /** Prompt lines stating how tax applies, with the exact figures the Payment Terms must carry. Empty when no tax applies. */
 export function taxPromptBlock(input: SowContentInput): string {
   const tax = input.tax
-  if (!tax || !(tax.rate > 0) || input.retainer) return ''
+  if (!tax || !(tax.rate > 0)) return ''
   const cv = Number(input.contractValue)
   if (!Number.isFinite(cv) || cv <= 0) return ''
   const whole = splitTax(cv, tax)
   const money = (n: number) => formatMoneyText(input.currency, n)
+  // A retainer's stored value is the MONTHLY fee: the tax statement is per month, never against a contract total.
   const lines = [
-    tax.inclusive
+    input.retainer
+      ? (tax.inclusive
+        ? `Sales tax: ${tax.rate}% is INCLUDED in the monthly retainer fee. The monthly fee ${money(whole.gross)} includes ${money(whole.tax)} of tax (net ${money(whole.net)}).`
+        : `Sales tax: ${tax.rate}% is charged IN ADDITION to the monthly retainer fee. Monthly fee (excluding tax) ${money(whole.net)}; tax ${money(whole.tax)}; total payable each month including tax ${money(whole.gross)}.`)
+      : tax.inclusive
       ? `Sales tax: ${tax.rate}% is INCLUDED in the contract value. Contract value ${money(whole.gross)} includes ${money(whole.tax)} of tax (net ${money(whole.net)}).`
       : `Sales tax: ${tax.rate}% is charged IN ADDITION to the contract value. Contract value (excluding tax) ${money(whole.net)}; tax ${money(whole.tax)}; total payable including tax ${money(whole.gross)}.`,
   ]
@@ -379,11 +395,16 @@ export function taxPromptBlock(input: SowContentInput): string {
 /** One deterministic sentence for the Payment Terms: how tax applies. Empty when no tax applies. */
 export function taxSentenceHtml(input: SowContentInput): string {
   const tax = input.tax
-  if (!tax || !(tax.rate > 0) || input.retainer) return ''
+  if (!tax || !(tax.rate > 0)) return ''
   const cv = Number(input.contractValue)
   if (!Number.isFinite(cv) || cv <= 0) return ''
   const sp = splitTax(cv, tax)
   const money = (n: number) => escapeHtml(formatMoneyText(input.currency, n))
+  if (input.retainer) {
+    return tax.inclusive
+      ? `<p>The monthly retainer fee includes sales tax at ${tax.rate}% (${money(sp.tax)} of the ${money(sp.gross)} monthly fee).</p>`
+      : `<p>The monthly retainer fee is stated exclusive of sales tax. Sales tax at ${tax.rate}% (${money(sp.tax)} on the ${money(sp.net)} monthly fee) is added to each monthly invoice, for a total payable of ${money(sp.gross)} per month.</p>`
+  }
   return tax.inclusive
     ? `<p>All amounts include sales tax at ${tax.rate}% (${money(sp.tax)} of the ${money(sp.gross)} contract value).</p>`
     : `<p>All amounts are stated exclusive of sales tax. Sales tax at ${tax.rate}% (${money(sp.tax)} on the ${money(sp.net)} contract value) is added to each invoice, for a total payable of ${money(sp.gross)}.</p>`
@@ -487,7 +508,7 @@ const SCHEDULE_WORDS: Record<string, { upfront: string; final: string; full: str
 export function derivedScheduleRows(input: SowContentInput): SowTableRow[] {
   if (input.paymentStructure === 'milestones') return []
   const w = (isSowLanguage(input.language) ? SCHEDULE_WORDS[input.language] : undefined) || SCHEDULE_WORDS.en
-  const tax = input.tax && input.tax.rate > 0 && !input.retainer ? input.tax : null
+  const tax = input.tax && input.tax.rate > 0 ? input.tax : null
   const cv = Number(input.contractValue)
   if (!Number.isFinite(cv) || cv <= 0) return []
   const instalments = structureInstalments(input.paymentStructure, cv)
@@ -702,6 +723,10 @@ export function draftingRulesBlock(input: SowContentInput): string {
   lines.push('- If the scope brief names results the client wants to see (for example follower growth or traffic), name them in the Project Overview and in the reporting deliverable as measures that are tracked and reported. Never promise or guarantee them.')
   lines.push('- State precisely what each deliverable covers in its own acceptance criteria (for example "a caption for each published post") so that adjacent work is clearly not part of it. Do not add exclusions that are not in the out-of-scope brief.')
   lines.push('- State the payment period once. Never repeat it in a second sentence.')
+  if (input.retainer) {
+    lines.push('- This is a RETAINER. In the Deliverables table, a deliverable that recurs (weekly posting, monthly reporting, ongoing research) shows its cadence in the Target date cell as a short label such as \"Weekly\" or \"Monthly\", never a single calendar date; this overrides the Target date rule above for those rows. A calendar date is used only for one-off setup items (access, onboarding, supply of client materials), and it must be the same deadline the Assumptions state for that item.')
+    lines.push('- This is a RETAINER. Each monthly fee covers a full month starting on the start date. The Timeline must say what the first month includes (any onboarding period inside it) and must not describe the first posting period as starting later without saying why it is part of the first monthly fee. A report due a number of days after month end must not also carry a target date that is earlier than that.')
+  }
   return lines.join('\n')
 }
 
@@ -715,17 +740,34 @@ export function dedupePaymentPeriodSentences(paymentHtml: string, days: number |
   const dayRe = new RegExp(`\\b${d}\\s*(?:calendar\\s+)?days?\\b`, 'i')
   const dueRe = /\b(?:due|payable)\b/i
   const invRe = /\binvoices?\b/i
+  // The well-formed wording the deterministic sentence uses (\"within 14 days\" / \"net 14\"). A model sentence like
+  // \"Invoices are due 14 days of issue.\" states the period too, but badly: when a well-formed sentence exists it wins.
+  const wellFormedRe = new RegExp(`\\bwithin\\s+${d}\\s+(?:calendar\\s+)?days?\\b|\\bnet\\s*${d}\\b`, 'i')
+  const stating = (sent: string) => {
+    const text = sent.replace(/<[^>]+>/g, '')
+    return dayRe.test(text) && dueRe.test(text) && invRe.test(text)
+  }
+  const plain = (sent: string) => sent.replace(/<[^>]+>/g, '')
+  let preferred: string | null = null
+  paymentHtml.replace(/<p>([\s\S]*?)<\/p>/gi, (whole, inner: string) => {
+    if (preferred) return whole
+    for (const sent of inner.split(/(?<=[.!?])\s+/)) if (stating(sent) && wellFormedRe.test(plain(sent))) { preferred = sent; break }
+    return whole
+  })
   let seen = false
   return paymentHtml.replace(/<p>([\s\S]*?)<\/p>/gi, (whole, inner: string) => {
     const sentences = inner.split(/(?<=[.!?])\s+/)
     const kept: string[] = []
     for (const sent of sentences) {
-      const text = sent.replace(/<[^>]+>/g, '')
-      const states = dayRe.test(text) && dueRe.test(text) && invRe.test(text)
-      if (states) { if (seen) continue; seen = true }
+      if (stating(sent)) {
+        if (seen) continue
+        seen = true
+        // First statement is the badly worded one (and short enough to be only that statement): swap in the well-formed one.
+        if (preferred && !wellFormedRe.test(plain(sent)) && plain(sent).trim().split(/\s+/).length <= 12) { kept.push(preferred); continue }
+      }
       kept.push(sent)
     }
-    if (kept.length === sentences.length) return whole
+    if (kept.length === sentences.length && kept.every((k, n) => k === sentences[n])) return whole
     const joined = kept.join(' ').trim()
     return joined ? `<p>${joined}</p>` : ''
   })

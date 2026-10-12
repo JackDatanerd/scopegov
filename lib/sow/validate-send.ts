@@ -215,8 +215,13 @@ export function validateSowForSend(input: {
   const taxRate = Number(input.metadata?.taxRate)
   if (paymentText && Number.isFinite(taxRate) && taxRate > 0) {
     const rate = String(taxRate).replace('.', '\\.')
-    if (!new RegExp(`${rate}\\s*%`).test(paymentText))
-      warnings.push(`Invoices will add ${taxRate}% tax, but the Payment Terms text never mentions it. State how tax applies so the signed SOW and the invoices agree.`)
+    if (!new RegExp(`${rate}\\s*%`).test(paymentText)) {
+      // The wording follows the basis this SOW froze: \"add\" is only true when tax is charged on top of the fee.
+      const inclusive = input.metadata?.taxInclusive === true
+      warnings.push(inclusive
+        ? `Invoices will treat amounts as including ${taxRate}% tax, but the Payment Terms text never mentions it. State that the fee includes tax so the signed SOW and the invoices agree.`
+        : `Invoices will add ${taxRate}% tax on top of the fee, but the Payment Terms text never mentions it. State how tax applies so the signed SOW and the invoices agree.`)
+    }
   }
 
   // Late fee: change orders and invoices under this SOW will quote it, so the SOW itself has to state it.

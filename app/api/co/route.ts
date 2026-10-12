@@ -250,7 +250,8 @@ export async function POST(request: NextRequest) {
         // where this surfaces to the client.
         // An open-ended retainer has no delivery date to move, so a timeline impact on its change order would be a false claim.
         timeline_impact_days: isOpenEndedRetainer(project) ? null : (parsedFields.fields.timelineImpactDays ?? null),
-        revised_delivery_date: isOpenEndedRetainer(project) ? null : (parsedFields.fields.revisedDeliveryDate ?? null),
+        // ...but a ONE-TIME piece of work on it still has a delivery date; only a monthly-rate change has none.
+        revised_delivery_date: isOpenEndedRetainer(project) && isRetainerRenewal === true ? null : (parsedFields.fields.revisedDeliveryDate ?? null),
         scope_impact_note:    parsedFields.fields.scopeImpactNote ?? null,
         created_by:   session.id,
       })

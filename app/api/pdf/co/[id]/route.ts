@@ -12,7 +12,8 @@ import { coPdfFilename } from '@/lib/documents/co-pdf-name'
 import { parseStoredLineItems } from '@/lib/documents/co-totals'
 import { canReadProject } from '@/lib/utils/project-access'
 import { sanitizeRichTextOrNull } from '@/lib/utils/sanitize'
-import { getContractValueBefore } from '@/lib/documents/co-contract-value'
+import { resolveCoSignerTitle } from '@/lib/documents/signer-title'
+import { getContractValueBefore, retainerMonthlyNetForOneTimeCo } from '@/lib/documents/co-contract-value'
 import { renewalTermForDocument } from '@/lib/documents/co-renewal-term'
 import { fetchExecutedPdf } from '@/lib/documents/executed-pdf'
 
@@ -97,6 +98,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const contractValueBefore = await getContractValueBefore(
       service, co.project_id, co.id, co.projects?.contract_value ?? null, { isRenewal: isRenewalCo, project: co.projects }
     )
+    const retainerMonthlyNet = await retainerMonthlyNetForOneTimeCo(service, co.project_id, co.projects, { isRenewal: isRenewalCo, isCredit: !!co.is_credit })
 
     const pdfBuffer = await renderCoPdf({
       timeZone: ws?.timezone,
@@ -143,7 +145,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       version:     co.version ?? null,
       isCredit:    !!co.is_credit,
       acceptedBy:  co.accepted_by || undefined,
-      clientSignerTitle:   co.accepted_by_title || null,
+      clientSignerTitle:   co.accepted_at ? await resolveCoSignerTitle(service, co.project_id, co.accepted_by_title, co.accepted_by) : (co.accepted_by_title || null),
       clientSignerCompany: co.accepted_by_company || null,
       acceptedAt:  co.accepted_at || undefined,
       agencySignatureData: ws?.agency_signature_data || null,
@@ -153,6 +155,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       documentNumber: co.document_number || null,
       sowNumber:   sow?.document_number || null,
       contractValueBefore,
+      retainerMonthlyNet,
       // A retainer renewal replaces the monthly rate; it is not "original value + this CO".
       isRetainerRenewal: isRenewalCo,
       renewalTermMonths: isRenewalCo ? renewalTermForDocument(co, co.projects) : null,

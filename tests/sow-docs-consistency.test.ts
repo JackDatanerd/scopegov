@@ -84,8 +84,10 @@ describe('Tax reaches the drafted Payment Terms', () => {
   it('fallback Payment Terms state tax too', () => {
     expect(buildFallbackSections(base).payment).toContain('8.25%')
   })
-  it('does not apply to retainers or non-English documents', () => {
-    expect(taxSentenceHtml({ ...base, retainer: { months: 6 } })).toBe('')
+  it('applies to retainers (stated per month) but not to non-English documents', () => {
+    const s = taxSentenceHtml({ ...base, retainer: { months: 6 } })
+    expect(s).toMatch(/monthly retainer fee/)
+    expect(s).toMatch(/per month|monthly fee/)
     expect(ensureTaxStated('<p>x</p>', { ...base, language: 'es' })).toBe('<p>x</p>')
   })
 })

@@ -39,6 +39,8 @@ export interface ContractPosition {
   atRiskValue: number
   /** Net value of approved change orders no live invoice has billed yet (already inside contractedValue; part of what is still to invoice). */
   unbilledChangeOrderValue?: number
+  /** A retainer with no end date: "contracted" is the months billed so far, a figure that moves every month, so documents do not print it. */
+  openEndedRetainer?: boolean
 }
 
 /** The invoice-document shape of a position (agency PDF, portal page, portal PDF): one definition so the three routes cannot drift. */
@@ -48,6 +50,7 @@ export interface InvoiceContractPosition {
   paidToDate: number
   excludesTax?: boolean
   unbilledChangeOrders?: number
+  openEndedRetainer?: boolean
 }
 
 export function toInvoiceContractPosition(position: ContractPosition): InvoiceContractPosition {
@@ -56,7 +59,8 @@ export function toInvoiceContractPosition(position: ContractPosition): InvoiceCo
     // Contract figures are net of tax; show cash on the same basis and say so (a net "invoiced" beside a gross "paid" read as paid > invoiced).
     ? { contractedValue: position.contractedValue, invoicedToDate: position.invoicedToDate, paidToDate: position.paidToDateNet ?? position.paidToDate, excludesTax: true }
     : { contractedValue: position.contractedValue, invoicedToDate: position.invoicedToDate, paidToDate: position.paidToDate }
-  return unbilled > 0 ? { ...base, unbilledChangeOrders: unbilled } : base
+  const withUnbilled = unbilled > 0 ? { ...base, unbilledChangeOrders: unbilled } : base
+  return position.openEndedRetainer ? { ...withUnbilled, openEndedRetainer: true } : withUnbilled
 }
 
 const CHUNK = 100 // ids per .in() — keeps the request URL well under proxy limits
@@ -132,6 +136,7 @@ export async function computeContractPositions(
           project.type,
         ),
         atRiskValue:     openCos.filter((c: any) => c.project_id === id).reduce((s: number, c: any) => s + (Number(c.total) || 0), 0),
+        ...(project.type === 'retainer' && !(Number(project.retainer_duration_months) > 0) ? { openEndedRetainer: true } : {}),
       })
     }
   }

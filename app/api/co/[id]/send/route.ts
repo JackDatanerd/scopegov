@@ -33,7 +33,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // whole query (42703), which silently surfaces as "CO not found".
     const { data: co, error: coFetchErr } = await (service as any)
       .from('change_orders')
-      .select(`id,title,status,total,line_items,version,root_co_id,project_id,is_retainer_renewal,renewal_term_months,is_credit,
+      .select(`id,title,status,total,line_items,version,root_co_id,project_id,is_retainer_renewal,renewal_term_months,is_credit,tax_rate,tax_inclusive,
         projects(id,name,status,currency,type,retainer_duration_months,client_id)`)
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
@@ -121,11 +121,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     // Courtesy check: warn (acknowledgeable) when the client's billing address is empty.
     if (reqBody?.acknowledgeWarnings !== true) {
-      const details = await loadSendDetailsWarnings(service, session.workspaceId, project.client_id, 'co')
+      const details = await loadSendDetailsWarnings(service, session.workspaceId, project.client_id, 'co', { projectId: project.id, taxRate: co.tax_rate, taxInclusive: co.tax_inclusive })
       if (details) {
         return NextResponse.json({
           error: details.messages[0], warnings: details.messages, needsAcknowledgement: true,
-          clientDetails: details.clientDetails, agencyDetails: details.agencyDetails,
+          clientDetails: details.clientDetails, agencyDetails: details.agencyDetails, taxBasisWarning: details.taxBasisWarning,
         }, { status: 409 })
       }
     }

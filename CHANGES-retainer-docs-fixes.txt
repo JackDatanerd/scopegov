@@ -1,0 +1,30 @@
+Retainer documents: tax basis, change orders, invoices, billing period
+=====================================================================
+
+SOW
+- Retainer SOWs now state tax (Payment Terms sentence, prompt, Payment Schedule row), per month, on the basis the SOW froze.
+- Send warning wording follows the basis ("add ... on top" vs "treat amounts as including").
+- "Invoices are due 14 days of issue": the dedupe kept the model's malformed sentence and dropped the correct one; it now keeps the
+  well-formed one in place.
+- Duplicate work-pause sentence: agency standards are merged sentence by sentence, punctuation-insensitive.
+- Retainer drafting rules: recurring deliverables show a cadence (Weekly/Monthly) not a one-off date; the first month's coverage is stated.
+
+Tax basis guard
+- Invoices and change orders whose tax differs from the signed SOW's basis (rate, or included vs on top) raise an acknowledgeable
+  warning at send (lib/documents/tax-basis-gap.ts), shown in the existing warning dialog.
+
+Change orders
+- Retainer COs: explicit choice "One-time fee" / "Changes the monthly fee" replaces the tick-box.
+- One-time CO on an open-ended retainer prints "Monthly retainer (unchanged)" + "One-time fee", not "Revised Contract Value".
+- One-time CO on an open-ended retainer keeps a delivery date (monthly-rate changes still have none).
+- AI draft: one named deliverable is quantity 1 (limit goes in the description).
+- Client signer title on the CO comes from the SOW's named representative when the signer is that person.
+
+Invoices / billing
+- Retainer billing is anchored on the month the engagement STARTS (later of signing month and start month), not the signing month:
+  a retainer signed Oct 12 to start Nov 1 no longer gets an October row plus a November row. The first row is titled with its
+  month, so the invoice states its service period.
+- A milestone's due date can no longer make an invoice due sooner than the workspace payment period.
+- Open-ended retainers: invoice no longer prints "Contracted value" / "Remaining to invoice"; unbilled approved COs show net and gross.
+
+Tests: tests/retainer-docs-fixes.test.ts (new); five existing tests updated for the intentional changes.

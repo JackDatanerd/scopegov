@@ -29,7 +29,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // (lib/documents/send-invoice.ts), same split as SOW/CO.
     const { data: invoice } = await (service as any)
       .from('invoices')
-      .select('id, title, amount, currency, status, due_date, payment_instructions, project_id, projects(id, name, client_id)')
+      .select('id, title, amount, currency, status, due_date, payment_instructions, project_id, tax_rate, tax_inclusive, projects(id, name, client_id)')
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!invoice) return NextResponse.json({ error: 'Invoice not found' }, { status: 404 })
@@ -57,11 +57,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // Courtesy check: the invoice prints the client's billing address. Warn (acknowledgeable) when it is empty.
     const reqBody = await request.json().catch(() => ({} as any))
     if (reqBody?.acknowledgeWarnings !== true) {
-      const details = await loadSendDetailsWarnings(service, session.workspaceId, project.client_id, 'invoice')
+      const details = await loadSendDetailsWarnings(service, session.workspaceId, project.client_id, 'invoice', { projectId: project.id, taxRate: invoice.tax_rate, taxInclusive: invoice.tax_inclusive })
       if (details) {
         return NextResponse.json({
           error: details.messages[0], warnings: details.messages, needsAcknowledgement: true,
-          clientDetails: details.clientDetails, agencyDetails: details.agencyDetails,
+          clientDetails: details.clientDetails, agencyDetails: details.agencyDetails, taxBasisWarning: details.taxBasisWarning,
         }, { status: 409 })
       }
     }

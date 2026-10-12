@@ -71,10 +71,12 @@ describe('wiring', () => {
   })
   it('the editor offers the monthly-rate change, shows the current rate first, and hides timeline fields on an open-ended retainer', () => {
     const src = read('components/co/CoEditor.tsx')
-    expect(src).toContain('This changes the monthly rate (a renewal, or extra monthly work)')
-    expect(src).toContain('onToggleMonthlyRate(e.target.checked)')
+    // an explicit two-way choice replaced the old tick-box
+    expect(src).toContain('Changes the monthly fee')
+    expect(src).toContain('One-time fee')
+    expect(src).toContain('onToggleMonthlyRate(opt.monthly)')
     expect(src).toContain('The first line is the current monthly retainer')
-    expect(src).toContain('{!retainerOpenEnded && (<>')
+    expect(src).toContain('{!retainerOpenEnded && (')
     expect(src).toContain('withCurrentRateLine(drafted, currentRate, nanoid())')
   })
   it('the CO PDF keeps its totals together and says the subtotal is before tax when lines include it', () => {

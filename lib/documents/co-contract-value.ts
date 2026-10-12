@@ -111,3 +111,20 @@ export function coNetImpact(co: { subtotal?: number | string | null; total?: num
   const sub = co.subtotal == null || co.subtotal === '' ? NaN : Number(co.subtotal)
   return Number.isFinite(sub) ? sub : Number(co.total) || 0
 }
+
+/**
+ * A one-time change order on an OPEN-ENDED retainer. Its "contract" is the months billed so far, a figure that moves every
+ * month, so "Revised Contract Value" means nothing there. The document states the monthly retainer (unchanged) and the one-time
+ * fee instead. Returns the monthly retainer NET of tax for that case, else null (every other CO keeps the contract-value block).
+ */
+export async function retainerMonthlyNetForOneTimeCo(
+  service: any, projectId: string,
+  project: { type?: string | null; retainer_duration_months?: number | string | null; contract_value?: number | string | null } | null | undefined,
+  flags: { isRenewal?: boolean; isCredit?: boolean },
+): Promise<number | null> {
+  if (!project || project.type !== 'retainer' || Number(project.retainer_duration_months) > 0) return null
+  if (flags.isRenewal || flags.isCredit) return null
+  const monthly = Number(project.contract_value)
+  if (!Number.isFinite(monthly) || monthly <= 0) return null
+  return netOfTax(monthly, await projectTaxBasis(service, projectId))
+}

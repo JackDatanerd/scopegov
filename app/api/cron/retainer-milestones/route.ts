@@ -3,6 +3,7 @@ export const runtime = 'nodejs'
 // payment-overdue and reconciliation-rollup carry this override for.
 export const maxDuration = 300
 
+import { firstRetainerMonth } from '@/lib/documents/retainer-period'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { verifyCronSecret } from '@/lib/utils/verify-cron'
@@ -53,7 +54,7 @@ export async function POST(request: NextRequest) {
     const retainers = await fetchAll<any>('retainer-milestones select', (from, to) =>
       (service as any)
         .from('projects')
-        .select('id, workspace_id, name, contract_value, currency, retainer_duration_months, created_at, sow_documents(id, status, signed_at), clients(name), workspaces!inner(deleted_at)')
+        .select('id, workspace_id, name, contract_value, currency, retainer_duration_months, start_date, created_at, sow_documents(id, status, signed_at), clients(name), workspaces!inner(deleted_at)')
         .eq('type', 'retainer')
         .eq('status', 'Active')
         .is('deleted_at', null)
@@ -71,8 +72,11 @@ export async function POST(request: NextRequest) {
         const duration: number | null = p.retainer_duration_months != null ? Number(p.retainer_duration_months) : null
         const openEnded    = duration == null
         const signedDate   = new Date(signedSow.signed_at)
-        const signedYear   = signedDate.getUTCFullYear()
-        const signedMonth0 = signedDate.getUTCMonth()
+        // The month the first fee pays for: the later of the signing month and the start month (see retainer-period.ts).
+        // A retainer signed in October to start in November is billed from November, and the signing row already covers it.
+        const firstMonth   = firstRetainerMonth(signedDate, p.start_date)
+        const signedYear   = firstMonth.year
+        const signedMonth0 = firstMonth.month0
         const monthsSigned = (year - signedYear) * 12 + (month - (signedMonth0 + 1))
 
         // ── 1. Generate (and backfill) milestones ─────────────────────────────────────────
