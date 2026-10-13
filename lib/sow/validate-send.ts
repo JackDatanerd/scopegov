@@ -148,6 +148,9 @@ export function validateSowForSend(input: {
     errors.push('Fill in the Out of Scope section before sending this SOW — it is what protects both sides from scope creep. Write "None" if nothing is excluded.')
   if (isBlankText(textOf(byId('payment')?.content)))
     errors.push('Fill in the Payment Terms section before sending this SOW.')
+  // The optional liability section is hidden unless it carries a clause; shown and empty would print a numbered heading with nothing under it.
+  if (byId('liability') && byId('liability').visible !== false && isBlankText(textOf(byId('liability')?.content)))
+    errors.push('The Limitation of Liability section is shown but empty. Add the clause, or hide the section, before sending this SOW.')
 
   // FIX (section-9 re-audit, independent pass): 'parties', 'governing_law' and
   // 'signature' are in REQUIRED_SECTION_IDS (lib/sow/sections.ts) — the editor

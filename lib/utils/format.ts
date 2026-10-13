@@ -309,7 +309,7 @@ const SOW_SECTION_LABELS: Record<string, string> = {
   oos: 'Out of Scope', assumptions: 'Assumptions & Dependencies',
   timeline: 'Timeline & Milestones', payment: 'Payment Terms',
   revisions: 'Revision Policy', ip: 'Intellectual Property',
-  confidentiality: 'Confidentiality', termination: 'Termination',
+  confidentiality: 'Confidentiality', termination: 'Termination', liability: 'Limitation of Liability',
   governing_law: 'Governing Law', dispute: 'Dispute Resolution', signature: 'Signature',
 }
 export function sowSectionLabel(key: string): string {

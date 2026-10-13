@@ -19,7 +19,7 @@ import { getPendingApprovalForDocument } from '@/lib/approvals/engine'
 import { logAudit } from '@/lib/utils/audit'
 import { sanitizeRichText, sanitizePlainText, truncateText } from '@/lib/utils/sanitize'
 import { isBlankText } from '@/lib/utils/client-input'
-import { applyAgencyStandards, ensureContractValueStated, ensureTaxStated, ensureLateFeeStated, ensurePaymentTermsDaysStated, dedupePaymentPeriodSentences, normalizePaymentTermsDays, ensureLiabilityCapStated, ensureApprovalSilenceStated, derivedScheduleRows, type AgencyStandards } from '@/lib/ai/sow-content'
+import { applyAgencyStandards, ensureContractValueStated, ensureTaxStated, ensureLateFeeStated, ensurePaymentTermsDaysStated, dedupePaymentPeriodSentences, normalizePaymentTermsDays, liabilityCapSectionHtml, ensureApprovalSilenceStated, derivedScheduleRows, type AgencyStandards } from '@/lib/ai/sow-content'
 import { workspaceTaxDefaults } from '@/lib/documents/tax-defaults'
 import { sowDateStyle } from '@/lib/utils/date-style'
 import { normalizeRevisionNote } from '@/lib/sow/brief-signals'
@@ -453,7 +453,8 @@ export async function POST(request: NextRequest) {
     allContent.payment = ensureLateFeeStated(allContent.payment, contentInput)
     allContent.payment = ensurePaymentTermsDaysStated(allContent.payment, contentInput)
     allContent.payment = dedupePaymentPeriodSentences(allContent.payment, contentInput.paymentTermsDays)
-    allContent.termination = ensureLiabilityCapStated(allContent.termination || '', contentInput)
+    // The limitation-of-liability clause is its own section (shown only when the workspace chose it), not a paragraph of Termination.
+    allContent.liability = liabilityCapSectionHtml(contentInput)
     allContent.revisions = ensureApprovalSilenceStated(allContent.revisions || '', contentInput)
 
     const parsed: { sections: any[]; metadata: any } = {
@@ -468,7 +469,7 @@ export async function POST(request: NextRequest) {
         // Every section is shown by default. payment_schedule used to be hidden for every structure except
         // 'milestones'; it now always carries rows (authored milestones, or the instalments derived from the
         // structure — see derivedScheduleRows), so there is never an empty section to hide.
-        visible: true,
+        visible: def.id === 'liability' ? !!allContent.liability : true,
         order: def.order,
       })),
       // Metadata is entirely server-derived from the request — never
@@ -582,6 +583,9 @@ export async function POST(request: NextRequest) {
         if (REQUIRED_SECTION_IDS.includes(sec.id)) return sec
         // Always visible and always populated (see above), so a manual hide on the old draft is not carried across.
         if (sec.id === 'payment_schedule') return sec
+        // Likewise derived: shown exactly when the regenerated draft carries the clause. A carried-over flag would show an empty
+        // heading after the setting was switched off, or hide a clause the agency has since turned on.
+        if (sec.id === 'liability') return sec
         const prior = oldVisibleById.get(sec.id)
         return typeof prior === 'boolean' ? { ...sec, visible: prior } : sec
       })

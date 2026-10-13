@@ -169,9 +169,12 @@ import { readFileSync } from 'fs'
 import { join } from 'path'
 describe('generate route wiring', () => {
   const src = readFileSync(join(process.cwd(), 'app/api/sow/generate/route.ts'), 'utf8')
-  it('every section is visible on a new SOW, including payment_schedule', () => {
+  it('every section is visible on a new SOW, including payment_schedule (the optional liability section shows only when it carries the clause)', () => {
     expect(src).not.toMatch(/visible:\s*def\.id === 'payment_schedule'/)
-    expect(src).toMatch(/visible: true,\s*\n\s*order: def\.order/)
+    expect(src).toMatch(/visible: def\.id === 'liability' \? !!allContent\.liability : true,\s*\n\s*order: def\.order/)
+  })
+  it("regenerating a draft derives the liability section's visibility instead of carrying a flag over", () => {
+    expect(src).toMatch(/if \(sec\.id === 'liability'\) return sec/)
   })
   it('freezes the tax setting into the SOW metadata', () => {
     expect(src).toContain('taxRate: taxDefaults.taxRate, taxInclusive: taxDefaults.taxInclusive')

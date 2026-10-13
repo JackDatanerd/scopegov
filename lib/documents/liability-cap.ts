@@ -9,8 +9,6 @@ export function normalizeLiabilityCap(value: unknown): LiabilityCap | null {
   return value === 'fees_paid' ? 'fees_paid' : null
 }
 
-export const LIABILITY_CAP_LEAD = 'Limitation of liability.'
-
 export function liabilityCapSentence(cap: LiabilityCap): string {
   switch (cap) {
     case 'fees_paid':

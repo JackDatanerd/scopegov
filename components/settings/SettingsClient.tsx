@@ -1093,7 +1093,7 @@ function WorkspaceTab({ form, setForm, permissions, onSave, saving, slugChangedA
             placeholder="e.g. 1.5" onChange={(e: React.ChangeEvent<HTMLInputElement>) => set('defaultLateFeeRate', e.target.value)} />
         </div>
         <div className="fgrp">
-          <label className="flbl">Limitation of liability <InfoTip text="Optional. When chosen, new SOWs include this standard clause in Termination. Wording is fixed by ScopeGov and is not legal advice: have a lawyer review it for your jurisdiction before relying on it. Leave on 'None' to add no clause." /></label>
+          <label className="flbl">Limitation of liability <InfoTip text="Optional. When chosen, new SOWs include this standard clause as its own Limitation of Liability section. Wording is fixed by ScopeGov and is not legal advice: have a lawyer review it for your jurisdiction before relying on it. Leave on 'None' to add no clause." /></label>
           <select className="finp" style={{ maxWidth: 420 }} value={form.defaultLiabilityCap}
             onChange={(e: React.ChangeEvent<HTMLSelectElement>) => set('defaultLiabilityCap', e.target.value)}>
             <option value="">None — don&apos;t add a clause</option>

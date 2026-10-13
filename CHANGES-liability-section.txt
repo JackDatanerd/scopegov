@@ -1,0 +1,20 @@
+Limitation of liability as its own numbered SOW section
+=======================================================
+
+No migration. The Settings option is unchanged; where the clause lands changed.
+
+- New SOW section "Limitation of Liability" between Termination and Governing Law (titles in all six languages). Governing Law,
+  Dispute Resolution and Signatures move down one slot in the section order.
+- Content is the same fixed, app-owned sentence (lib/documents/liability-cap.ts), now the section's whole body instead of a bold
+  run-in paragraph tacked onto Termination. English documents only. Never asked of the model and not offered for AI regeneration.
+- Shown only when the clause exists: visible on a new SOW exactly when the workspace chose it, hidden otherwise. Hidden sections take
+  no number (verified in a rendered PDF: Termination 13 -> Limitation of Liability 14 -> Governing Law 15, or 13 -> 14 without it).
+- Older SOWs (drafts and signed) are not rewritten. A draft that already has the clause inside Termination keeps it there. An SOW
+  with no liability row gets a hidden, empty one when read (defaultSectionVisible), so nothing new appears in a client's document.
+- Regenerating a draft derives the section's visibility from the current setting instead of carrying an old show/hide flag over
+  (a carried flag could show an empty heading after the setting was switched off).
+- Send validation: a shown-but-empty Limitation of Liability section blocks send with a clear message (hide it or add the clause).
+- Settings tooltip updated ("as its own Limitation of Liability section").
+
+Tests: tests/liability-cap.test.ts rewritten for the section; tests/sow-docs-consistency.test.ts updated for the intentional change.
+Full suite and tsc pass.

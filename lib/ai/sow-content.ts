@@ -37,7 +37,7 @@
 // malformed it's dropped, not fatal to the whole document.
 
 import { normalizeLateFeeRate, lateFeeContractSentence } from '@/lib/documents/late-fee'
-import { normalizeLiabilityCap, liabilityCapSentence, LIABILITY_CAP_LEAD, type LiabilityCap } from '@/lib/documents/liability-cap'
+import { normalizeLiabilityCap, liabilityCapSentence, type LiabilityCap } from '@/lib/documents/liability-cap'
 import { approvalSilenceSentence, APPROVAL_SILENCE_LEAD, type ApprovalSilence } from '@/lib/documents/approval-silence'
 import { escapeHtml, sanitizePlainText, truncateText } from '@/lib/utils/sanitize'
 import { isBlankText } from '@/lib/utils/client-input'
@@ -67,9 +67,12 @@ export const SOW_SECTION_DEFS: SowSectionDef[] = [
   { id: 'ip',              title: 'Intellectual Property',       order: 11 },
   { id: 'confidentiality', title: 'Confidentiality',             order: 12 },
   { id: 'termination',     title: 'Termination',                 order: 13 },
-  { id: 'governing_law',   title: 'Governing Law',               order: 14 },
-  { id: 'dispute',         title: 'Dispute Resolution',          order: 15 },
-  { id: 'signature',       title: 'Signatures',                  order: 16 },
+  // Optional limitation-of-liability clause (Settings). Deterministic, app-owned wording: never asked of the model, hidden unless
+  // the workspace chose the clause (see liabilityCapSectionHtml and lib/sow/sections.ts defaultSectionVisible).
+  { id: 'liability',       title: 'Limitation of Liability',     order: 14 },
+  { id: 'governing_law',   title: 'Governing Law',               order: 15 },
+  { id: 'dispute',         title: 'Dispute Resolution',          order: 16 },
+  { id: 'signature',       title: 'Signatures',                  order: 17 },
 ]
 
 // Table-driven sections (defined in lib/sow/table-schema.ts) — never
@@ -82,7 +85,7 @@ const TABLE_IDS: SowTableSectionId[] = ['deliverables', 'timeline', 'roles', 'pa
 // deliverables/timeline/roles are structured tables (see below).
 export const AI_SECTION_IDS = SOW_SECTION_DEFS
   .map(s => s.id)
-  .filter(id => !['parties', 'governing_law', 'signature', ...TABLE_IDS].includes(id))
+  .filter(id => !['parties', 'governing_law', 'signature', 'liability', ...TABLE_IDS].includes(id))
 
 export interface SowContentInput {
   agencyName: string
@@ -141,7 +144,7 @@ export interface SowContentInput {
   // How the brief counts revisions when it is not simply "N rounds" (e.g. "1 caption revision per post"). Described in the
   // Revision Policy ALONGSIDE the exact round count; it never changes that count.
   revisionNote?: string | null
-  // Optional limitation-of-liability clause chosen in settings; app-owned wording, appended deterministically to Termination.
+  // Optional limitation-of-liability clause chosen in settings; app-owned wording, the content of its own "Limitation of Liability" section.
   liabilityCap?: LiabilityCap | null
   // Optional "if the Client does not respond" rule chosen in settings; app-owned wording, appended deterministically to Revision Policy.
   approvalSilence?: ApprovalSilence | null
@@ -478,20 +481,11 @@ export function ensureLateFeeStated(paymentHtml: string, input: SowContentInput)
 }
 
 
-/** The fixed limitation-of-liability paragraph. Empty when none is chosen or the document isn't English. */
-export function liabilityCapHtml(input: SowContentInput): string {
+/** The fixed limitation-of-liability clause: the content of its own section. Empty when none is chosen or the document isn't English. */
+export function liabilityCapSectionHtml(input: SowContentInput): string {
   if (input.language && input.language !== 'en') return ''
   const cap = normalizeLiabilityCap(input.liabilityCap)
-  return cap ? `<p><strong>${LIABILITY_CAP_LEAD}</strong> ${escapeHtml(liabilityCapSentence(cap))}</p>` : ''
-}
-
-/** Append the chosen clause to the Termination text unless that exact clause is already there. */
-export function ensureLiabilityCapStated(terminationHtml: string, input: SowContentInput): string {
-  const clause = liabilityCapHtml(input)
-  if (!clause) return terminationHtml
-  const cap = normalizeLiabilityCap(input.liabilityCap)!
-  if (norm(terminationHtml).includes(norm(escapeHtml(liabilityCapSentence(cap))))) return terminationHtml
-  return `${terminationHtml}${clause}`
+  return cap ? `<p>${escapeHtml(liabilityCapSentence(cap))}</p>` : ''
 }
 
 /** The fixed client-review paragraph. Empty when none is chosen or the document isn't English. */
@@ -619,7 +613,7 @@ export const SOW_SECTION_TITLES: Record<string, Record<string, string>> = {
     oos: 'Fuera del Alcance', timeline: 'Cronograma e Hitos', roles: 'Funciones y Responsabilidades',
     assumptions: 'Supuestos y Dependencias', payment: 'Condiciones de Pago',
     payment_schedule: 'Calendario de Pagos', revisions: 'Política de Revisiones',
-    ip: 'Propiedad Intelectual', confidentiality: 'Confidencialidad', termination: 'Terminación',
+    ip: 'Propiedad Intelectual', confidentiality: 'Confidencialidad', termination: 'Terminación', liability: 'Limitación de Responsabilidad',
     governing_law: 'Ley Aplicable', dispute: 'Resolución de Controversias', signature: 'Firmas',
   },
   fr: {
@@ -627,7 +621,7 @@ export const SOW_SECTION_TITLES: Record<string, Record<string, string>> = {
     oos: 'Hors Périmètre', timeline: 'Calendrier et Jalons', roles: 'Rôles et Responsabilités',
     assumptions: 'Hypothèses et Dépendances', payment: 'Conditions de Paiement',
     payment_schedule: 'Échéancier de Paiement', revisions: 'Politique de Révision',
-    ip: 'Propriété Intellectuelle', confidentiality: 'Confidentialité', termination: 'Résiliation',
+    ip: 'Propriété Intellectuelle', confidentiality: 'Confidentialité', termination: 'Résiliation', liability: 'Limitation de Responsabilité',
     governing_law: 'Droit Applicable', dispute: 'Règlement des Litiges', signature: 'Signatures',
   },
   pt: {
@@ -635,7 +629,7 @@ export const SOW_SECTION_TITLES: Record<string, Record<string, string>> = {
     oos: 'Fora do Escopo', timeline: 'Cronograma e Marcos', roles: 'Funções e Responsabilidades',
     assumptions: 'Premissas e Dependências', payment: 'Condições de Pagamento',
     payment_schedule: 'Cronograma de Pagamentos', revisions: 'Política de Revisões',
-    ip: 'Propriedade Intelectual', confidentiality: 'Confidencialidade', termination: 'Rescisão',
+    ip: 'Propriedade Intelectual', confidentiality: 'Confidencialidade', termination: 'Rescisão', liability: 'Limitação de Responsabilidade',
     governing_law: 'Lei Aplicável', dispute: 'Resolução de Conflitos', signature: 'Assinaturas',
   },
   de: {
@@ -643,7 +637,7 @@ export const SOW_SECTION_TITLES: Record<string, Record<string, string>> = {
     oos: 'Nicht im Leistungsumfang', timeline: 'Zeitplan und Meilensteine', roles: 'Rollen und Verantwortlichkeiten',
     assumptions: 'Annahmen und Abhängigkeiten', payment: 'Zahlungsbedingungen',
     payment_schedule: 'Zahlungsplan', revisions: 'Überarbeitungsrichtlinie',
-    ip: 'Geistiges Eigentum', confidentiality: 'Vertraulichkeit', termination: 'Kündigung',
+    ip: 'Geistiges Eigentum', confidentiality: 'Vertraulichkeit', termination: 'Kündigung', liability: 'Haftungsbeschränkung',
     governing_law: 'Anwendbares Recht', dispute: 'Streitbeilegung', signature: 'Unterschriften',
   },
   sw: {
@@ -651,7 +645,7 @@ export const SOW_SECTION_TITLES: Record<string, Record<string, string>> = {
     oos: 'Nje ya Wigo', timeline: 'Ratiba na Hatua Muhimu', roles: 'Majukumu na Wajibu',
     assumptions: 'Mawazo na Mahitaji', payment: 'Masharti ya Malipo',
     payment_schedule: 'Ratiba ya Malipo', revisions: 'Sera ya Marekebisho',
-    ip: 'Haki Miliki', confidentiality: 'Usiri', termination: 'Kusitisha',
+    ip: 'Haki Miliki', confidentiality: 'Usiri', termination: 'Kusitisha', liability: 'Ukomo wa Dhima',
     governing_law: 'Sheria Inayotumika', dispute: 'Utatuzi wa Migogoro', signature: 'Saini',
   },
 }

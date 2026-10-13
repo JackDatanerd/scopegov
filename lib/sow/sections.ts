@@ -73,6 +73,17 @@ export const REQUIRED_SECTION_IDS = ['parties', 'deliverables', 'oos', 'payment'
  * unsendable with no in-app way out. Fill any missing section in on read
  * so the editor can always show the full, current document shape.
  */
+/**
+ * Whether a section that has no stored row (an older SOW) or no stored visibility starts shown. payment_schedule follows the payment
+ * structure; the optional liability section stays hidden until it carries a clause (older SOWs never had it, and an empty numbered
+ * heading in a client's document is worse than none).
+ */
+export function defaultSectionVisible(id: string, metadata: any): boolean {
+  if (id === 'payment_schedule') return metadata?.paymentStructure === 'milestones'
+  if (id === 'liability') return false
+  return true
+}
+
 export function hydrateSections(stored: any[], metadata: any): any[] {
   const byId = new Map((stored || []).map((s: any) => [s.id, s]))
   const lang = metadata?.language
@@ -117,7 +128,7 @@ export function hydrateSections(stored: any[], metadata: any): any[] {
       order: def.order,
       content: '',
       // Match the initial-visibility rule api/sow/generate applies.
-      visible: def.id === 'payment_schedule' ? metadata?.paymentStructure === 'milestones' : true,
+      visible: defaultSectionVisible(def.id, metadata),
       ...(isTableSection(def.id) ? { table: [] } : {}),
     }
   })
@@ -146,7 +157,7 @@ export function sanitizeSectionList(incoming: unknown, stored: any[], metadata?:
     // payment_schedule that contradicts the rule hydrateSections/generate use (visible only for a milestone
     // structure), so a whole-list write on a non-milestone legacy SOW switched on an empty "Payment Schedule —
     // To be defined" section in the client's document. Use the same default as hydrateSections.
-    const defaultVisible = def.id === 'payment_schedule' ? metadata?.paymentStructure === 'milestones' : true
+    const defaultVisible = defaultSectionVisible(def.id, metadata)
     const visible = REQUIRED_SECTION_IDS.includes(def.id)
       ? true
       : rawVisible !== undefined ? rawVisible : defaultVisible
