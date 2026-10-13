@@ -81,7 +81,9 @@ describe('wiring', () => {
   })
   it('the CO PDF keeps its totals together and says the subtotal is before tax when lines include it', () => {
     const src = read('lib/pdf/renderer.tsx')
-    expect(src).toContain('<View style={s.totals} wrap={false}>')
+    // the totals sit in an unbreakable block together with the last line item they add up
+    expect(src).toContain('The last line travels WITH the totals')
+    expect(src).toMatch(/<View wrap=\{false\}>[\s\S]{0,1200}<View style=\{s\.totals\}>/)
     expect(src).toContain("'Subtotal before tax'")
   })
 })

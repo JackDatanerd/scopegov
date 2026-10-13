@@ -449,6 +449,7 @@ export async function finalizeCoAcceptance(service: any, params: {
       revisedDeliveryDate: co.revised_delivery_date ?? null,
       scopeImpactNote:    co.scope_impact_note || null,
       sowNumber:          signedSow.document_number || null,
+      sowVersion:         signedSow.version ?? null,
       contractValueBefore,
       retainerMonthlyNet,
       isRetainerRenewal:  isRenewal,

@@ -900,7 +900,10 @@ function CreateInvoiceModal({ projectId, projectCurrency, milestones, sows, cos,
         // (a retainer row stamped with the signing day, say) must not make the invoice due sooner than the SOW allows, so the
         // later of the two wins. A milestone with no date, or a workspace with no standard term, behaves as before.
         {
-          const ms = m.due_date ? String(m.due_date).slice(0, 10) : ''
+          // A monthly-retainer row's date is the first day of the month it pays for (the billing-month anchor), not a payment
+          // deadline. Using it as the due date made the invoice fall due on the 1st whatever the SOW's \"within N days of invoice
+          // date\" says, so with a standard term set the due date comes from the term, like any other invoice. It stays editable.
+          const ms = m.type === 'retainer_monthly' && defaultDue ? '' : (m.due_date ? String(m.due_date).slice(0, 10) : '')
           setDueDate(ms && defaultDue ? (ms > defaultDue ? ms : defaultDue) : (ms || defaultDue))
         }
         // payment_milestones.tax_rate is NOT NULL DEFAULT 0 and nothing in the product sets it, so a

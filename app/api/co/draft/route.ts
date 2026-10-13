@@ -4,6 +4,7 @@ export const maxDuration = 60
 
 import { isOpenEndedRetainer } from '@/lib/documents/co-retainer'
 import { normalizeDraftQuantity } from '@/lib/documents/co-draft-quantity'
+import { isGenericScopeReference, stripInternalScopeLabels, ensureCappedQuantityBasis } from '@/lib/documents/co-draft-text'
 import { MAX_DESCRIPTION_LEN } from '@/lib/documents/co-totals'
 import { isRealLookupFailure } from '@/lib/documents/co-lookup'
 import { createServiceClient } from '@/lib/supabase/server'
@@ -34,7 +35,7 @@ const DRAFT_CO_TOOL = {
       },
       note: {
         type: 'string',
-        description: '1-2 sentence client-facing description of the change order. Professional tone, no internal jargon.',
+        description: '1-2 sentence client-facing REASON for the change order: the Client asked for this work, then what the Provider will do. Professional tone, no internal jargon; do not restate the line items.',
       },
       scopeImpact: {
         type: 'string',
@@ -121,7 +122,7 @@ export async function POST(request: NextRequest) {
       if (flag && flag.project_id === projectId) {
         flagContext = `\nThis originates from a Guardian scope flag:
 Flag severity: ${flag.severity}
-SOW reference this exceeds: ${flag.sow_reference}
+SOW reference this exceeds: ${isGenericScopeReference(flag.sow_reference) ? 'no specific SOW item was matched; name the relevant item or section yourself, by the title the SOW prints' : flag.sow_reference}
 Flag description (agency's summary, not the client's own words): ${flag.description}\n`
       }
     }
@@ -167,6 +168,10 @@ Rules:
 - If the work is listed under "Already excluded", say in scopeImpact that this change order brings it into scope by amending that exclusion, for the described work only; every other exclusion stays.
 - Costs paid to third parties (creator fees, ad spend, licenses, tools) are not part of the Provider's fee unless the request says so; say who bears them in the note.
 - A change order is billed once. Write every line item as a one-time fee and never use recurring wording (monthly, per month, recurring). Limits may be per month of the existing engagement (for example \"up to 4 posts\"), but the fee itself is one-time. For an ongoing engagement with no end date, leave timelineImpactDays null unless the request names a delay.
+- Never write a section label the SOW does not print (for example "General scope"). Name an item or section only by the title the SOW prints, such as "Out of Scope".
+- Describe an existing exclusion only in its own words. If the requested work goes beyond what that exclusion's text covers (for example the exclusion names influencers but the request also asks for affiliate partners), say this change order adds that extra work to scope as additional work, and amends the exclusion only for the part it covers. Never claim an exclusion lists something it does not.
+- When a line item's limit is "up to N" and its quantity is N, say in the description that the fee covers the full quantity of N whether or not all are used.
+- note is the REASON for the change. Open with the Client's request (who asked for the work and, in one sentence, what for), then one sentence on what the Provider will do and who bears any third-party cost. Do not list the line items again.
 - scopeImpact should name the specific deliverable or SOW section this falls outside of, quoting the section by its printed title (for example the "Out of Scope" section), not just restate the note.`
 
     // createWithTool: some models (e.g. a newer ANTHROPIC_MODEL) reject a forced tool_choice with a 400 — it retries
@@ -201,11 +206,13 @@ Rules:
     // pricing comes from the agency, never the model.
     const lineItems = (Array.isArray(parsed.lineItems) ? parsed.lineItems : []).slice(0, 6).map(l => {
       const q = Number(l?.quantity)
-      const description = truncateText(sanitizePlainText(String(l?.description ?? '')), MAX_DESCRIPTION_LEN)
+      const rawDescription = sanitizePlainText(String(l?.description ?? ''))
+      // One named deliverable is one unit, whatever limit its description states ("up to 15 candidates").
+      const quantity = normalizeDraftQuantity(rawDescription, Number.isFinite(q) && q > 0 && q <= 10_000 ? q : 1)
+      const description = truncateText(ensureCappedQuantityBasis(rawDescription, quantity), MAX_DESCRIPTION_LEN)
       return {
         description,
-        // One named deliverable is one unit, whatever limit its description states ("up to 15 candidates").
-        quantity: normalizeDraftQuantity(description, Number.isFinite(q) && q > 0 && q <= 10_000 ? q : 1),
+        quantity,
         rate: 0,
       }
     }).filter(l => l.description)
@@ -226,8 +233,8 @@ Rules:
 
     return NextResponse.json({
       title:              truncateText(sanitizePlainText(String(parsed.title ?? '')), 200),
-      note:               truncateText(sanitizePlainText(String(parsed.note ?? '')), 2000),
-      scopeImpact:        parsed.scopeImpact ? truncateText(sanitizePlainText(String(parsed.scopeImpact)), 1000) : null,
+      note:               truncateText(stripInternalScopeLabels(sanitizePlainText(String(parsed.note ?? ''))), 2000),
+      scopeImpact:        parsed.scopeImpact ? truncateText(stripInternalScopeLabels(sanitizePlainText(String(parsed.scopeImpact))), 1000) || null : null,
       timelineImpactDays: !isOpenEndedRetainer(project) && Number.isInteger(days) && days >= MIN_CO_TIMELINE_DAYS && days <= MAX_CO_TIMELINE_DAYS ? days : null,
       lineItems,
     })

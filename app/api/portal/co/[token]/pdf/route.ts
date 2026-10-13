@@ -140,7 +140,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 
     const { data: sow } = await (service as any)
       .from('sow_documents')
-      .select('document_number, metadata')
+      .select('document_number, version, metadata')
       .eq('project_id', co.project_id)
       .eq('status', 'signed')
       .order('version', { ascending: false })
@@ -193,6 +193,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       clientSignatureData: co.client_signature_data || null,
       documentNumber: co.document_number || null,
       sowNumber:     sow?.document_number || null,
+      sowVersion:    sow?.version ?? null,
       contractValueBefore,
       retainerMonthlyNet,
       isRetainerRenewal: isRenewalCo,

@@ -1,4 +1,5 @@
 'use client'
+import { invoiceLineSubtext } from '@/lib/pdf/invoice-line'
 import { useState, useEffect } from 'react'
 import { useParams } from 'next/navigation'
 import PortalShell from '@/components/portal/PortalShell'
@@ -255,9 +256,9 @@ export default function InvoicePortalPage() {
                 {invoice.poNumber && <div style={{ fontSize: 11, color: '#909090', marginTop: 4 }}>PO {invoice.poNumber}</div>}
               </div>
             </div>
-            {invoice.milestoneTrigger && (
+            {invoiceLineSubtext(invoice.title, invoice.milestoneTrigger) && (
               <div style={{ fontSize: 12, color: '#909090', marginTop: -12, marginBottom: 20 }}>
-                Billed upon: {invoice.milestoneTrigger}
+                {(invoiceLineSubtext(invoice.title, invoice.milestoneTrigger) || '').startsWith('Service period') ? '' : 'Billed upon: '}{invoiceLineSubtext(invoice.title, invoice.milestoneTrigger)}
               </div>
             )}
           </div>

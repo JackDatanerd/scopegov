@@ -19,7 +19,7 @@ import { PDF_FONT, sanitizeForPdf } from '@/lib/pdf/fonts'
 import { mapPdfSymbols } from '@/lib/pdf/pdf-symbols'
 import { formatRenewalTerm } from '@/lib/documents/co-renewal-term'
 import { coWatermarkLabel, CO_STATUS_LABEL } from '@/lib/pdf/co-watermark'
-import { invoiceSingleLineAmount } from '@/lib/pdf/invoice-line'
+import { invoiceSingleLineAmount, invoiceLineSubtext } from '@/lib/pdf/invoice-line'
 import { formatRate } from '@/lib/utils/money'
 import { dateStyleForCountry, englishDateLocale } from '@/lib/utils/date-style'
 import { lateFeeReminder } from '@/lib/documents/late-fee'
@@ -153,6 +153,8 @@ export interface CoPdfData {
   // no direct FK from change_orders to sow_documents), so it's best-effort
   // and simply omitted if the project has no signed SOW on file.
   sowNumber?:   string | null
+  /** Version of the signed SOW this change order amends (the SOW itself is never edited: the CO names the version it amends). */
+  sowVersion?:  number | null
   // Original/Revised contract value block (Meridian's "Impact Analysis"
   // equivalent). contractValueBefore is the project's base contract value
   // plus every OTHER previously-accepted CO's amount — see
@@ -223,6 +225,8 @@ export interface InvoicePdfData {
   // read into the PDF. Mirrors Meridian sample's "For services rendered
   // under SOW No. X" / "as amended by Change Order No. Y" lines.
   sowNumber?:   string | null
+  /** Version of the signed SOW this change order amends (the SOW itself is never edited: the CO names the version it amends). */
+  sowVersion?:  number | null
   coNumber?:    string | null
   /** Late fee (percent per month) set by the SOW this invoice sits under; quoted while a balance is outstanding. */
   lateFeeRate?: number | null
@@ -511,7 +515,7 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
             {data.signedBy && data.signedAt && !data.isWatermarked && (
               <Text style={{ fontSize: 8.5, fontFamily: PDF_FONT.bold, textTransform: 'uppercase', letterSpacing: 0.6, paddingVertical: 3, paddingHorizontal: 8, borderRadius: 3, marginTop: 6, alignSelf: 'flex-end', backgroundColor: '#F2F0EA', color: '#909090' }}>{t.signed}</Text>
             )}
-            {!data.isRetainer && (data.taxRate || 0) > 0 && (
+            {(data.taxRate || 0) > 0 && (
               <Text style={[s.valueLabel, { marginTop: 2 }]}>{data.taxInclusive ? t.inclTax(data.taxRate as number) : t.exclTax(data.taxRate as number)}</Text>
             )}
             {data.isRetainer && (data.retainerMonths || 0) > 0 && (
@@ -796,7 +800,7 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
             <Text style={s.h1}>{data.isCredit ? 'Credit Change Order' : 'Change Order'}</Text>
             <Text style={s.meta}>{data.documentNumber ? `${data.documentNumber} · ` : ''}{data.coTitle}{data.version && data.version > 1 ? ` · v${data.version}` : ''}</Text>
             <Text style={s.meta}>{data.projectName}</Text>
-            {data.sowNumber && <Text style={[s.meta, { marginTop: 2 }]}>Amends SOW No. {data.sowNumber}</Text>}
+            {data.sowNumber && <Text style={[s.meta, { marginTop: 2 }]}>Amends SOW No. {data.sowNumber}{data.sowVersion ? ` \u00b7 Version ${data.sowVersion}` : ''}</Text>}
             {data.acceptedAt && <Text style={[s.meta, { color: c, marginTop: 2 }]}>Accepted {fd(data.acceptedAt)}</Text>}
           </View>
           <View style={{ alignItems: 'flex-end' }}>
@@ -851,8 +855,8 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
             <Text style={[s.th, { width: 80, textAlign: 'right' }]}>Rate</Text>
             <Text style={[s.th, { width: 80, textAlign: 'right' }]}>Total</Text>
           </View>
-          {data.lineItems.map((item, i) => (
-            <View key={i} style={s.row}>
+          {data.lineItems.slice(0, -1).map((item, i) => (
+            <View key={i} style={s.row} wrap={false}>
               <Text style={[s.td, { flex: 1 }]}>{item.description}</Text>
               <Text style={[s.td, s.mono, { width: 40, textAlign: 'center' }]}>{item.quantity}</Text>
               <Text style={[s.td, s.mono, { width: 80, textAlign: 'right' }]}>{data.currency} {fm(item.rate)}</Text>
@@ -860,8 +864,23 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
             </View>
           ))}
 
-          {/* Totals */}
-          <View style={s.totals} wrap={false}>
+          {/* The last line travels WITH the totals: a page break used to leave Subtotal / Tax / Total alone at the top of the next
+              page, away from the lines they add up. */}
+          <View wrap={false}>
+            {data.lineItems.slice(-1).map((item, i) => (
+              <View key={i} style={s.row}>
+                <Text style={[s.td, { flex: 1 }]}>{item.description}</Text>
+                <Text style={[s.td, s.mono, { width: 40, textAlign: 'center' }]}>{item.quantity}</Text>
+                <Text style={[s.td, s.mono, { width: 80, textAlign: 'right' }]}>{data.currency} {fm(item.rate)}</Text>
+                <Text style={[s.td, s.mono, { width: 80, textAlign: 'right' }]}>{data.currency} {fm(item.total)}</Text>
+              </View>
+            ))}
+            {data.taxInclusive && tax !== 0 && (
+              <Text style={{ fontSize: 8.5, color: '#909090', marginTop: 4 }}>Rates and line totals include tax.</Text>
+            )}
+
+            {/* Totals */}
+            <View style={s.totals}>
             <View style={s.totalRow}>
               <Text>{data.taxInclusive && tax !== 0 ? 'Subtotal before tax' : 'Subtotal'}</Text>
               <Text style={s.mono}>{data.currency} {fm(data.subtotal)}</Text>
@@ -876,6 +895,7 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
               <Text>Total</Text>
               <Text style={[s.mono, { color: c }]}>{data.currency} {fm(data.total)}</Text>
             </View>
+          </View>
           </View>
         </View>
 
@@ -925,6 +945,12 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
                     <Text>One-time fee, billed once{exTax}</Text>
                     <Text style={{ fontFamily: PDF_FONT.bold, color: c }}>+{data.currency} {fm(netChange)}</Text>
                   </View>
+                  {taxApplies && (
+                    <View style={s.impactRow}>
+                      <Text style={{ color: '#909090' }}>Including tax ({data.taxRate}%)</Text>
+                      <Text style={s.mono}>{data.currency} {fm(data.total)}</Text>
+                    </View>
+                  )}
                 </View>
               )}
               {!oneTimeOnRetainer && hasValueImpact && revisedValue != null && (
@@ -1163,7 +1189,7 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
             <View style={s.lineRow}>
               <View>
                 <Text style={s.lineDesc}>{data.title}</Text>
-                {data.milestoneTrigger && <Text style={s.lineSub}>{data.milestoneTrigger}</Text>}
+                {invoiceLineSubtext(data.title, data.milestoneTrigger) && <Text style={s.lineSub}>{invoiceLineSubtext(data.title, data.milestoneTrigger)}</Text>}
               </View>
               <Text style={s.lineAmt}>{data.currency} {fmtInv(invoiceSingleLineAmount({ amount: data.amount, subtotal: data.subtotal, taxRate: data.taxRate, taxInclusive: data.taxInclusive }))}</Text>
             </View>

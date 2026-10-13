@@ -357,7 +357,7 @@ export function structureInstalments(structure: string, contractValue: number): 
   }
   if (structure === '100_upfront') return [{ title: 'Full payment', trigger: 'Before work commences', amount: cv }]
   if (structure === 'on_delivery') return [{ title: 'Full payment', trigger: 'Final delivery approval', amount: cv }]
-  if (structure === 'monthly') return [{ title: 'Monthly retainer', trigger: 'Monthly — first of month', amount: cv }]
+  if (structure === 'monthly') return [{ title: 'Monthly retainer', trigger: 'Invoiced monthly, in advance', amount: cv }]
   return []
 }
 
@@ -438,7 +438,7 @@ export function paymentTermsSentenceHtml(input: SowContentInput): string {
 export function paymentTermsPromptBlock(input: SowContentInput): string {
   const d = normalizePaymentTermsDays(input.paymentTermsDays)
   return d
-    ? `Payment timing: each invoice is payable within ${d} day${d === 1 ? '' : 's'} of its invoice date. Describe each instalment by WHEN ITS INVOICE IS ISSUED (for example "invoiced before work commences", "invoiced on final delivery approval") and never as "due upfront" or "due on delivery", which would contradict that period.`
+    ? `Payment timing: each invoice is payable within ${d} day${d === 1 ? '' : 's'} of its invoice date. Describe each instalment by WHEN ITS INVOICE IS ISSUED (for example "invoiced before work commences", "invoiced on final delivery approval") and never as "due upfront" or "due on delivery", which would contradict that period. State the payment period in exactly one sentence and do not restate it anywhere else.`
     : ''
 }
 
@@ -492,12 +492,12 @@ export function ensureLiabilityCapStated(terminationHtml: string, input: SowCont
 }
 
 const SCHEDULE_WORDS: Record<string, { upfront: string; final: string; full: string; monthly: string; kickoff: string; beforeWork: string; finalApproval: string; monthlyTrig: string; tax: string }> = {
-  en: { upfront: 'Upfront payment (50%)', final: 'Final payment (50%)', full: 'Full payment', monthly: 'Monthly retainer', kickoff: 'Before work commences', beforeWork: 'Before work commences', finalApproval: 'Final delivery approval', monthlyTrig: 'Monthly — first of month', tax: 'tax' },
-  es: { upfront: 'Pago inicial (50%)', final: 'Pago final (50%)', full: 'Pago total', monthly: 'Iguala mensual', kickoff: 'Antes de comenzar el trabajo', beforeWork: 'Antes de comenzar el trabajo', finalApproval: 'Aprobación de la entrega final', monthlyTrig: 'Mensual — primer día del mes', tax: 'impuesto' },
-  fr: { upfront: 'Acompte (50 %)', final: 'Paiement final (50 %)', full: 'Paiement intégral', monthly: 'Forfait mensuel', kickoff: 'Avant le début des travaux', beforeWork: 'Avant le début des travaux', finalApproval: 'Approbation de la livraison finale', monthlyTrig: 'Mensuel — le premier du mois', tax: 'taxe' },
-  pt: { upfront: 'Pagamento inicial (50%)', final: 'Pagamento final (50%)', full: 'Pagamento integral', monthly: 'Retainer mensal', kickoff: 'Antes do início do trabalho', beforeWork: 'Antes do início do trabalho', finalApproval: 'Aprovação da entrega final', monthlyTrig: 'Mensal — primeiro dia do mês', tax: 'imposto' },
-  de: { upfront: 'Anzahlung (50 %)', final: 'Schlusszahlung (50 %)', full: 'Gesamtzahlung', monthly: 'Monatlicher Retainer', kickoff: 'Vor Arbeitsbeginn', beforeWork: 'Vor Arbeitsbeginn', finalApproval: 'Freigabe der Endlieferung', monthlyTrig: 'Monatlich — zum Ersten', tax: 'Steuer' },
-  sw: { upfront: 'Malipo ya awali (50%)', final: 'Malipo ya mwisho (50%)', full: 'Malipo kamili', monthly: 'Huduma endelevu ya kila mwezi', kickoff: 'Kabla ya kazi kuanza', beforeWork: 'Kabla ya kazi kuanza', finalApproval: 'Idhini ya uwasilishaji wa mwisho', monthlyTrig: 'Kila mwezi — mwanzo wa mwezi', tax: 'kodi' },
+  en: { upfront: 'Upfront payment (50%)', final: 'Final payment (50%)', full: 'Full payment', monthly: 'Monthly retainer', kickoff: 'Before work commences', beforeWork: 'Before work commences', finalApproval: 'Final delivery approval', monthlyTrig: 'Invoiced monthly, in advance', tax: 'tax' },
+  es: { upfront: 'Pago inicial (50%)', final: 'Pago final (50%)', full: 'Pago total', monthly: 'Iguala mensual', kickoff: 'Antes de comenzar el trabajo', beforeWork: 'Antes de comenzar el trabajo', finalApproval: 'Aprobación de la entrega final', monthlyTrig: 'Facturación mensual por adelantado', tax: 'impuesto' },
+  fr: { upfront: 'Acompte (50 %)', final: 'Paiement final (50 %)', full: 'Paiement intégral', monthly: 'Forfait mensuel', kickoff: 'Avant le début des travaux', beforeWork: 'Avant le début des travaux', finalApproval: 'Approbation de la livraison finale', monthlyTrig: 'Facturé mensuellement, à l\'avance', tax: 'taxe' },
+  pt: { upfront: 'Pagamento inicial (50%)', final: 'Pagamento final (50%)', full: 'Pagamento integral', monthly: 'Retainer mensal', kickoff: 'Antes do início do trabalho', beforeWork: 'Antes do início do trabalho', finalApproval: 'Aprovação da entrega final', monthlyTrig: 'Faturado mensalmente, com antecedência', tax: 'imposto' },
+  de: { upfront: 'Anzahlung (50 %)', final: 'Schlusszahlung (50 %)', full: 'Gesamtzahlung', monthly: 'Monatlicher Retainer', kickoff: 'Vor Arbeitsbeginn', beforeWork: 'Vor Arbeitsbeginn', finalApproval: 'Freigabe der Endlieferung', monthlyTrig: 'Monatlich im Voraus in Rechnung gestellt', tax: 'Steuer' },
+  sw: { upfront: 'Malipo ya awali (50%)', final: 'Malipo ya mwisho (50%)', full: 'Malipo kamili', monthly: 'Huduma endelevu ya kila mwezi', kickoff: 'Kabla ya kazi kuanza', beforeWork: 'Kabla ya kazi kuanza', finalApproval: 'Idhini ya uwasilishaji wa mwisho', monthlyTrig: 'Ankara kila mwezi, mapema', tax: 'kodi' },
 }
 
 /**
@@ -751,19 +751,19 @@ export function dedupePaymentPeriodSentences(paymentHtml: string, days: number |
   let preferred: string | null = null
   paymentHtml.replace(/<p>([\s\S]*?)<\/p>/gi, (whole, inner: string) => {
     if (preferred) return whole
-    for (const sent of inner.split(/(?<=[.!?])\s+/)) if (stating(sent) && wellFormedRe.test(plain(sent))) { preferred = sent; break }
+    for (const sent of inner.split(/(?<=[.!?;])\s+/)) if (stating(sent) && wellFormedRe.test(plain(sent))) { preferred = sent; break }
     return whole
   })
   let seen = false
   return paymentHtml.replace(/<p>([\s\S]*?)<\/p>/gi, (whole, inner: string) => {
-    const sentences = inner.split(/(?<=[.!?])\s+/)
+    const sentences = inner.split(/(?<=[.!?;])\s+/)
     const kept: string[] = []
     for (const sent of sentences) {
       if (stating(sent)) {
         if (seen) continue
         seen = true
         // First statement is the badly worded one (and short enough to be only that statement): swap in the well-formed one.
-        if (preferred && !wellFormedRe.test(plain(sent)) && plain(sent).trim().split(/\s+/).length <= 12) { kept.push(preferred); continue }
+        if (preferred && !wellFormedRe.test(plain(sent)) && plain(sent).trim().split(/\s+/).length <= 12) { kept.push(preferred.replace(/^(\s*)([a-z])/, (_m, sp, ch) => sp + ch.toUpperCase())); continue }
       }
       kept.push(sent)
     }

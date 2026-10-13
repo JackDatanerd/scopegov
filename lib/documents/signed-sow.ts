@@ -9,7 +9,7 @@
 import { normalizeLateFeeRate } from '@/lib/documents/late-fee'
 
 export type SignedSowLookup =
-  | { ok: true; sow: { id: string; document_number: string | null; lateFeeRate?: number | null } | null }
+  | { ok: true; sow: { id: string; document_number: string | null; version?: number | null; lateFeeRate?: number | null } | null }
   | { ok: false; error: string }
 
 export const SIGNED_SOW_LOOKUP_FAILED = 'Could not check this project\u2019s signed SOW \u2014 please try again.'
@@ -21,7 +21,7 @@ export const SIGNED_SOW_LOOKUP_FAILED = 'Could not check this project\u2019s sig
  */
 export async function findSignedSow(service: any, projectId: string, opts: { newest?: boolean } = {}): Promise<SignedSowLookup> {
   let q = service
-    .from('sow_documents').select('id, document_number, metadata')
+    .from('sow_documents').select('id, document_number, version, metadata')
     .eq('project_id', projectId).eq('status', 'signed')
   if (opts.newest) q = q.order('version', { ascending: false })
   const { data, error } = await q.limit(1).maybeSingle()
@@ -29,5 +29,5 @@ export async function findSignedSow(service: any, projectId: string, opts: { new
     console.error('signed-SOW lookup failed:', error.message ?? error)
     return { ok: false, error: error.message ?? 'lookup failed' }
   }
-  return { ok: true, sow: data ? { id: data.id, document_number: data.document_number ?? null, lateFeeRate: normalizeLateFeeRate(data.metadata?.lateFeeRate) } : null }
+  return { ok: true, sow: data ? { id: data.id, document_number: data.document_number ?? null, version: data.version ?? null, lateFeeRate: normalizeLateFeeRate(data.metadata?.lateFeeRate) } : null }
 }

@@ -1,0 +1,41 @@
+Document consistency pass 2: retainer SOW / CO / invoice harmonization
+======================================================================
+
+Invoices
+- A monthly-retainer milestone's date is the first day of the month it pays for (the billing-month anchor), not a payment
+  deadline. Creating an invoice from one used that date as the due date, so an invoice issued Oct 13 fell due Nov 1 whatever the
+  SOW's "within N days of invoice date" said. With a standard term set in Settings the due date now comes from the term (still
+  editable before sending); other milestones keep the existing "later of milestone date and term" rule.
+- The retainer line no longer repeats itself ("Monthly retainer - November 2026" / "Monthly retainer payment - November 2026"):
+  the grey sub-line states the service period (November 1 - 30, 2026). A trigger that only repeats the title is dropped.
+  Same on the client portal invoice page (lib/pdf/invoice-line.ts: invoiceLineSubtext).
+
+SOW
+- Payment Terms: "Invoices are due 14 days of issue; each invoice is payable within 14 days of its invoice date." The dedupe
+  worked per sentence and a semicolon joined the two statements; it now works per clause and keeps one well-formed sentence
+  (capitalised). The drafting prompt also asks for the period once.
+- Payment Schedule trigger for retainers: "Monthly - first of month" read as a due date and contradicted net-N terms; it now says
+  "Invoiced monthly, in advance" (all six languages).
+- The header states the tax basis ("incl. 8.25% tax") for retainers too; it was suppressed for them.
+- Signed SOWs are not edited: a change order names the SOW version it amends instead.
+
+Change orders
+- "(General scope)" leaked into the client-facing Impact Analysis: it is the Guardian flag's internal fallback label, passed to
+  the drafter as "SOW reference this exceeds". It is no longer passed as a reference, the model is told never to print a label
+  the SOW does not print, and any echoed "(General scope)" is stripped (lib/documents/co-draft-text.ts).
+- The drafter is told to describe an exclusion only in its own words and, when the request goes beyond the exclusion's text
+  (e.g. affiliate partners vs "influencers, creators, brand ambassadors"), to say the CO adds that work as additional work and
+  amends the exclusion only for the part it covers.
+- A per-unit line capped at its own quantity ("up to 10 candidates", qty 10) now states that the fee covers the full quantity
+  whether or not all are used (ensureCappedQuantityBasis); the agency can edit the line.
+- "Reason for Change" is drafted as a reason (the Client's request, then what the Provider will do and who bears third-party
+  costs) rather than a restatement of the line items.
+- The last line item travels with Subtotal / Tax / Total (no orphaned totals on the next page).
+- Tax-inclusive COs say "Rates and line totals include tax."; the retainer one-time fee also shows "Including tax (8.25%)".
+- "Amends SOW No. SOW-0007 · Version 1" (CO header; PDF route, portal PDF route and the executed copy all pass the version).
+
+Tests: tests/doc-consistency-pass-2.test.ts (new); retainer-change-orders and co-independent-pass-10 updated for the intentional changes.
+No migration.
+
+Not in this tarball (need a decision or a larger change): Limitation of liability as its own numbered SOW section; a deemed-approval
+rule for client review; a client-facing document title separate from the internal project name; delivery dates / assumptions on COs.
