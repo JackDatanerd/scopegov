@@ -1,0 +1,22 @@
+Client-review rule setting, CO delivery-date nudge, project-name hint
+=====================================================================
+
+Migration 160 (run it): workspaces.default_approval_silence ('deemed_approved' | 'work_waits' | NULL) and default_approval_days (1-30).
+
+Settings -> billing defaults: "If the client doesn't respond to a review".
+- Default "Don't state it": the SOW says nothing and the drafting prompt forbids the model from inventing a rule (no existing
+  workspace gets a clause it did not choose).
+- "Deemed approved after N business days" (N starts at 5, 1-30) or "Work waits until the client approves".
+- Fixed app-owned wording (lib/documents/approval-silence.ts), English documents only, appended once to Revision Policy as
+  "Client review.", and frozen in the SOW metadata at drafting (same pattern as the late fee and liability cap).
+- When "deemed approved" is chosen the model is told any review window it writes must equal N, so the SOW can't state two periods.
+- Settings API validates both fields; Settings reads them with its own tolerant query, so a deploy that runs ahead of the migration
+  only loses this field.
+
+Change orders: a one-time CO on an open-ended retainer with no delivery date shows "Without a date, this change order won't say when
+the work is due." (no new field; the date was already supported).
+
+Project name: the new-project and edit-project forms say the name is printed on the SOW, change orders and invoices the client
+receives. (No separate client-facing title and no send-time warning: an always-on warning gets clicked through.)
+
+Tests: tests/approval-silence.test.ts (new). Full suite and tsc pass.

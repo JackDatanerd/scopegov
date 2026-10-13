@@ -38,6 +38,7 @@
 
 import { normalizeLateFeeRate, lateFeeContractSentence } from '@/lib/documents/late-fee'
 import { normalizeLiabilityCap, liabilityCapSentence, LIABILITY_CAP_LEAD, type LiabilityCap } from '@/lib/documents/liability-cap'
+import { approvalSilenceSentence, APPROVAL_SILENCE_LEAD, type ApprovalSilence } from '@/lib/documents/approval-silence'
 import { escapeHtml, sanitizePlainText, truncateText } from '@/lib/utils/sanitize'
 import { isBlankText } from '@/lib/utils/client-input'
 import { amountsStated } from '@/lib/sow/validate-send'
@@ -142,6 +143,8 @@ export interface SowContentInput {
   revisionNote?: string | null
   // Optional limitation-of-liability clause chosen in settings; app-owned wording, appended deterministically to Termination.
   liabilityCap?: LiabilityCap | null
+  // Optional "if the Client does not respond" rule chosen in settings; app-owned wording, appended deterministically to Revision Policy.
+  approvalSilence?: ApprovalSilence | null
 }
 
 export interface AgencyStandards {
@@ -489,6 +492,29 @@ export function ensureLiabilityCapStated(terminationHtml: string, input: SowCont
   const cap = normalizeLiabilityCap(input.liabilityCap)!
   if (norm(terminationHtml).includes(norm(escapeHtml(liabilityCapSentence(cap))))) return terminationHtml
   return `${terminationHtml}${clause}`
+}
+
+/** The fixed client-review paragraph. Empty when none is chosen or the document isn't English. */
+export function approvalSilenceHtml(input: SowContentInput): string {
+  if (input.language && input.language !== 'en') return ''
+  return input.approvalSilence ? `<p><strong>${APPROVAL_SILENCE_LEAD}</strong> ${escapeHtml(approvalSilenceSentence(input.approvalSilence))}</p>` : ''
+}
+
+/** Append the chosen rule to the Revision Policy unless that exact sentence is already there. */
+export function ensureApprovalSilenceStated(revisionsHtml: string, input: SowContentInput): string {
+  const clause = approvalSilenceHtml(input)
+  if (!clause) return revisionsHtml
+  if (norm(revisionsHtml).includes(norm(escapeHtml(approvalSilenceSentence(input.approvalSilence!))))) return revisionsHtml
+  return `${revisionsHtml}${clause}`
+}
+
+/** Prompt lines: the model never writes what silence means; when a rule is chosen its review window must match. */
+export function approvalSilencePromptBlock(input: SowContentInput): string {
+  const base = '- Never state what happens when the Client does not respond to a review or approval request (no "deemed approved", "tacit approval" or "work pauses" wording). If the agency wants a rule it is added separately; any you write would contradict it.'
+  const rule = input.approvalSilence
+  return rule && rule.mode === 'deemed_approved' && rule.days
+    ? `${base}\n- Any Client review or approval window you state anywhere must be exactly ${rule.days} business day${rule.days === 1 ? '' : 's'}.`
+    : base
 }
 
 const SCHEDULE_WORDS: Record<string, { upfront: string; final: string; full: string; monthly: string; kickoff: string; beforeWork: string; finalApproval: string; monthlyTrig: string; tax: string }> = {
@@ -870,6 +896,7 @@ Rules:
 - Write with professional, authoritative language appropriate for a legal document.
 - Never add a late fee, late-fee rate or revision fee unless it is explicitly provided above.
 - Never write a limitation of liability, liability cap, indemnity, warranty or damages clause. If the agency wants one it is added separately; any you write would contradict it.
+${approvalSilencePromptBlock(input)}
 - Whenever you write a calendar date, include the year and use this style: ${input.dateStyle === 'us' ? '"June 16, 2026" (month day, year)' : '"16 June 2026" (day month year)'}. Never print a date without the year and never mix the two styles.
 ${draftingRulesBlock(input)}
 - The Dispute Resolution section covers only the escalation steps (negotiation, mediation, courts). Do NOT restate the governing-law clause there: it has its own Governing Law section. The one exception is the courts step, which must say proceedings are brought in the competent courts of the jurisdiction given under "Governing law" above, naming that jurisdiction exactly as given — never a city, county, district or any other place, and never a different jurisdiction.${standardsPromptBlock(input.standards)}${wantsPaymentSchedule ? '\n- Payment Schedule table: propose sensible milestone titles and trigger conditions based on the deliverables/timeline above. Amount must be exactly 0 on every row — never write a dollar figure or percentage there.' : ''}${languageInstruction}${reminder}`

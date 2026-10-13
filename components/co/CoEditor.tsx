@@ -652,6 +652,9 @@ export default function CoEditor({ projId, coId }: Props) {
           <input className="finp" type="date" style={{ maxWidth: 200 }} disabled={isLocked}
             value={revisedDeliveryDate}
             onChange={(e: React.ChangeEvent<HTMLInputElement>) => setRevisedDeliveryDate(e.target.value)} />
+          {retainerOpenEnded && !isLocked && revisedDeliveryDate.trim() === '' && (
+            <p style={{ fontSize: 12, color: 'var(--text-3)', margin: '6px 0 0' }}>Without a date, this change order won&apos;t say when the work is due.</p>
+          )}
         </div>
         )}
 

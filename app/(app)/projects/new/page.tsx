@@ -607,7 +607,7 @@ function NewProjectPageInner() {
             </div>
 
             <div className="fgrp">
-              <label className="flbl">Project name</label>
+              <label className="flbl">Project name <span className="fhint">— printed on the SOW, change orders and invoices your client receives</span></label>
               <input className="finp" value={projectName} required placeholder="Website Redesign"
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => setProjectName(e.target.value)} />
             </div>

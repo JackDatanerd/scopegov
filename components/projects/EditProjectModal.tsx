@@ -167,7 +167,7 @@ export default function EditProjectModal({
           Changes are recorded in the activity log.
         </p>
 
-        <label className="form-label">Project name</label>
+        <label className="form-label">Project name <span style={{ fontWeight: 400, color: 'var(--text-3)' }}>— printed on the SOW, change orders and invoices your client receives</span></label>
         <input className="form-input" value={name} maxLength={200} onChange={e => setName(e.target.value)} style={{ marginBottom: 12 }} />
 
         <label className="form-label">Project type</label>

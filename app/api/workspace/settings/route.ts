@@ -60,6 +60,8 @@ const COLUMNS: Record<string, string> = {
   defaultPaymentTermsDays:    'default_payment_terms_days',
   defaultLateFeeRate:         'default_late_fee_rate',
   defaultLiabilityCap:        'default_liability_cap',
+  defaultApprovalSilence:     'default_approval_silence',
+  defaultApprovalDays:        'default_approval_days',
 }
 
 // Recorded as "changed" in the audit trail without the value: identifiers and
@@ -241,6 +243,20 @@ function parseField(key: string, value: unknown): unknown {
       if (value === null || (typeof value === 'string' && value.trim() === '')) return null
       if (value !== 'fees_paid') throw new FieldError('Choose a listed liability option, or none')
       return value
+    }
+    case 'defaultApprovalSilence': {
+      // null / blank = the SOW says nothing about what happens when the Client does not respond (lib/documents/approval-silence.ts).
+      if (value === null || (typeof value === 'string' && value.trim() === '')) return null
+      if (value !== 'deemed_approved' && value !== 'work_waits') throw new FieldError('Choose a listed review option, or none')
+      return value
+    }
+    case 'defaultApprovalDays': {
+      // Business days for "deemed approved". null / blank = not set (the rule falls back to 5 if "deemed approved" is chosen without it).
+      if (value === null || (typeof value === 'string' && value.trim() === '')) return null
+      const n = toFiniteNumber(value)
+      if (!Number.isInteger(n) || n < 1 || n > 30)
+        throw new FieldError('Review period must be a whole number of business days from 1 to 30')
+      return n
     }
     case 'legalAddress': {
       if (value === null) return null

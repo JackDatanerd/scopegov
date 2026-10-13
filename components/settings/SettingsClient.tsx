@@ -127,6 +127,8 @@ function workspaceToForm(ws: any) {
     defaultPaymentTermsDays:    ws?.default_payment_terms_days != null ? String(ws.default_payment_terms_days) : '',
     defaultLateFeeRate:         ws?.default_late_fee_rate != null ? String(ws.default_late_fee_rate) : '',
     defaultLiabilityCap:        ws?.default_liability_cap || '',
+    defaultApprovalSilence:     ws?.default_approval_silence || '',
+    defaultApprovalDays:        ws?.default_approval_days != null ? String(ws.default_approval_days) : '',
     autoClientReminders:        ws?.auto_client_reminders ?? false,
     clientReminderAfterDays:    String(ws?.client_reminder_after_days ?? 3),
     clientReminderMax:          String(ws?.client_reminder_max ?? 3),
@@ -162,6 +164,8 @@ function toServerValue(key: string, value: any): unknown {
     case 'defaultPaymentTermsDays':    return trimText(value) === '' ? null : Number(value)
     case 'defaultLateFeeRate':         return trimText(value) === '' ? null : Math.round(Number(value) * 100) / 100
     case 'defaultLiabilityCap':        return trimText(value) === '' ? null : trimText(value)
+    case 'defaultApprovalSilence':     return trimText(value) === '' ? null : trimText(value)
+    case 'defaultApprovalDays':        return trimText(value) === '' ? null : Number(value)
     case 'clientReminderAfterDays':
     case 'clientReminderMax':
     case 'proactiveRiskThreshold':     return Number(value)
@@ -1095,6 +1099,28 @@ function WorkspaceTab({ form, setForm, permissions, onSave, saving, slugChangedA
             <option value="">None — don&apos;t add a clause</option>
             <option value="fees_paid">Exclude indirect damages; cap the Provider at fees paid under the SOW</option>
           </select>
+        </div>
+        <div className="fgrp">
+          <label className="flbl">If the client doesn&apos;t respond to a review <InfoTip text="Optional. When chosen, new SOWs add one standard sentence to the Revision Policy saying what happens when a deliverable is submitted for review and the client stays silent. Wording is fixed by ScopeGov and is not legal advice: have a lawyer review it for your jurisdiction. Leave on 'Don't state it' to say nothing." /></label>
+          <select className="finp" style={{ maxWidth: 420 }} value={form.defaultApprovalSilence}
+            onChange={(e: React.ChangeEvent<HTMLSelectElement>) => {
+              const v = e.target.value
+              set('defaultApprovalSilence', v)
+              // "Deemed approved" needs a day count: start from 5 so the field is never silently empty; clear it for the other choices.
+              set('defaultApprovalDays', v === 'deemed_approved' ? (form.defaultApprovalDays || '5') : '')
+            }}>
+            <option value="">Don&apos;t state it</option>
+            <option value="deemed_approved">Deemed approved after a set number of business days</option>
+            <option value="work_waits">Work waits until the client approves</option>
+          </select>
+          {form.defaultApprovalSilence === 'deemed_approved' && (
+            <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+              <span>Deemed approved after</span>
+              <input className="finp" type="number" min={1} max={30} step={1} style={{ maxWidth: 90 }} value={form.defaultApprovalDays}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => set('defaultApprovalDays', e.target.value)} />
+              <span>business days</span>
+            </div>
+          )}
         </div>
         <button className="btn btn-primary btn-sm" disabled={saving}
           onClick={saveForm}>

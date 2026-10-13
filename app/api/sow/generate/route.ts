@@ -19,13 +19,14 @@ import { getPendingApprovalForDocument } from '@/lib/approvals/engine'
 import { logAudit } from '@/lib/utils/audit'
 import { sanitizeRichText, sanitizePlainText, truncateText } from '@/lib/utils/sanitize'
 import { isBlankText } from '@/lib/utils/client-input'
-import { applyAgencyStandards, ensureContractValueStated, ensureTaxStated, ensureLateFeeStated, ensurePaymentTermsDaysStated, dedupePaymentPeriodSentences, normalizePaymentTermsDays, ensureLiabilityCapStated, derivedScheduleRows, type AgencyStandards } from '@/lib/ai/sow-content'
+import { applyAgencyStandards, ensureContractValueStated, ensureTaxStated, ensureLateFeeStated, ensurePaymentTermsDaysStated, dedupePaymentPeriodSentences, normalizePaymentTermsDays, ensureLiabilityCapStated, ensureApprovalSilenceStated, derivedScheduleRows, type AgencyStandards } from '@/lib/ai/sow-content'
 import { workspaceTaxDefaults } from '@/lib/documents/tax-defaults'
 import { sowDateStyle } from '@/lib/utils/date-style'
 import { normalizeRevisionNote } from '@/lib/sow/brief-signals'
 import { parseStatedTax } from '@/lib/documents/tax-basis'
 import { normalizeLateFeeRate } from '@/lib/documents/late-fee'
 import { normalizeLiabilityCap } from '@/lib/documents/liability-cap'
+import { normalizeApprovalSilence } from '@/lib/documents/approval-silence'
 import { pickAgencyStandards } from '@/lib/utils/agency-standards'
 import { canReadProject } from '@/lib/utils/project-access'
 import { isTerminalStatus } from '@/lib/utils/project-status'
@@ -258,6 +259,12 @@ export async function POST(request: NextRequest) {
       const { data: lc } = await (service as any).from('workspaces').select('default_liability_cap').eq('id', session.workspaceId).maybeSingle()
       liabilityCap = normalizeLiabilityCap(lc?.default_liability_cap)
     } catch { /* no liability clause */ }
+    // Client-review rule (migration 160) — likewise its own tolerant read; NULL = the SOW says nothing about silence.
+    let approvalSilence: ReturnType<typeof normalizeApprovalSilence> = null
+    try {
+      const { data: ap } = await (service as any).from('workspaces').select('default_approval_silence, default_approval_days').eq('id', session.workspaceId).maybeSingle()
+      approvalSilence = normalizeApprovalSilence(ap?.default_approval_silence, ap?.default_approval_days)
+    } catch { /* no review rule */ }
     // FIX (SOW-lifecycle fix round — headline finding): contractValue and
     // currency used to come straight from the request body — every other
     // legally-material field in this route is validated against a closed
@@ -351,6 +358,7 @@ export async function POST(request: NextRequest) {
       lateFeeRate,
       paymentTermsDays,
       liabilityCap,
+      approvalSilence,
       dateStyle: sowDateStyle(project.workspaces?.legal_address),
       // The model is told what day it is and when the project starts, instead of guessing a year (see SowContentInput).
       today: new Date().toISOString().slice(0, 10),
@@ -446,6 +454,7 @@ export async function POST(request: NextRequest) {
     allContent.payment = ensurePaymentTermsDaysStated(allContent.payment, contentInput)
     allContent.payment = dedupePaymentPeriodSentences(allContent.payment, contentInput.paymentTermsDays)
     allContent.termination = ensureLiabilityCapStated(allContent.termination || '', contentInput)
+    allContent.revisions = ensureApprovalSilenceStated(allContent.revisions || '', contentInput)
 
     const parsed: { sections: any[]; metadata: any } = {
       sections: SOW_SECTION_DEFS.map(def => ({
@@ -471,6 +480,8 @@ export async function POST(request: NextRequest) {
         // The late fee in force when this SOW was drafted: change orders and invoices under it print this rate.
         ...(lateFeeRate ? { lateFeeRate } : {}),
         ...(liabilityCap ? { liabilityCap } : {}),
+        // The client-review rule in force when this SOW was drafted (frozen with the document).
+        ...(approvalSilence ? { approvalSilence } : {}),
         ...(clientRepresentative ? { clientRepresentative, ...(clientRepresentativeTitle ? { clientRepresentativeTitle } : {}) } : {}),
         revisionRounds,
         ...(revisionNote ? { revisionNote } : {}),
