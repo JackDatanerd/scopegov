@@ -23,13 +23,24 @@ export function datesIn(text: string): string[] {
   return out
 }
 
+const MONTH_NAMES_TITLE = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
+function isoToWords(iso: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso))
+  return m ? `${MONTH_NAMES_TITLE[Number(m[2]) - 1]} ${Number(m[3])}, ${m[1]}` : String(iso)
+}
+
 function keywords(text: string): Set<string> {
   const words = String(text ?? '').toLowerCase().match(/[a-z]{5,}/g) ?? []
   return new Set(words.filter(w => !STOP.has(w) && !MONTHS.includes(w)))
 }
 
 /** One message per (Client row, conflicting Assumptions sentence). Empty when the SOW agrees with itself. */
-export function findClientDateConflicts(deliverableRows: Array<Record<string, string>> | null | undefined, assumptionsHtml: string | null | undefined): string[] {
+export function findClientDateConflicts(
+  deliverableRows: Array<Record<string, string>> | null | undefined,
+  assumptionsHtml: string | null | undefined,
+  /** ISO dates the platform set for the Client (access, initial materials). A Client row dated anything else is reported. */
+  allowedIso?: string[] | null,
+): string[] {
   const rows = Array.isArray(deliverableRows) ? deliverableRows : []
   const sentences = strip(String(assumptionsHtml ?? '')).split(/(?<=[.!?])\s+|\n+/).map(s => s.trim()).filter(Boolean)
   const messages: string[] = []
@@ -37,6 +48,13 @@ export function findClientDateConflicts(deliverableRows: Array<Record<string, st
     if (!/client/i.test(String(row?.owner ?? ''))) continue
     const rowDates = datesIn(String(row?.targetDate ?? ''))
     if (rowDates.length !== 1) continue
+    if (allowedIso && allowedIso.length) {
+      const allowed = new Set(allowedIso.flatMap(iso => datesIn(isoToWords(iso))))
+      if (!allowed.has(rowDates[0])) {
+        const title = String(row.deliverable ?? '').replace(/\s+/g, ' ').trim()
+        messages.push(`The Deliverables table gives "${title}" the Client date ${String(row.targetDate).trim()}, but the platform set the Client's dates at ${allowedIso.map(isoToWords).join(' and ')}. Use exactly those dates for what the Client supplies.`)
+      }
+    }
     const kw = keywords(`${row?.deliverable ?? ''} ${row?.acceptanceCriteria ?? ''}`)
     for (const sent of sentences) {
       const sd = datesIn(sent)

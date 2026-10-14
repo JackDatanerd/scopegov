@@ -839,7 +839,8 @@ function CreateInvoiceModal({ projectId, projectCurrency, milestones, sows, cos,
       })
       const json = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(json.error || 'Could not draft this — try again or fill it in manually.')
-      if (json.title) setTitle(json.title)
+      // Billing against a milestone keeps the milestone's own (client-facing) title; a drafted title is for invoices with no such source.
+      if (json.title && source.type !== 'milestone') setTitle(json.title)
       if (json.lineItems?.length) {
         setItemized(true)
         setLineItems(json.lineItems.map((li: any) => ({

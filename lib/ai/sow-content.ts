@@ -39,6 +39,8 @@
 import { normalizeLateFeeRate, lateFeeContractSentence } from '@/lib/documents/late-fee'
 import { normalizeLiabilityCap, liabilityCapSentence, type LiabilityCap } from '@/lib/documents/liability-cap'
 import { approvalSilenceSentence, APPROVAL_SILENCE_LEAD, type ApprovalSilence } from '@/lib/documents/approval-silence'
+import type { PortfolioUse } from '@/lib/documents/standard-clauses'
+import type { ClientDependencyDates } from '@/lib/documents/client-dates'
 import { escapeHtml, sanitizePlainText, truncateText } from '@/lib/utils/sanitize'
 import { isBlankText } from '@/lib/utils/client-input'
 import { amountsStated } from '@/lib/sow/validate-send'
@@ -148,6 +150,10 @@ export interface SowContentInput {
   liabilityCap?: LiabilityCap | null
   // Optional "if the Client does not respond" rule chosen in settings; app-owned wording, appended deterministically to Revision Policy.
   approvalSilence?: ApprovalSilence | null
+  // Optional portfolio-use right chosen in settings; fixed wording added to Intellectual Property (see lib/documents/standard-clauses.ts).
+  portfolioUse?: PortfolioUse | null
+  // Platform-set deadlines for what the Client owes (access, initial materials), so the model never chooses its own.
+  clientDates?: ClientDependencyDates | null
 }
 
 export interface AgencyStandards {
@@ -506,8 +512,8 @@ export function ensureApprovalSilenceStated(revisionsHtml: string, input: SowCon
 export function approvalSilencePromptBlock(input: SowContentInput): string {
   const base = '- Never state what happens when the Client does not respond to a review or approval request (no "deemed approved", "tacit approval" or "work pauses" wording). If the agency wants a rule it is added separately; any you write would contradict it.'
   const days = input.approvalSilence?.days
-  if (days) return `${base}\n- Any Client review or approval window you state anywhere must be exactly ${days} business day${days === 1 ? '' : 's'}.`
-  return `${base}\n- No standard review window is set. When you mention how long the Client has to review or give feedback, say it is agreed in writing before work begins; never invent a number of days, and never refer to a window "agreed between the parties" without saying how it is agreed. Do not make one section depend on another for this (for example Assumptions must not say feedback is given "within the process described in the Revision Policy").`
+  if (days) return `${base}\n- Any Client review or approval window you state anywhere must be exactly ${days} business day${days === 1 ? '' : 's'}. It is stated once, in the Revision Policy: do not repeat it in the Roles table, Assumptions or Timeline.`
+  return `${base}\n- No standard review window is set. When you mention how long the Client has to review or give feedback, say it is agreed in writing before work begins; never invent a number of days, and never refer to a window "agreed between the parties" without saying how it is agreed. Do not make one section depend on another for this (for example Assumptions must not say feedback is given "within the process described in the Revision Policy"). Say it once, in the Revision Policy only: do not repeat it in the Roles table or in Assumptions.`
 }
 
 const SCHEDULE_WORDS: Record<string, { upfront: string; final: string; full: string; monthly: string; kickoff: string; beforeWork: string; finalApproval: string; monthlyTrig: string; tax: string }> = {
@@ -742,6 +748,14 @@ export function draftingRulesBlock(input: SowContentInput): string {
   lines.push('- If the scope brief names results the client wants to see (for example follower growth or traffic), name them in the Project Overview and in the reporting deliverable as measures that are tracked and reported. Never promise or guarantee them.')
   lines.push('- State precisely what each deliverable covers in its own acceptance criteria (for example "a caption for each published post") so that adjacent work is clearly not part of it. Do not add exclusions that are not in the out-of-scope brief.')
   lines.push('- State the payment period once. Never repeat it in a second sentence.')
+  lines.push('- Never write portfolio, publicity, case-study or work-sample usage rights anywhere (including Intellectual Property). If the agency wants one it is added separately; any you write would contradict it.')
+  if (!input.language || input.language === 'en')
+    lines.push('- Termination and Dispute Resolution are replaced by standard clauses supplied by the platform: write each as ONE short sentence only, with no periods, notice terms or costs.')
+  if (input.clientDates) {
+    const accessText = formatIsoDateForPrompt(input.clientDates.access, input.dateStyle)
+    const materialsText = formatIsoDateForPrompt(input.clientDates.materials, input.dateStyle)
+    lines.push(`- The platform has set the Client's dates. Account or system access is due on ${accessText}; supply of the initial materials (footage, content, assets) is due on ${materialsText}. Use exactly these two dates for those items everywhere they appear (Deliverables table, Timeline, Roles notes, Assumptions). Never choose another date for anything the Client must supply.`)
+  }
   lines.push('- Every item the Client must supply or grant (account access, raw materials, approvals) gets its OWN row in the Deliverables table with its own date. Never combine items that have different dates into one row, and each date must be exactly the one the Assumptions state for that item.')
   if (input.retainer) {
     lines.push('- This is a RETAINER. In the Deliverables table, a deliverable that recurs (weekly posting, monthly reporting, ongoing research) shows its cadence in the Target date cell as a short label such as \"Weekly\" or \"Monthly\", never a single calendar date; this overrides the Target date rule above for those rows. A calendar date is used only for one-off setup items (access, onboarding, supply of client materials), and it must be the same deadline the Assumptions state for that item.')

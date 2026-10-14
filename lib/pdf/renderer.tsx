@@ -219,7 +219,7 @@ export interface InvoicePdfData {
   sentAt?:      string | null
   paymentInstructions?: string | null
   payments:     Array<{ amount: number; paidAt: string; method: string; referenceNote?: string | null }>
-  contractPosition?: { contractedValue: number; invoicedToDate: number; paidToDate: number; excludesTax?: boolean; unbilledChangeOrders?: number; openEndedRetainer?: boolean } | null
+  contractPosition?: { contractedValue: number; invoicedToDate: number; paidToDate: number; excludesTax?: boolean; unbilledChangeOrders?: number; unbilledChangeOrdersGross?: number; openEndedRetainer?: boolean } | null
   // Cross-references (doc-quality audit round 2) — the underlying
   // sow_id/co_id FKs already existed on `invoices`, just weren't being
   // read into the PDF. Mirrors Meridian sample's "For services rendered
@@ -1329,7 +1329,10 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
             {(data.contractPosition.openEndedRetainer ? r2(data.contractPosition.unbilledChangeOrders || 0) : cpUnbilledCo) > 0 && (() => {
               const net = data.contractPosition!.openEndedRetainer ? r2(data.contractPosition!.unbilledChangeOrders || 0) : cpUnbilledCo
               // The client is billed the tax-inclusive figure: show it beside the net one when tax is charged on top.
-              const gross = data.contractPosition!.excludesTax && (data.taxRate ?? 0) > 0 ? r2(net * (1 + (data.taxRate ?? 0) / 100)) : null
+              // Prefer the change orders' own totals: the net grossed back up can be a cent off a tax-inclusive total (369.52 -> 400.01 vs 400.00).
+              const gross = data.contractPosition!.excludesTax && (data.taxRate ?? 0) > 0
+                ? (data.contractPosition!.unbilledChangeOrdersGross ? r2(data.contractPosition!.unbilledChangeOrdersGross) : r2(net * (1 + (data.taxRate ?? 0) / 100)))
+                : null
               return (
                 <View style={[s.cpRow, data.contractPosition!.openEndedRetainer ? { borderTop: '1 solid #F2F0EA', paddingTop: 6, marginTop: 2 } : { paddingTop: 0 }]}>
                   <Text style={{ color: '#909090', fontSize: 9 }}>{data.contractPosition!.openEndedRetainer ? 'Approved change orders not yet invoiced' : '   of which approved change orders not yet invoiced'}{data.contractPosition!.excludesTax ? ' (excl. tax)' : ''}</Text>

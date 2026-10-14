@@ -164,7 +164,7 @@ export default async function SettingsPage() {
   }
   // FEATURE (Settings & Team round): billing defaults (migration 076) — same tolerant, separate read so a deploy
   // that runs ahead of the migration degrades to "no defaults" instead of taking the whole page down.
-  let billingDefaults: { default_tax_rate?: number; default_tax_inclusive?: boolean; default_payment_terms_days?: number | null; default_late_fee_rate?: number | null; default_liability_cap?: string | null; default_approval_silence?: string | null; default_approval_days?: number | null } = {}
+  let billingDefaults: { default_tax_rate?: number; default_tax_inclusive?: boolean; default_payment_terms_days?: number | null; default_late_fee_rate?: number | null; default_liability_cap?: string | null; default_approval_silence?: string | null; default_approval_days?: number | null; default_portfolio_use?: string | null; default_client_materials_days?: number | null } = {}
   if (canManageWorkspace) {
     const { data: bd, error: bdErr } = await (service as any)
       .from('workspaces').select('default_tax_rate,default_tax_inclusive,default_payment_terms_days')
@@ -182,6 +182,10 @@ export default async function SettingsPage() {
     const { data: ap, error: apErr } = await (service as any)
       .from('workspaces').select('default_approval_silence,default_approval_days').eq('id', session.workspaceId).maybeSingle()
     if (!apErr && ap) billingDefaults = { ...billingDefaults, default_approval_silence: ap.default_approval_silence ?? null, default_approval_days: ap.default_approval_days ?? null }
+    // Portfolio use and client materials window (migration 161): likewise its own tolerant read.
+    const { data: pf, error: pfErr } = await (service as any)
+      .from('workspaces').select('default_portfolio_use,default_client_materials_days').eq('id', session.workspaceId).maybeSingle()
+    if (!pfErr && pf) billingDefaults = { ...billingDefaults, default_portfolio_use: pf.default_portfolio_use ?? null, default_client_materials_days: pf.default_client_materials_days ?? null }
   }
   const workspace = wsRes.data && !canManageWorkspace
     ? {

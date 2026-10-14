@@ -1,0 +1,40 @@
+Document consistency pass 4 (V7 re-audit): invoice gross, titles, standard clauses, client dates
+==================================================================================================
+
+Migration 161 (run it): workspaces.default_portfolio_use ('with_consent' | 'unless_objects' | NULL) and
+default_client_materials_days (0-30 | NULL). Settings and SOW generation read them with their own tolerant queries, so a deploy that
+runs ahead of the migration only loses these two fields.
+
+Bugs
+- Invoice "Approved change orders not yet invoiced ... (USD 400.01 incl. tax)" against a CO total of 400.00: the renderer grossed the
+  rounded net back up (369.52 x 1.0825 = 400.005). The contract position now carries each change order's own total, scaled by the
+  share still unbilled (unbilledChangeOrderGross), and the invoice prefers it.
+- Invoice line "V7 DTC Skincare - Monthly Retainer, November 2026": the AI invoice drafter prefixed the internal project name (its
+  schema example teaches it to). The prompt forbids it, a leading/trailing "<project> -" is stripped from the drafted title, and an
+  invoice billed against a milestone keeps the milestone's own title instead of taking the drafted one.
+- CO "the Client's brand's social content": the project-name scrub produced a double possessive. "<project> brand's" now becomes
+  "the brand's".
+
+Standard clauses (English), fixed text instead of model-written (lib/documents/standard-clauses.ts)
+- Termination (open-ended retainer / fixed-term retainer / fixed fee) and Dispute Resolution (negotiation, mediation, courts in the
+  governing jurisdiction; no invented periods) are the same every run. The model is told to write one short sentence for each and the
+  platform text replaces it. Other languages keep the model-written clauses.
+- Portfolio use: any portfolio / publicity / work-sample wording the model volunteers is removed from Intellectual Property (it
+  decided opposite ways on different runs for inputs that never mentioned it). New Settings option: Don't state it (default) / Only
+  with the client's prior written consent / Allowed unless the client objects in writing; fixed wording, frozen in the SOW.
+
+Client dates
+- The model chose a different Client deadline on every run (Nov 6 / 8 / 4). The platform now sets them: account access is due on the
+  project start date; the initial materials N business days later (new Settings field "Client materials due", blank or 0 = the start
+  date). The dates go into the prompt, are frozen in the SOW metadata, a draft with a different Client date is retried once, and
+  send validation warns about any that remain.
+
+Wording
+- The review window is stated once (Revision Policy) rather than also in the Roles table and Assumptions.
+- The CO drafter keeps the activities an exclusion names (brought out of it) apart from the work it adds as additional work (e.g.
+  outreach when the exclusion does not list it).
+
+Not changed: CO page-1 spacing. Pagination of the same data differs between environments (logo, fonts), so a spacing tweak could
+not be verified. Straight double quotes stay: converting them would touch HTML attributes.
+
+Tests: tests/doc-consistency-pass-4.test.ts (new). Full suite and tsc pass.

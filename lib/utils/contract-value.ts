@@ -166,6 +166,42 @@ export function unbilledChangeOrderValue(
   return Math.round(total * 100) / 100
 }
 
+/**
+ * The same unbilled change orders as unbilledChangeOrderValue, expressed GROSS (what the client actually owes, tax included).
+ * Grossing the rounded net back up (369.52 x 1.0825 = 400.005 -> 400.01) does not round-trip to a tax-inclusive change order's own
+ * total (400.00), so each change order's stored total is scaled by the share of it that is still unbilled instead. A change order
+ * that nothing has billed yet is therefore reported at exactly its total.
+ */
+export function unbilledChangeOrderGross(
+  amendments: AmendmentLike[] | null | undefined,
+  invoices: Array<{ co_id?: string | null; subtotal?: number | string | null; amount?: number | string | null; status?: string | null }> | null | undefined,
+  projectType: string | null | undefined,
+  changeOrders: Array<{ id: string; total?: number | string | null }> | null | undefined,
+): number {
+  const isRetainer = projectType === 'retainer'
+  const billedByCo = new Map<string, number>()
+  for (const inv of invoices || []) {
+    if (!inv?.co_id || inv.status === 'draft' || inv.status === 'void') continue
+    billedByCo.set(inv.co_id, (billedByCo.get(inv.co_id) || 0) + (Number(inv.subtotal ?? inv.amount) || 0))
+  }
+  const impactByCo = new Map<string, number>()
+  for (const a of amendments || []) {
+    if (!a?.change_order_id) continue
+    if (isRetainer && isRenewalAmendment(a)) continue
+    impactByCo.set(a.change_order_id, (impactByCo.get(a.change_order_id) || 0) + (Number(a.financial_impact) || 0))
+  }
+  const totalByCo = new Map((changeOrders || []).map(c => [c.id, Number(c.total) || 0]))
+  let gross = 0
+  for (const [coId, impact] of impactByCo) {
+    if (impact <= 0) continue
+    const remaining = Math.max(0, impact - (billedByCo.get(coId) || 0))
+    const coTotal = totalByCo.get(coId)
+    if (!coTotal || remaining <= 0) continue
+    gross += coTotal * Math.min(1, remaining / impact)
+  }
+  return Math.round(gross * 100) / 100
+}
+
 /** Base + amendments, floored at zero. */
 export function effectiveContractValue(project: ValueProject, amendments: AmendmentLike[] | null | undefined, billedMonths?: number): number {
   return Math.max(0, baseContractValue(project, billedMonths) + amendmentImpact(amendments, project.type))

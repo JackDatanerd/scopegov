@@ -28,6 +28,8 @@ import { normalizeLateFeeRate } from '@/lib/documents/late-fee'
 import { normalizeLiabilityCap } from '@/lib/documents/liability-cap'
 import { normalizeApprovalSilence } from '@/lib/documents/approval-silence'
 import { findClientDateConflicts } from '@/lib/sow/date-conflicts'
+import { terminationClauseHtml, disputeClauseHtml, applyPortfolioUse, normalizePortfolioUse } from '@/lib/documents/standard-clauses'
+import { clientDependencyDates, normalizeClientMaterialsDays } from '@/lib/documents/client-dates'
 import { pickAgencyStandards } from '@/lib/utils/agency-standards'
 import { canReadProject } from '@/lib/utils/project-access'
 import { isTerminalStatus } from '@/lib/utils/project-status'
@@ -266,6 +268,14 @@ export async function POST(request: NextRequest) {
       const { data: ap } = await (service as any).from('workspaces').select('default_approval_silence, default_approval_days').eq('id', session.workspaceId).maybeSingle()
       approvalSilence = normalizeApprovalSilence(ap?.default_approval_silence, ap?.default_approval_days)
     } catch { /* no review rule */ }
+    // Portfolio use and the Client's materials window (migration 161) — own tolerant read, so a deploy ahead of the migration loses only these.
+    let portfolioUse: ReturnType<typeof normalizePortfolioUse> = null
+    let clientMaterialsDays: number | null = null
+    try {
+      const { data: pf } = await (service as any).from('workspaces').select('default_portfolio_use, default_client_materials_days').eq('id', session.workspaceId).maybeSingle()
+      portfolioUse = normalizePortfolioUse(pf?.default_portfolio_use)
+      clientMaterialsDays = normalizeClientMaterialsDays(pf?.default_client_materials_days)
+    } catch { /* no portfolio rule, materials due on the start date */ }
     // FIX (SOW-lifecycle fix round — headline finding): contractValue and
     // currency used to come straight from the request body — every other
     // legally-material field in this route is validated against a closed
@@ -360,6 +370,8 @@ export async function POST(request: NextRequest) {
       paymentTermsDays,
       liabilityCap,
       approvalSilence,
+      portfolioUse,
+      clientDates: clientDependencyDates(typeof project.start_date === 'string' ? project.start_date : null, clientMaterialsDays),
       dateStyle: sowDateStyle(project.workspaces?.legal_address),
       // The model is told what day it is and when the project starts, instead of guessing a year (see SowContentInput).
       today: new Date().toISOString().slice(0, 10),
@@ -397,7 +409,7 @@ export async function POST(request: NextRequest) {
         if (msg.stop_reason === 'max_tokens') throw new Error('the model reply was cut off (max_tokens)')
         aiSections = parseDelimitedSections(raw)
         aiTables = parseTableSections(raw)
-        const conflicts = findClientDateConflicts(aiTables?.deliverables as any, aiSections?.assumptions)
+        const conflicts = findClientDateConflicts(aiTables?.deliverables as any, aiSections?.assumptions, contentInput.clientDates ? [contentInput.clientDates.access, contentInput.clientDates.materials] : null)
         if (conflicts.length && attempt < MAX_ATTEMPTS) {
           conflictingDraft = { sections: aiSections, tables: aiTables }
           fixNote = conflicts.join(' ')
@@ -476,6 +488,13 @@ export async function POST(request: NextRequest) {
     // The limitation-of-liability clause is its own section (shown only when the workspace chose it), not a paragraph of Termination.
     allContent.liability = liabilityCapSectionHtml(contentInput)
     allContent.revisions = ensureApprovalSilenceStated(allContent.revisions || '', contentInput)
+    // Standard clauses (English): Termination and Dispute Resolution are fixed text, and any portfolio wording the model volunteered is
+    // replaced by the workspace's choice (or removed). Other languages keep the model-written clauses.
+    if (!contentInput.language || contentInput.language === 'en') {
+      allContent.termination = terminationClauseHtml({ retainer: !!contentInput.retainer, retainerMonths: contentInput.retainer?.months ?? null })
+      allContent.dispute = disputeClauseHtml(contentInput.governingLaw)
+    }
+    allContent.ip = applyPortfolioUse(allContent.ip || '', portfolioUse, contentInput.language)
 
     const parsed: { sections: any[]; metadata: any } = {
       sections: SOW_SECTION_DEFS.map(def => ({
@@ -503,6 +522,9 @@ export async function POST(request: NextRequest) {
         ...(liabilityCap ? { liabilityCap } : {}),
         // The client-review rule in force when this SOW was drafted (frozen with the document).
         ...(approvalSilence ? { approvalSilence } : {}),
+        ...(portfolioUse ? { portfolioUse } : {}),
+        // The Client dates the platform set when this SOW was drafted (the send-time check compares the table against them).
+        ...(contentInput.clientDates ? { clientDates: contentInput.clientDates } : {}),
         ...(clientRepresentative ? { clientRepresentative, ...(clientRepresentativeTitle ? { clientRepresentativeTitle } : {}) } : {}),
         revisionRounds,
         ...(revisionNote ? { revisionNote } : {}),

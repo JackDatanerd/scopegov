@@ -129,6 +129,8 @@ function workspaceToForm(ws: any) {
     defaultLiabilityCap:        ws?.default_liability_cap || '',
     defaultApprovalSilence:     ws?.default_approval_silence || '',
     defaultApprovalDays:        ws?.default_approval_days != null ? String(ws.default_approval_days) : '',
+    defaultPortfolioUse:        ws?.default_portfolio_use || '',
+    defaultClientMaterialsDays: ws?.default_client_materials_days != null ? String(ws.default_client_materials_days) : '',
     autoClientReminders:        ws?.auto_client_reminders ?? false,
     clientReminderAfterDays:    String(ws?.client_reminder_after_days ?? 3),
     clientReminderMax:          String(ws?.client_reminder_max ?? 3),
@@ -166,6 +168,8 @@ function toServerValue(key: string, value: any): unknown {
     case 'defaultLiabilityCap':        return trimText(value) === '' ? null : trimText(value)
     case 'defaultApprovalSilence':     return trimText(value) === '' ? null : trimText(value)
     case 'defaultApprovalDays':        return trimText(value) === '' ? null : Number(value)
+    case 'defaultPortfolioUse':        return trimText(value) === '' ? null : trimText(value)
+    case 'defaultClientMaterialsDays': return trimText(value) === '' ? null : Number(value)
     case 'clientReminderAfterDays':
     case 'clientReminderMax':
     case 'proactiveRiskThreshold':     return Number(value)
@@ -1120,6 +1124,23 @@ function WorkspaceTab({ form, setForm, permissions, onSave, saving, slugChangedA
             <option value="">Don&apos;t state it</option>
             <option value="deemed_approved">Deemed approved once the review window passes</option>
             <option value="work_waits">Work waits until the client approves</option>
+          </select>
+        </div>
+        <div className="fgrp">
+          <label className="flbl">Client materials due <InfoTip text="Optional. How many business days after the project start the client must supply its initial materials (footage, content, assets). Account access is always due on the start date. Leave blank (or 0) and both are due on the start date. New SOWs use these dates instead of letting the AI choose them." /></label>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+            <input className="finp" type="number" min={0} max={30} step={1} placeholder="Start date" style={{ maxWidth: 110 }} value={form.defaultClientMaterialsDays}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => set('defaultClientMaterialsDays', e.target.value)} />
+            <span>business days after start</span>
+          </div>
+        </div>
+        <div className="fgrp">
+          <label className="flbl">Portfolio use <InfoTip text="Optional. Whether you may show the work in your portfolio. When chosen, new SOWs add one standard sentence to Intellectual Property. Leave on 'Don't state it' and the SOW says nothing: any portfolio wording the AI volunteers is removed. Wording is fixed by ScopeGov and is not legal advice." /></label>
+          <select className="finp" style={{ maxWidth: 420 }} value={form.defaultPortfolioUse}
+            onChange={(e: React.ChangeEvent<HTMLSelectElement>) => set('defaultPortfolioUse', e.target.value)}>
+            <option value="">Don&apos;t state it</option>
+            <option value="with_consent">Only with the client&apos;s prior written consent</option>
+            <option value="unless_objects">Allowed unless the client objects in writing</option>
           </select>
         </div>
         <button className="btn btn-primary btn-sm" disabled={saving}

@@ -69,5 +69,24 @@ export function scrubProjectNameAsBrand(text: string, projectName: string | null
   const t = String(text ?? '')
   if (name.length < 3) return t
   const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  return t.replace(new RegExp(`(?:\\b(?:the|this|your|our)\\s+)?${esc}(?:['\u2019]s)?\\s+(?:brand|business|company|product line|products?)\\b`, 'gi'), "the Client's brand")
+  // "<name> brand's social content" -> "the brand's social content" (not the double possessive "the Client's brand's"); else "the Client's brand".
+  return t.replace(new RegExp(`(?:\\b(?:the|this|your|our)\\s+)?${esc}(?:['\u2019]s)?\\s+(?:brand|business|company|product line|products?)(['\u2019]s)?\\b`, 'gi'),
+    (_m, poss: string | undefined) => (poss ? `the brand${poss}` : "the Client's brand"))
+}
+
+/**
+ * An invoice or change-order TITLE is client-facing, and the project name is an internal label ("V7 DTC Skincare"). The invoice
+ * drafter's own example title is "Fleet Rollout - Wave 2 completion", which teaches it to prefix the project name. Removes a leading
+ * or trailing "<project name> <separator>" from a drafted title and re-capitalises what is left.
+ */
+export function stripProjectNameFromTitle(title: string, projectName: string | null | undefined): string {
+  const t = String(title ?? '').trim()
+  const name = String(projectName ?? '').trim()
+  if (name.length < 3) return t
+  const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const out = t
+    .replace(new RegExp(`^${esc}\\s*[\\u2014\\u2013\\-:|\\u00b7,]\\s*`, 'i'), '')
+    .replace(new RegExp(`\\s*[\\u2014\\u2013\\-:|\\u00b7,]\\s*${esc}$`, 'i'), '')
+    .trim()
+  return out ? out.replace(/^([a-z])/, (c) => c.toUpperCase()) : t
 }

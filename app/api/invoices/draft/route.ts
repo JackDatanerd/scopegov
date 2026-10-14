@@ -13,6 +13,7 @@
 export const runtime = 'nodejs'
 export const maxDuration = 60
 
+import { stripProjectNameFromTitle } from '@/lib/documents/co-draft-text'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
@@ -122,7 +123,7 @@ export async function POST(request: NextRequest) {
 
     const prompt = `You are drafting a client invoice for billable work already completed.
 
-Project: ${project.name} (${project.type})
+Project (an internal label: never put it in the title or in any line description): ${project.name} (${project.type})
 Currency: ${project.currency}
 ${sourceLabel ? `This invoice bills against: ${sourceLabel}` : 'No specific milestone/SOW/CO selected — this is a standalone invoice.'}
 ${sourceContext?.billingType ? billingTypeGuidance[sourceContext.billingType] || '' : ''}
@@ -138,7 +139,7 @@ Rules:
 - Break the work into separate line items whenever it spans different billing bases — a fixed-fee milestone, hourly time-and-materials hours, and a reimbursable expense are three different lines, not one. If it's genuinely a single flat charge, one line item is fine.
 - Never set a dollar rate. Pricing always comes from the agency, not the model.
 - quantity should reflect a sensible unit (hours for T&M, 1 for a fixed-fee milestone or a flat expense reimbursement) — default to 1 if unclear.
-- Keep the title client-facing and professional — no internal jargon, no placeholder text like "TBD".`
+- Keep the title client-facing and professional — no internal jargon, no placeholder text like "TBD". Describe what is billed (for example "Monthly retainer — November 2026"); never start or end the title with the project name.`
 
     const model = aiModel()
     const msg = await createWithTool(anthropicClient(), {
@@ -175,7 +176,7 @@ Rules:
       })
       .filter(l => l.description)
       .slice(0, MAX_INVOICE_LINE_ITEMS)
-    const title = typeof parsed.title === 'string' ? parsed.title.trim().slice(0, 200) : ''
+    const title = typeof parsed.title === 'string' ? stripProjectNameFromTitle(parsed.title.trim().slice(0, 200), project.name) : ''
 
     return NextResponse.json({ title, lineItems })
   } catch (err) {

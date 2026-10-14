@@ -23,7 +23,7 @@
 
 import { projectTaxBases, netOfTax } from '@/lib/documents/tax-basis'
 import { fetchAll } from '@/lib/utils/fetch-all'
-import { amendmentImpact, baseContractValue, loadRetainerMonthsBilled, unbilledChangeOrderValue, type PositionProject } from '@/lib/utils/contract-value'
+import { amendmentImpact, baseContractValue, loadRetainerMonthsBilled, unbilledChangeOrderValue, unbilledChangeOrderGross, type PositionProject } from '@/lib/utils/contract-value'
 
 export { baseContractValue }
 export type { PositionProject }
@@ -39,6 +39,8 @@ export interface ContractPosition {
   atRiskValue: number
   /** Net value of approved change orders no live invoice has billed yet (already inside contractedValue; part of what is still to invoice). */
   unbilledChangeOrderValue?: number
+  /** The same change orders as their own tax-inclusive totals (not the net grossed back up, which can be a cent off). */
+  unbilledChangeOrderGross?: number
   /** A retainer with no end date: "contracted" is the months billed so far, a figure that moves every month, so documents do not print it. */
   openEndedRetainer?: boolean
 }
@@ -50,6 +52,8 @@ export interface InvoiceContractPosition {
   paidToDate: number
   excludesTax?: boolean
   unbilledChangeOrders?: number
+  /** Gross twin of unbilledChangeOrders: the change orders' own totals, tax included. */
+  unbilledChangeOrdersGross?: number
   openEndedRetainer?: boolean
 }
 
@@ -59,7 +63,8 @@ export function toInvoiceContractPosition(position: ContractPosition): InvoiceCo
     // Contract figures are net of tax; show cash on the same basis and say so (a net "invoiced" beside a gross "paid" read as paid > invoiced).
     ? { contractedValue: position.contractedValue, invoicedToDate: position.invoicedToDate, paidToDate: position.paidToDateNet ?? position.paidToDate, excludesTax: true }
     : { contractedValue: position.contractedValue, invoicedToDate: position.invoicedToDate, paidToDate: position.paidToDate }
-  const withUnbilled = unbilled > 0 ? { ...base, unbilledChangeOrders: unbilled } : base
+  const unbilledGross = Math.round(Math.max(0, position.unbilledChangeOrderGross || 0) * 100) / 100
+  const withUnbilled = unbilled > 0 ? { ...base, unbilledChangeOrders: unbilled, ...(unbilledGross > 0 ? { unbilledChangeOrdersGross: unbilledGross } : {}) } : base
   return position.openEndedRetainer ? { ...withUnbilled, openEndedRetainer: true } : withUnbilled
 }
 
@@ -78,7 +83,7 @@ export async function computeContractPositions(
 
   for (let i = 0; i < ids.length; i += CHUNK) {
     const chunk = ids.slice(i, i + CHUNK)
-    const [amendments, invoices, openCos] = await Promise.all([
+    const [amendments, invoices, openCos, coTotals] = await Promise.all([
       fetchAll<any>('position amendments', (from, to) =>
         service.from('amendments').select('id, project_id, change_order_id, financial_impact, change_orders(is_retainer_renewal)')
           .in('project_id', chunk).order('id').range(from, to)),
@@ -89,6 +94,9 @@ export async function computeContractPositions(
         service.from('change_orders').select('id, project_id, total')
           .in('project_id', chunk).in('status', ['awaiting_response', 'stalled', 'countered', 'awaiting_countersignature'])
           .order('id').range(from, to)),
+      fetchAll<any>('position CO totals', (from, to) =>
+        service.from('change_orders').select('id, project_id, total')
+          .in('project_id', chunk).order('id').range(from, to)),
     ])
 
     // Open-ended retainers (no term): their contracted value is the months committed so far.
@@ -134,6 +142,12 @@ export async function computeContractPositions(
           amendments.filter((a: any) => a.project_id === id),
           invoices.filter((inv: any) => inv.project_id === id),
           project.type,
+        ),
+        unbilledChangeOrderGross: unbilledChangeOrderGross(
+          amendments.filter((a: any) => a.project_id === id),
+          invoices.filter((inv: any) => inv.project_id === id),
+          project.type,
+          coTotals.filter((c: any) => c.project_id === id),
         ),
         atRiskValue:     openCos.filter((c: any) => c.project_id === id).reduce((s: number, c: any) => s + (Number(c.total) || 0), 0),
         ...(project.type === 'retainer' && !(Number(project.retainer_duration_months) > 0) ? { openEndedRetainer: true } : {}),

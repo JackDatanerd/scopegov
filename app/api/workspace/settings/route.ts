@@ -62,6 +62,8 @@ const COLUMNS: Record<string, string> = {
   defaultLiabilityCap:        'default_liability_cap',
   defaultApprovalSilence:     'default_approval_silence',
   defaultApprovalDays:        'default_approval_days',
+  defaultPortfolioUse:        'default_portfolio_use',
+  defaultClientMaterialsDays: 'default_client_materials_days',
 }
 
 // Recorded as "changed" in the audit trail without the value: identifiers and
@@ -249,6 +251,20 @@ function parseField(key: string, value: unknown): unknown {
       if (value === null || (typeof value === 'string' && value.trim() === '')) return null
       if (value !== 'deemed_approved' && value !== 'work_waits') throw new FieldError('Choose a listed review option, or none')
       return value
+    }
+    case 'defaultPortfolioUse': {
+      // null / blank = the SOW states nothing about portfolio use (lib/documents/standard-clauses.ts).
+      if (value === null || (typeof value === 'string' && value.trim() === '')) return null
+      if (value !== 'with_consent' && value !== 'unless_objects') throw new FieldError('Choose a listed portfolio option, or none')
+      return value
+    }
+    case 'defaultClientMaterialsDays': {
+      // Business days after the project start by which the Client supplies its initial materials. null / blank = the start date.
+      if (value === null || (typeof value === 'string' && value.trim() === '')) return null
+      const n = toFiniteNumber(value)
+      if (!Number.isInteger(n) || n < 0 || n > 30)
+        throw new FieldError('Client materials deadline must be a whole number of business days from 0 to 30')
+      return n
     }
     case 'defaultApprovalDays': {
       // Business days for "deemed approved". null / blank = not set (the rule falls back to 5 if "deemed approved" is chosen without it).
