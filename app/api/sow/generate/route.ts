@@ -27,6 +27,7 @@ import { parseStatedTax } from '@/lib/documents/tax-basis'
 import { normalizeLateFeeRate } from '@/lib/documents/late-fee'
 import { normalizeLiabilityCap } from '@/lib/documents/liability-cap'
 import { normalizeApprovalSilence } from '@/lib/documents/approval-silence'
+import { findClientDateConflicts } from '@/lib/sow/date-conflicts'
 import { pickAgencyStandards } from '@/lib/utils/agency-standards'
 import { canReadProject } from '@/lib/utils/project-access'
 import { isTerminalStatus } from '@/lib/utils/project-status'
@@ -371,9 +372,15 @@ export async function POST(request: NextRequest) {
     let aiTables: Record<SowTableSectionId, SowTableRow[]> | null = null
     let usedFallback = false
     let lastStopReason: string | null = null
+    // A draft that parsed but names two different dates for the same Client dependency is retried once with the conflict spelled out.
+    // If the retries then fail outright, the conflicting draft is still better than the deterministic fallback, so it is kept.
+    let fixNote: string | null = null
+    let lastAttemptFailed = false
+    let conflictingDraft: { sections: Record<string, string>; tables: Record<SowTableSectionId, SowTableRow[]> } | null = null
 
     for (let attempt = 1; attempt <= MAX_ATTEMPTS && !aiSections; attempt++) {
-      const prompt = buildSowContentPrompt(contentInput, { emphatic: attempt > 1 })
+      const prompt = buildSowContentPrompt(contentInput, { emphatic: attempt > 1 && lastAttemptFailed, fixNote: fixNote || undefined })
+      lastAttemptFailed = false
       try {
         if (attempt > 1) await recordAiUsage(service, session.workspaceId, session.id, 'sow.generate')
         const msg = await anthropicClient().messages.create({
@@ -390,13 +397,26 @@ export async function POST(request: NextRequest) {
         if (msg.stop_reason === 'max_tokens') throw new Error('the model reply was cut off (max_tokens)')
         aiSections = parseDelimitedSections(raw)
         aiTables = parseTableSections(raw)
+        const conflicts = findClientDateConflicts(aiTables?.deliverables as any, aiSections?.assumptions)
+        if (conflicts.length && attempt < MAX_ATTEMPTS) {
+          conflictingDraft = { sections: aiSections, tables: aiTables }
+          fixNote = conflicts.join(' ')
+          aiSections = null
+          aiTables = null
+        }
       } catch (err) {
+        lastAttemptFailed = true
         const reason = err instanceof SowContentParseError
           ? err.message
           : (err instanceof Error ? err.message : String(err))
         console.error(`SOW content generation attempt ${attempt}/${MAX_ATTEMPTS} failed:`, reason, 'stop_reason:', lastStopReason)
         // Loop continues to next attempt (or falls through to fallback below)
       }
+    }
+
+    if (!aiSections && conflictingDraft) {
+      aiSections = conflictingDraft.sections
+      aiTables = conflictingDraft.tables
     }
 
     if (!aiSections) {

@@ -33,10 +33,12 @@ describe('CO drafter backstops', () => {
   })
   it('states the billing basis of a per-unit line capped at its own quantity', () => {
     const d = 'initial message plus follow-up to each approved candidate, up to 10 candidates (one-time fee, per candidate contacted)'
-    expect(ensureCappedQuantityBasis(d, 10)).toBe(`${d}; the fee covers the full quantity of 10, whether or not all are used`)
+    // the per-use phrasing ("per candidate contacted") contradicts a fixed sum, so it is removed
+    expect(ensureCappedQuantityBasis(d, 10)).toBe('initial message plus follow-up to each approved candidate, up to 10 candidates (one-time fee); the fee covers the full quantity of 10, whether or not all are used')
     expect(ensureCappedQuantityBasis(d, 6)).toBe(d)
     expect(ensureCappedQuantityBasis('one shortlist of up to 15 candidates', 1)).toBe('one shortlist of up to 15 candidates')
-    expect(ensureCappedQuantityBasis(`${d}, billed as used`, 10)).toBe(`${d}, billed as used`)
+    // wording that bills by use contradicts a fixed sum: it is removed, not trusted
+    expect(ensureCappedQuantityBasis(`${d}, billed as used`, 10)).toBe('initial message plus follow-up to each approved candidate, up to 10 candidates (one-time fee); the fee covers the full quantity of 10, whether or not all are used')
   })
   it('wires the helpers into the drafter and gives the model the rules', () => {
     const src = read('app/api/co/draft/route.ts')

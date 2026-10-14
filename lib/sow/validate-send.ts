@@ -12,6 +12,7 @@
 //              acknowledge them; the unattended approval path treats them as
 //              non-blocking.
 
+import { findClientDateConflicts } from '@/lib/sow/date-conflicts'
 import { parseTableAmount, isTableSection, milestoneName } from '@/lib/sow/table-schema'
 import { roundCurrency } from '@/lib/utils/format'
 import { paymentStructureError, storedPaymentStructure } from '@/lib/sow/payment-structure'
@@ -144,6 +145,8 @@ export function validateSowForSend(input: {
     .filter((r: any) => !isBlankText(String(r?.deliverable ?? '')))
   if (deliverableRows.length === 0)
     errors.push('List at least one deliverable before sending this SOW.')
+  for (const msg of findClientDateConflicts(deliverables?.table, String(byId('assumptions')?.content ?? '')))
+    warnings.push(msg)
   if (isBlankText(textOf(byId('oos')?.content)))
     errors.push('Fill in the Out of Scope section before sending this SOW — it is what protects both sides from scope creep. Write "None" if nothing is excluded.')
   if (isBlankText(textOf(byId('payment')?.content)))

@@ -14,9 +14,15 @@ const SYMBOLS: Record<string, string> = {
 }
 const SYMBOL_RE = new RegExp(`[${Object.keys(SYMBOLS).join('')}]`, 'g')
 
+// One apostrophe style per document: the model writes straight ones ("Client's"), app-owned clauses use curly ones ("Provider’s").
+// Between two letters is always an apostrophe, so it is drawn curly everywhere. Links are left alone (symbols aside).
+const APOSTROPHE_RE = /(\p{L})'(?=\p{L})/gu
+
 export function mapPdfSymbols<T>(value: T): T {
   if (typeof value === 'string') {
-    return (value.startsWith('data:image/') ? value : value.replace(SYMBOL_RE, ch => SYMBOLS[ch])) as unknown as T
+    if (value.startsWith('data:image/')) return value
+    const mapped = value.replace(SYMBOL_RE, ch => SYMBOLS[ch])
+    return (/^https?:\/\//i.test(value) ? mapped : mapped.replace(APOSTROPHE_RE, '$1\u2019')) as unknown as T
   }
   if (Array.isArray(value)) return value.map(v => mapPdfSymbols(v)) as unknown as T
   if (value && typeof value === 'object') {

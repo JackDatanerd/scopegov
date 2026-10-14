@@ -502,13 +502,12 @@ export function ensureApprovalSilenceStated(revisionsHtml: string, input: SowCon
   return `${revisionsHtml}${clause}`
 }
 
-/** Prompt lines: the model never writes what silence means; when a rule is chosen its review window must match. */
+/** Prompt lines: the model never writes what silence means; a chosen review window is stated exactly, and none is invented. */
 export function approvalSilencePromptBlock(input: SowContentInput): string {
   const base = '- Never state what happens when the Client does not respond to a review or approval request (no "deemed approved", "tacit approval" or "work pauses" wording). If the agency wants a rule it is added separately; any you write would contradict it.'
-  const rule = input.approvalSilence
-  return rule && rule.mode === 'deemed_approved' && rule.days
-    ? `${base}\n- Any Client review or approval window you state anywhere must be exactly ${rule.days} business day${rule.days === 1 ? '' : 's'}.`
-    : base
+  const days = input.approvalSilence?.days
+  if (days) return `${base}\n- Any Client review or approval window you state anywhere must be exactly ${days} business day${days === 1 ? '' : 's'}.`
+  return `${base}\n- No standard review window is set. When you mention how long the Client has to review or give feedback, say it is agreed in writing before work begins; never invent a number of days, and never refer to a window "agreed between the parties" without saying how it is agreed. Do not make one section depend on another for this (for example Assumptions must not say feedback is given "within the process described in the Revision Policy").`
 }
 
 const SCHEDULE_WORDS: Record<string, { upfront: string; final: string; full: string; monthly: string; kickoff: string; beforeWork: string; finalApproval: string; monthlyTrig: string; tax: string }> = {
@@ -698,7 +697,7 @@ function retainerTotalPretty(input: SowContentInput): string | null {
 function retainerPromptLines(input: SowContentInput): string {
   if (!input.retainer) return `Contract value${input.tax && input.tax.rate > 0 ? (input.tax.inclusive ? ' (tax included)' : ' (excluding tax)') : ''}: ${formatMoneyText(input.currency, input.contractValue)}`
   const total = retainerTotalText(input)
-  return `Monthly retainer fee: ${formatMoneyText(input.currency, input.contractValue)} per month (this is a recurring monthly fee, NOT a one-off contract total)\n` +
+  return `Monthly retainer fee: ${formatMoneyText(input.currency, input.contractValue)} per month${input.tax && input.tax.rate > 0 ? (input.tax.inclusive ? ', tax included' : ', excluding tax') : ''} (this is a recurring monthly fee, NOT a one-off contract total)\n` +
     (input.retainer.months
       ? `Retainer term: ${input.retainer.months} month${input.retainer.months === 1 ? '' : 's'} (total commitment ${retainerTotalPretty(input) || total})`
       : 'Retainer term: open-ended — billed monthly until either party ends it in writing')
@@ -743,6 +742,7 @@ export function draftingRulesBlock(input: SowContentInput): string {
   lines.push('- If the scope brief names results the client wants to see (for example follower growth or traffic), name them in the Project Overview and in the reporting deliverable as measures that are tracked and reported. Never promise or guarantee them.')
   lines.push('- State precisely what each deliverable covers in its own acceptance criteria (for example "a caption for each published post") so that adjacent work is clearly not part of it. Do not add exclusions that are not in the out-of-scope brief.')
   lines.push('- State the payment period once. Never repeat it in a second sentence.')
+  lines.push('- Every item the Client must supply or grant (account access, raw materials, approvals) gets its OWN row in the Deliverables table with its own date. Never combine items that have different dates into one row, and each date must be exactly the one the Assumptions state for that item.')
   if (input.retainer) {
     lines.push('- This is a RETAINER. In the Deliverables table, a deliverable that recurs (weekly posting, monthly reporting, ongoing research) shows its cadence in the Target date cell as a short label such as \"Weekly\" or \"Monthly\", never a single calendar date; this overrides the Target date rule above for those rows. A calendar date is used only for one-off setup items (access, onboarding, supply of client materials), and it must be the same deadline the Assumptions state for that item.')
     lines.push('- This is a RETAINER. Each monthly fee covers a full month starting on the start date. The Timeline must say what the first month includes (any onboarding period inside it) and must not describe the first posting period as starting later without saying why it is part of the first monthly fee. A report due a number of days after month end must not also carry a target date that is earlier than that.')
@@ -783,7 +783,14 @@ export function dedupePaymentPeriodSentences(paymentHtml: string, days: number |
         if (seen) continue
         seen = true
         // First statement is the badly worded one (and short enough to be only that statement): swap in the well-formed one.
-        if (preferred && !wellFormedRe.test(plain(sent)) && plain(sent).trim().split(/\s+/).length <= 12) { kept.push(preferred.replace(/^(\s*)([a-z])/, (_m, sp, ch) => sp + ch.toUpperCase())); continue }
+        if (preferred && !wellFormedRe.test(plain(sent)) && plain(sent).trim().split(/\s+/).length <= 12) {
+          // Keep the bold lead ("Payment period.") of the clause being replaced; the replacement is the bare sentence.
+          const LEAD_RE = /^\s*<(strong|b)>[\s\S]*?<\/\1>\s*/i
+          const lead = LEAD_RE.exec(sent)?.[0] ?? ''
+          const body = preferred.replace(LEAD_RE, '').replace(/^(\s*)([a-z])/, (_m, sp, ch) => sp + ch.toUpperCase())
+          kept.push(`${lead}${body}`)
+          continue
+        }
       }
       kept.push(sent)
     }
@@ -793,11 +800,11 @@ export function dedupePaymentPeriodSentences(paymentHtml: string, days: number |
   })
 }
 
-export function buildSowContentPrompt(input: SowContentInput, opts?: { emphatic?: boolean }): string {
+export function buildSowContentPrompt(input: SowContentInput, opts?: { emphatic?: boolean; fixNote?: string }): string {
   const markerList = AI_SECTION_IDS.map(id => SECTION_MARKER(id)).join('\n')
   const reminder = opts?.emphatic
     ? `\n\nIMPORTANT — your previous attempt did not use the required format correctly. You MUST start every prose section with its exact marker line, e.g. ${SECTION_MARKER('overview')}, and every table with its exact marker line, e.g. ${TABLE_MARKER('deliverables')}, each on its own line, with nothing else on that line, followed by ${TABLE_END} on its own line once the table's rows are done. Do not use JSON, do not use markdown code fences, do not skip any marker.`
-    : ''
+    : (opts?.fixNote ? `\n\nFIX REQUIRED — your previous draft was internally inconsistent: ${opts.fixNote}` : '')
 
   const deliverableCols = SOW_TABLE_SCHEMAS.deliverables.columns.map(c => c.label).join(' | ')
   const timelineCols    = SOW_TABLE_SCHEMAS.timeline.columns.map(c => c.label).join(' | ')

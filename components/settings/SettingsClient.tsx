@@ -1101,26 +1101,26 @@ function WorkspaceTab({ form, setForm, permissions, onSave, saving, slugChangedA
           </select>
         </div>
         <div className="fgrp">
-          <label className="flbl">If the client doesn&apos;t respond to a review <InfoTip text="Optional. When chosen, new SOWs add one standard sentence to the Revision Policy saying what happens when a deliverable is submitted for review and the client stays silent. Wording is fixed by ScopeGov and is not legal advice: have a lawyer review it for your jurisdiction. Leave on 'Don't state it' to say nothing." /></label>
+          <label className="flbl">Client review window <InfoTip text="Optional. How many business days the client has to approve or request changes after you submit a deliverable. When set, new SOWs state it once in the Revision Policy. Leave blank and the SOW says the window is agreed in writing before work begins (it never invents a number)." /></label>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+            <input className="finp" type="number" min={1} max={30} step={1} placeholder="Not set" style={{ maxWidth: 110 }} value={form.defaultApprovalDays}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => set('defaultApprovalDays', e.target.value)} />
+            <span>business days</span>
+          </div>
+        </div>
+        <div className="fgrp">
+          <label className="flbl">If the client doesn&apos;t respond within it <InfoTip text="Optional. When chosen, new SOWs add one standard sentence to the Revision Policy saying what happens when the client stays silent. Wording is fixed by ScopeGov and is not legal advice: have a lawyer review it for your jurisdiction. Leave on 'Don't state it' to say nothing." /></label>
           <select className="finp" style={{ maxWidth: 420 }} value={form.defaultApprovalSilence}
             onChange={(e: React.ChangeEvent<HTMLSelectElement>) => {
               const v = e.target.value
               set('defaultApprovalSilence', v)
-              // "Deemed approved" needs a day count: start from 5 so the field is never silently empty; clear it for the other choices.
-              set('defaultApprovalDays', v === 'deemed_approved' ? (form.defaultApprovalDays || '5') : '')
+              // "Deemed approved" needs a window: start from 5 so it is never silently empty. The window itself stays whatever it was.
+              if (v === 'deemed_approved' && !form.defaultApprovalDays) set('defaultApprovalDays', '5')
             }}>
             <option value="">Don&apos;t state it</option>
-            <option value="deemed_approved">Deemed approved after a set number of business days</option>
+            <option value="deemed_approved">Deemed approved once the review window passes</option>
             <option value="work_waits">Work waits until the client approves</option>
           </select>
-          {form.defaultApprovalSilence === 'deemed_approved' && (
-            <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
-              <span>Deemed approved after</span>
-              <input className="finp" type="number" min={1} max={30} step={1} style={{ maxWidth: 90 }} value={form.defaultApprovalDays}
-                onChange={(e: React.ChangeEvent<HTMLInputElement>) => set('defaultApprovalDays', e.target.value)} />
-              <span>business days</span>
-            </div>
-          )}
         </div>
         <button className="btn btn-primary btn-sm" disabled={saving}
           onClick={saveForm}>

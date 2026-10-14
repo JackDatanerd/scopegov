@@ -4,7 +4,7 @@ export const maxDuration = 60
 
 import { isOpenEndedRetainer } from '@/lib/documents/co-retainer'
 import { normalizeDraftQuantity } from '@/lib/documents/co-draft-quantity'
-import { isGenericScopeReference, stripInternalScopeLabels, ensureCappedQuantityBasis } from '@/lib/documents/co-draft-text'
+import { isGenericScopeReference, stripInternalScopeLabels, ensureCappedQuantityBasis, normalizeLineEnding, scrubProjectNameAsBrand } from '@/lib/documents/co-draft-text'
 import { MAX_DESCRIPTION_LEN } from '@/lib/documents/co-totals'
 import { isRealLookupFailure } from '@/lib/documents/co-lookup'
 import { createServiceClient } from '@/lib/supabase/server'
@@ -146,7 +146,7 @@ Flag description (agency's summary, not the client's own words): ${flag.descript
 
     const prompt = `You are drafting a change order (extra billable work outside the original scope) for a client project.
 
-Project: ${project.name} (${project.type})
+Project (an internal label: never print it as the name of the Client's brand, business or product): ${project.name} (${project.type})
 ${project.type === 'retainer' ? `Billing: monthly retainer — the original value below is the MONTHLY fee.\n` : ''}Original contract value: ${project.currency} ${project.contract_value}
 Already in scope (do NOT re-bill these): ${inScope}
 Already excluded from scope: ${outOfScope}
@@ -170,7 +170,10 @@ Rules:
 - A change order is billed once. Write every line item as a one-time fee and never use recurring wording (monthly, per month, recurring). Limits may be per month of the existing engagement (for example \"up to 4 posts\"), but the fee itself is one-time. For an ongoing engagement with no end date, leave timelineImpactDays null unless the request names a delay.
 - Never write a section label the SOW does not print (for example "General scope"). Name an item or section only by the title the SOW prints, such as "Out of Scope".
 - Describe an existing exclusion only in its own words. If the requested work goes beyond what that exclusion's text covers (for example the exclusion names influencers but the request also asks for affiliate partners), say this change order adds that extra work to scope as additional work, and amends the exclusion only for the part it covers. Never claim an exclusion lists something it does not.
-- When a line item's limit is "up to N" and its quantity is N, say in the description that the fee covers the full quantity of N whether or not all are used.
+- When a line item's limit is "up to N" and its quantity is N, say in the description that the fee covers the full quantity of N whether or not all are used. Never describe such a line as billed "per candidate contacted", "as used" or by actual use: the change order total is one fixed sum.
+- Say a requested activity falls under an exclusion only if the exclusion's own text names it (or names an obvious synonym of it). If the exclusion lists specific verbs, use those verbs; an activity it does not name is additional work added by this change order, not part of the exclusion.
+- Draft line items only for work the Client's request names or plainly requires. Do not add extra deliverables (a brief, report, audit, strategy) that the request did not mention.
+- The project name is an internal label. Never use it as the name of the Client's brand, business or product; say "the Client's brand" instead.
 - note is the REASON for the change. Open with the Client's request (who asked for the work and, in one sentence, what for), then one sentence on what the Provider will do and who bears any third-party cost. Do not list the line items again.
 - scopeImpact should name the specific deliverable or SOW section this falls outside of, quoting the section by its printed title (for example the "Out of Scope" section), not just restate the note.`
 
@@ -209,7 +212,7 @@ Rules:
       const rawDescription = sanitizePlainText(String(l?.description ?? ''))
       // One named deliverable is one unit, whatever limit its description states ("up to 15 candidates").
       const quantity = normalizeDraftQuantity(rawDescription, Number.isFinite(q) && q > 0 && q <= 10_000 ? q : 1)
-      const description = truncateText(ensureCappedQuantityBasis(rawDescription, quantity), MAX_DESCRIPTION_LEN)
+      const description = normalizeLineEnding(truncateText(scrubProjectNameAsBrand(ensureCappedQuantityBasis(rawDescription, quantity), project.name), MAX_DESCRIPTION_LEN))
       return {
         description,
         quantity,
@@ -233,8 +236,8 @@ Rules:
 
     return NextResponse.json({
       title:              truncateText(sanitizePlainText(String(parsed.title ?? '')), 200),
-      note:               truncateText(stripInternalScopeLabels(sanitizePlainText(String(parsed.note ?? ''))), 2000),
-      scopeImpact:        parsed.scopeImpact ? truncateText(stripInternalScopeLabels(sanitizePlainText(String(parsed.scopeImpact))), 1000) || null : null,
+      note:               truncateText(scrubProjectNameAsBrand(stripInternalScopeLabels(sanitizePlainText(String(parsed.note ?? ''))), project.name), 2000),
+      scopeImpact:        parsed.scopeImpact ? truncateText(scrubProjectNameAsBrand(stripInternalScopeLabels(sanitizePlainText(String(parsed.scopeImpact))), project.name), 1000) || null : null,
       timelineImpactDays: !isOpenEndedRetainer(project) && Number.isInteger(days) && days >= MIN_CO_TIMELINE_DAYS && days <= MAX_CO_TIMELINE_DAYS ? days : null,
       lineItems,
     })

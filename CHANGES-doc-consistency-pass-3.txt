@@ -1,0 +1,39 @@
+Document consistency pass 3 (V6 re-audit): regressions, CO drafter, review window, client-date conflicts
+==========================================================================================================
+
+No migration (the review window reuses workspaces.default_approval_days from migration 160).
+
+Regressions from the previous pass
+- Payment Terms lost its bold "Payment period." label: the clause-level dedupe replaced the whole clause. It now keeps the lead of
+  the clause it replaces.
+- CO capped-quantity lines contradicted themselves ("fee per candidate contacted ... the fee covers the full quantity of 10"). Per-use
+  billing wording ("per candidate contacted", "billed as used") is now removed from a line capped at its own quantity before the
+  fixed-sum clause is added, and the drafting prompt forbids it.
+- The SOW header's "INCL. 8.25% TAX" sat below the SIGNED badge; it now sits directly under the price label.
+
+Change orders
+- The internal project name was printed as the client's brand ("for the V6 DTC Skincare brand"). The drafter is told it is an
+  internal label, and "<project name> brand/business/company" is rewritten to "the Client's brand" as a backstop.
+- An activity may be said to fall under an exclusion only if the exclusion's own text names it (otherwise: additional work).
+- The drafter adds only work the request names or plainly requires (no unrequested brief/report/audit lines).
+- Line descriptions end consistently (no trailing full stop).
+
+SOW
+- New "Client review window" setting (business days). When set, Revision Policy states it once ("The Client will approve or request
+  changes to each deliverable within N business days ..."); "if the client doesn't respond" stays a separate choice (default: Don't
+  state it). With no window set, the model must say the window is agreed in writing before work begins instead of inventing a number
+  or pointing at an undefined "window agreed between the parties" (and Assumptions must not just point back at Revision Policy).
+- One date per client dependency: the model is told each Client-supplied item gets its own Deliverables row; a draft whose Client row
+  date disagrees with an Assumptions sentence about the same thing is retried once with the conflict spelled out (the conflicting
+  draft is kept if retries fail), and send validation warns about any that remain (lib/sow/date-conflicts.ts).
+- The retainer overview line states the fee's tax basis to the model so "Contract value" says whether tax is included.
+
+Documents
+- One apostrophe style: letters-apostrophe-letters render curly in every PDF string (the model wrote straight, app clauses curly).
+- Invoice: "Paid to date (incl. tax)" when tax applies, parallel to "Paid to date (excl. tax)" in Contract position.
+
+Not changed on purpose: a delivery deadline for the monthly report. Nothing in the inputs gives one, and stating one is the
+same invented-term problem as the old "2 business days". Table-header repeat on a continued CO table (react-pdf limitation).
+
+Tests: tests/doc-consistency-pass-3.test.ts (new); approval-silence and doc-consistency-pass-2 updated for the intentional changes.
+Full suite and tsc pass.

@@ -22,9 +22,26 @@ export function stripInternalScopeLabels(text: string): string {
 }
 
 /**
- * A per-unit line capped at its own quantity ("up to 10 candidates ... per candidate contacted", quantity 10) bills the whole
- * quantity, but nothing said so: a client who approves 6 of 10 cannot tell whether 6 or 10 units are owed. The description
- * states the basis. Lines whose wording already settles it, and lines whose quantity is not the cap, are left alone.
+ * "fee per candidate contacted" / "billed as used" say the OPPOSITE of a fixed sum. A change order total is one agreed figure, so a
+ * line capped at its own quantity must not describe itself as billed by actual use. Removes that phrasing (keeping the sentence
+ * break it carried) so the basis clause below is the only statement of the billing basis.
+ */
+export function stripPerUseBilling(description: string): string {
+  const PER_USE = /,?\s*(?:(?:the\s+)?(?:one-time\s+)?fee\s+(?:is\s+)?|billed\s+|charged\s+)?per\s+[a-z][a-z-]*(?:\s+[a-z][a-z-]*){0,3}\s+(?:contacted|used|delivered|reached|approached|messaged|sent)\b(\.?)/gi
+  return String(description ?? '')
+    .replace(PER_USE, (_m, dot: string) => dot || '')
+    .replace(/,?\s*(?:billed|charged|invoiced)\s+(?:as|by|on)\s+(?:actual\s+)?(?:used|use|usage|delivered)\b/gi, '')
+    .replace(/\s*,\s*\./g, '.')
+    .replace(/\(\s*([^()]*?)\s*[,;]\s*\)/g, '($1)')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
+}
+
+/**
+ * A per-unit line capped at its own quantity ("up to 10 candidates ... ", quantity 10) bills the whole quantity, but nothing said
+ * so: a client who approves 6 of 10 cannot tell whether 6 or 10 units are owed. The description states the basis (after
+ * removing any per-use wording that contradicts it). Lines whose wording already settles it, and lines whose quantity is not
+ * the cap, are left alone.
  */
 export function ensureCappedQuantityBasis(description: string, quantity: number): string {
   const text = String(description ?? '')
@@ -32,6 +49,25 @@ export function ensureCappedQuantityBasis(description: string, quantity: number)
   if (!m) return text
   const cap = Number(m[1].replace(/,/g, ''))
   if (!(quantity > 1) || quantity !== cap) return text
-  if (/\bwhether or not\b|\bregardless\b|\bfull quantity\b|\bbilled (?:for|as)\b|\bas used\b|\bactually (?:used|contacted|delivered)\b/i.test(text)) return text
-  return `${text.replace(/[\s.;,]+$/, '')}; the fee covers the full quantity of ${cap}, whether or not all are used`
+  if (/\bwhether or not\b|\bregardless\b|\bfull quantity\b/i.test(text)) return text
+  const cleaned = stripPerUseBilling(text)
+  return `${cleaned.replace(/[\s.;,]+$/, '')}; the fee covers the full quantity of ${cap}, whether or not all are used`
+}
+
+/** Table-cell style: a line description carries no trailing full stop, so every line in one change order ends the same way. */
+export function normalizeLineEnding(description: string): string {
+  return String(description ?? '').trim().replace(/\.+$/, '').trim()
+}
+
+/**
+ * The project name is an internal label ("V6 DTC Skincare"), not the client's brand. When the model prints it as one ("for the V6
+ * DTC Skincare brand"), the client reads an internal label as their own brand. Rewrites the "<name> brand/business/company"
+ * form to "the Client's brand"; the prompt asks the model not to do this in the first place.
+ */
+export function scrubProjectNameAsBrand(text: string, projectName: string | null | undefined): string {
+  const name = String(projectName ?? '').trim()
+  const t = String(text ?? '')
+  if (name.length < 3) return t
+  const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return t.replace(new RegExp(`(?:\\b(?:the|this|your|our)\\s+)?${esc}(?:['\u2019]s)?\\s+(?:brand|business|company|product line|products?)\\b`, 'gi'), "the Client's brand")
 }

@@ -12,7 +12,7 @@ describe('normalizing the stored rule', () => {
     expect(normalizeApprovalSilence(null)).toBeNull()
     expect(normalizeApprovalSilence('')).toBeNull()
     expect(normalizeApprovalSilence('tacit')).toBeNull()
-    expect(normalizeApprovalSilence(undefined, 5)).toBeNull()
+    expect(normalizeApprovalSilence(undefined, undefined)).toBeNull()
   })
   it('deemed approved keeps a valid day count and falls back to 5 without one', () => {
     expect(normalizeApprovalSilence('deemed_approved', 3)).toEqual({ mode: 'deemed_approved', days: 3 })
@@ -22,8 +22,14 @@ describe('normalizing the stored rule', () => {
     expect(normalizeApprovalDays(0)).toBeNull()
     expect(normalizeApprovalDays(30)).toBe(30)
   })
-  it('work waits carries no day count', () => {
-    expect(normalizeApprovalSilence('work_waits', 7)).toEqual({ mode: 'work_waits', days: null })
+  it('work waits keeps the window when one is set', () => {
+    expect(normalizeApprovalSilence('work_waits', 7)).toEqual({ mode: 'work_waits', days: 7 })
+    expect(normalizeApprovalSilence('work_waits', null)).toEqual({ mode: 'work_waits', days: null })
+  })
+  it('a review window alone is a valid rule (no consequence stated)', () => {
+    expect(normalizeApprovalSilence('', 3)).toEqual({ mode: null, days: 3 })
+    expect(normalizeApprovalSilence(null, 3)).toEqual({ mode: null, days: 3 })
+    expect(normalizeApprovalSilence(null, 0)).toBeNull()
   })
 })
 
@@ -32,6 +38,8 @@ describe('the fixed clause', () => {
     expect(approvalSilenceSentence({ mode: 'deemed_approved', days: 1 })).toContain('within 1 business day of')
     expect(approvalSilenceSentence({ mode: 'deemed_approved', days: 3 })).toContain('within 3 business days of')
     expect(approvalSilenceSentence({ mode: 'work_waits', days: null })).toContain('will not proceed')
+    expect(approvalSilenceSentence({ mode: null, days: 2 })).toBe('The Client will approve or request changes to each deliverable within 2 business days of the Provider submitting it for review.')
+    expect(approvalSilenceSentence({ mode: 'deemed_approved', days: 2 })).toContain('If the Client does neither within that period')
   })
   it('is appended to Revision Policy once, only when chosen, English only', () => {
     const rule = { mode: 'deemed_approved', days: 2 }
@@ -49,7 +57,14 @@ describe('drafting prompt', () => {
   })
   it('pins any review window the model writes to the chosen day count', () => {
     expect(approvalSilencePromptBlock(input({ mode: 'deemed_approved', days: 2 }))).toContain('exactly 2 business days')
+    expect(approvalSilencePromptBlock(input({ mode: null, days: 4 }))).toContain('exactly 4 business days')
     expect(approvalSilencePromptBlock(input({ mode: 'work_waits', days: null }))).not.toContain('exactly')
+  })
+  it('with no window set, the model must not invent one or leave an undefined "agreed" window', () => {
+    const p = approvalSilencePromptBlock(input(null))
+    expect(p).toContain('No standard review window is set')
+    expect(p).toContain('agreed in writing before work begins')
+    expect(p).toContain('never invent a number of days')
   })
 })
 

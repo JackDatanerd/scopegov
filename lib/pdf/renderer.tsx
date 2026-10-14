@@ -512,11 +512,11 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
               : <Text style={s.agencyText}>{data.agencyName}</Text>}
             <Text style={s.value}>{data.currency} {fm(data.contractValue)}{data.isRetainer ? ` / ${t.perMonth}` : ''}</Text>
             <Text style={s.valueLabel}>{data.isRetainer ? t.monthlyRetainer : t.contractValue}</Text>
-            {data.signedBy && data.signedAt && !data.isWatermarked && (
-              <Text style={{ fontSize: 8.5, fontFamily: PDF_FONT.bold, textTransform: 'uppercase', letterSpacing: 0.6, paddingVertical: 3, paddingHorizontal: 8, borderRadius: 3, marginTop: 6, alignSelf: 'flex-end', backgroundColor: '#F2F0EA', color: '#909090' }}>{t.signed}</Text>
-            )}
             {(data.taxRate || 0) > 0 && (
               <Text style={[s.valueLabel, { marginTop: 2 }]}>{data.taxInclusive ? t.inclTax(data.taxRate as number) : t.exclTax(data.taxRate as number)}</Text>
+            )}
+            {data.signedBy && data.signedAt && !data.isWatermarked && (
+              <Text style={{ fontSize: 8.5, fontFamily: PDF_FONT.bold, textTransform: 'uppercase', letterSpacing: 0.6, paddingVertical: 3, paddingHorizontal: 8, borderRadius: 3, marginTop: 6, alignSelf: 'flex-end', backgroundColor: '#F2F0EA', color: '#909090' }}>{t.signed}</Text>
             )}
             {data.isRetainer && (data.retainerMonths || 0) > 0 && (
               <Text style={[s.valueLabel, { marginTop: 2 }]}>
@@ -1221,7 +1221,7 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
           )}
           {data.amountPaid > 0 && (
             <View style={s.totalRow}>
-              <Text style={{ color: '#1A5C3A' }}>Paid to date</Text>
+              <Text style={{ color: '#1A5C3A' }}>Paid to date{(data.taxRate || 0) > 0 ? ' (incl. tax)' : ''}</Text>
               <Text style={{ fontFamily: PDF_FONT.sans, color: '#1A5C3A' }}>-{data.currency} {fmtInv(data.amountPaid)}</Text>
             </View>
           )}
