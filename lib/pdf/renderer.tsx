@@ -939,7 +939,7 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
               {oneTimeOnRetainer && (
                 <View style={(hasScopeImpact || hasTimelineImpact || renewalTerm != null) ? { marginTop: 6, paddingTop: 6, borderTop: '1 solid #F2F0EA' } : undefined}>
                   <View style={s.impactRow}>
-                    <Text style={{ color: '#909090' }}>Monthly retainer (unchanged){exTax}</Text>
+                    <Text style={{ color: '#909090' }}>Monthly retainer, unchanged{exTax}</Text>
                     <Text style={s.mono}>{data.currency} {fm(data.retainerMonthlyNet!)}</Text>
                   </View>
                   <View style={s.impactGrand}>
@@ -1344,9 +1344,12 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
           </View>
         )}
 
-        <Text style={{ marginTop: 18, paddingTop: 10, borderTop: '1 solid #E5E1D8', fontSize: 8, color: '#B0B0B0' }}>
-          {data.status === 'paid' && balanceDue === 0 ? 'Paid in full — no further payment is due on this invoice.' : 'This is a payment record, not a payment portal — pay per the instructions above.'}
-        </Text>
+        {/* A paid invoice already says "Paid in full" in its totals and carries the PAID badge: no third repetition here. */}
+        {!(data.status === 'paid' && balanceDue === 0) && (
+          <Text style={{ marginTop: 18, paddingTop: 10, borderTop: '1 solid #E5E1D8', fontSize: 8, color: '#B0B0B0' }}>
+            This is a payment record, not a payment portal — pay per the instructions above.
+          </Text>
+        )}
 
         <PdfFooter generatedLabel="Generated" generatedOn={fd(new Date().toISOString())} scopeGovLabel="Scope governance by" pageLabel={(n, total) => `Page ${n} of ${total}`} />
       </Page>

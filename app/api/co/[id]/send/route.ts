@@ -11,7 +11,8 @@ import { evaluateApprovalGate } from '@/lib/approvals/engine'
 import { sendBlockedReason } from '@/lib/documents/preflight'
 import { liveCoSiblingMessage } from '@/lib/documents/co-live-sibling'
 import { canReadProject } from '@/lib/utils/project-access'
-import { deliveryDateWarning } from '@/lib/documents/co-delivery'
+import { deliveryDateWarning, deliveryBeforeStartWarning } from '@/lib/documents/co-delivery'
+import { revisionsUnstatedWarning } from '@/lib/documents/co-definition'
 import { unstatedExclusions } from '@/lib/documents/co-draft-text'
 import { isTerminalStatus } from '@/lib/utils/project-status'
 import { coGateAmount } from '@/lib/approvals/gate-amount'
@@ -35,8 +36,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // whole query (42703), which silently surfaces as "CO not found".
     const { data: co, error: coFetchErr } = await (service as any)
       .from('change_orders')
-      .select(`id,title,status,total,line_items,version,root_co_id,project_id,is_retainer_renewal,renewal_term_months,is_credit,tax_rate,tax_inclusive,revised_delivery_date,scope_impact_note,
-        projects(id,name,status,currency,type,retainer_duration_months,client_id)`)
+      .select(`id,title,status,total,line_items,version,root_co_id,project_id,is_retainer_renewal,renewal_term_months,is_credit,tax_rate,tax_inclusive,revised_delivery_date,scope_impact_note,note,
+        projects(id,name,status,currency,type,retainer_duration_months,client_id,start_date)`)
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!co) {
@@ -128,6 +129,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       const extraWarnings: string[] = []
       const noDelivery = deliveryDateWarning(co, co.projects)
       if (noDelivery) extraWarnings.push(noDelivery)
+      const beforeStart = deliveryBeforeStartWarning(co, co.projects)
+      if (beforeStart) extraWarnings.push(beforeStart)
+      const noRevisions = revisionsUnstatedWarning(co)
+      if (noRevisions) extraWarnings.push(noRevisions)
       const unstated = unstatedExclusions(co.scope_impact_note, Array.isArray(co.line_items) ? co.line_items : [])
       if (unstated.length) extraWarnings.push(`A line item says the work does not include ${unstated.join(', ')}, but the Scope impact note does not mention it. State it there so the amended scope is clear, or send it as it is.`)
       const details = await loadSendDetailsWarnings(service, session.workspaceId, project.client_id, 'co', { projectId: project.id, taxRate: co.tax_rate, taxInclusive: co.tax_inclusive }, extraWarnings)

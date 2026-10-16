@@ -1,0 +1,37 @@
+Change orders: delivery before project start, undefined revisions; document polish; one prompt conflict from the clauses pass
+==========================================================================================================================
+
+No migration. Found by reading a retainer starting 1 November with a one-time change order due 26 October, whose shortlist line said
+what the limit was but not what a shortlist contains or what happens to changes.
+
+1. Delivery date before the project starts (lib/documents/co-delivery.ts, app/api/co/[id]/send/route.ts)
+   Sending a charged change order whose delivery date is earlier than the project's start date now raises an acknowledgeable warning
+   naming both dates. It may be intended (pre-start work), but nothing in the documents explained it. Silent for credits, monthly-rate
+   changes, unpriced orders and when either date is missing. The send route now also loads projects.start_date and the CO note.
+
+2. Change order that delivers a work product but never says what happens to changes (lib/documents/co-definition.ts)
+   The SOW's revision policy was written for the original deliverables, so it does not obviously cover a new list, report, plan or
+   design. A charged change order whose line delivers one of those, and whose note, scope impact and lines never mention revisions or
+   changes, raises an acknowledgeable warning at send. Deliberately narrow: hours, posts and other repeated units are governed by the
+   SOW as written, so there is no warning on every priced change order.
+   AI draft (app/api/co/draft/route.ts): a line that delivers a list, report, brief or plan says what each entry or part contains;
+   scopeImpact states whether the new work includes revisions, or that changes need a further change order.
+
+3. Polish
+   - Change order: "Monthly retainer (unchanged) (excl. tax)" is now "Monthly retainer, unchanged (excl. tax)".
+   - Paid invoice: "Paid in full" appeared three times (badge, totals, footer). The footer line is gone on a paid invoice; the badge
+     and the totals row remain. Unpaid invoices keep their footer.
+   - SOW drafting rules: a brand, product or account the brief names that is not the Client's own name is introduced once as the
+     Client's ("the Client's Solvane brand"); when revisions cover only some things (captions), the Revision Policy says anything else
+     (edits to cuts) is not covered and needs a change order.
+
+4. Correction to the previous tarball (lib/ai/sow-content.ts)
+   The "view-only access to report data" drafting rule added last time contradicted an older rule saying never to add Client
+   obligations such as extra systems. The model could follow the older one and drop it. The older rule now carries the exception.
+
+Left alone on purpose: the "fee covers the full quantity of N whether or not all are used" wording in a change-order line. It is
+required by an existing rule (ensureCappedQuantityBasis) so a capped line carries its own billing basis wherever it is reprinted.
+Not changed: who owns a delivered shortlist (the SOW's IP clause names captions and edited content only); a business term to decide.
+
+tests/co-and-polish-fixes.test.ts (27 new). Checked: tsc, next lint (0 errors), full suite 359 files / 3635 tests.
+Applies to documents generated or sent from now on; executed documents keep their frozen PDFs.

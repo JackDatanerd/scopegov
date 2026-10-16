@@ -27,3 +27,21 @@ export function deliveryDateWarning(
   if (!(Number(co.total) > 0)) return null
   return String(co.revised_delivery_date ?? '').trim() ? null : DELIVERY_DATE_WARNING
 }
+
+const isoDay = (v: unknown): string | null => { const m = /^(\d{4}-\d{2}-\d{2})/.exec(String(v ?? '').trim()); return m ? m[1] : null }
+const longDay = (iso: string) => new Date(`${iso}T00:00:00Z`).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric', timeZone: 'UTC' })
+
+/**
+ * Warning when a charged change order promises delivery BEFORE its project starts (a retainer starting 1 November with one-time work
+ * due 26 October). It may be intended (pre-start work), but nothing in the documents explains it, so say so before it goes out.
+ * Null for credits, rate changes, unpriced orders, or when either date is missing.
+ */
+export function deliveryBeforeStartWarning(
+  co: { is_retainer_renewal?: boolean | null; is_credit?: boolean | null; total?: number | string | null; revised_delivery_date?: string | null },
+  project: { start_date?: string | null } | null | undefined,
+): string | null {
+  if (co.is_retainer_renewal || co.is_credit || !(Number(co.total) > 0)) return null
+  const delivery = isoDay(co.revised_delivery_date), start = isoDay(project?.start_date)
+  if (!delivery || !start || delivery >= start) return null
+  return `The delivery date (${longDay(delivery)}) is before the project starts (${longDay(start)}), so this work would be delivered before the engagement begins. Move the delivery date, or send it as it is.`
+}

@@ -65,7 +65,7 @@ describe('reports on data the Provider does not control', () => {
     const base = { language: 'en' } as unknown as SowContentInput
     const withReport = { ...base, deliverables: 'monthly analytics report with traffic data' } as SowContentInput
     expect(draftingRulesBlock(withReport)).toContain('view-only access to where that data lives')
-    expect(draftingRulesBlock({ ...base, deliverables: 'weekly posts' } as SowContentInput)).not.toContain('view-only access')
+    expect(draftingRulesBlock({ ...base, deliverables: 'weekly posts' } as SowContentInput)).not.toContain('where that data lives')
     expect(dataAccessPromptLine({ deliverables: 'traffic report', language: 'es' })).toBe('')
   })
 })
