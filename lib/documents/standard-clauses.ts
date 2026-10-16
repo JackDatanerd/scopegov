@@ -19,7 +19,11 @@ export function terminationClauseHtml(input: TerminationInput): string {
       : 'This Statement of Work is an open-ended retainer. Either party may end it by giving written notice to the other party.'
     return `<p>${intro}</p><ul>`
       + '<li>Termination takes effect at the end of the monthly period in which the written notice is given, unless the parties agree a different date in writing.</li>'
-      + '<li>The Client will pay all fees invoiced up to the effective date of termination; the fee for the monthly period in progress remains payable.</li>'
+      // The retainer is billed monthly IN ADVANCE, so the invoice for the next month can already exist when notice is given. "All
+      // fees invoiced up to the effective date" would have made that invoice payable for a month with no service. The fee follows
+      // the service period instead: a month that begins on or before the effective date is owed in full, a later one is not.
+      + '<li>The Client will pay the monthly fee for each monthly period that begins on or before the effective date of termination, including the period in progress when notice is given. Fees for change orders accepted, and work delivered, before the effective date also remain payable.</li>'
+      + '<li>No fee is payable for a monthly period that begins after the effective date of termination. An invoice already issued for such a period is cancelled, and any amount already paid for it is refunded.</li>'
       + '<li>On request after termination, the Provider will return or delete the Client\u2019s account access and materials.</li>'
       + '</ul>'
   }

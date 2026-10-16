@@ -1,0 +1,23 @@
+Retainer termination: fees follow the service period, not the invoice date
+==========================================================================
+
+No migration. Found by reading a retainer SOW billed monthly in advance, whose Termination said "The Client will pay all fees invoiced
+up to the effective date of termination; the fee for the monthly period in progress remains payable."
+
+The problem: the next month's invoice is issued BEFORE that month begins. Notice given 20 Nov takes effect 30 Nov, but the December
+invoice is issued around 16 Nov, so it is "invoiced up to the effective date" and, read literally, payable for a month with no service.
+Every retainer billed in advance has this ambiguity, open-ended or fixed term.
+
+lib/documents/standard-clauses.ts, terminationClauseHtml (retainer only):
+- The Client pays the monthly fee for each monthly period that BEGINS on or before the effective date, including the period in progress
+  when notice is given. (Begins, not ends: an agreed mid-month date still owes the month in progress.)
+- No fee is payable for a period that begins after the effective date. An invoice already issued for it is cancelled and any amount
+  already paid for it is refunded.
+- Fees for change orders accepted, and work delivered, before the effective date stay payable, so the cancellation can never reach them.
+- Effective-date rule and return/deletion of materials are unchanged. Fixed-fee termination is unchanged.
+
+Operating note: the clause says the later invoice is cancelled. In the app that means voiding the invoice and marking the project
+completed on the effective date so the monthly billing job stops.
+
+Applies to SOWs generated from now on; signed SOWs keep their frozen text.
+tests/termination-advance-billing.test.ts (12 new). Checked: tsc, full suite.
