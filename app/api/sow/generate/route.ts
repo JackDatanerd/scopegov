@@ -19,7 +19,7 @@ import { getPendingApprovalForDocument } from '@/lib/approvals/engine'
 import { logAudit } from '@/lib/utils/audit'
 import { sanitizeRichText, sanitizePlainText, truncateText } from '@/lib/utils/sanitize'
 import { isBlankText } from '@/lib/utils/client-input'
-import { applyAgencyStandards, ensureContractValueStated, ensureTaxStated, ensureLateFeeStated, ensurePaymentTermsDaysStated, dedupePaymentPeriodSentences, normalizePaymentTermsDays, liabilityCapSectionHtml, ensureApprovalSilenceStated, derivedScheduleRows, type AgencyStandards } from '@/lib/ai/sow-content'
+import { applyAgencyStandards, ensureContractValueStated, ensureTaxStated, ensureLateFeeStated, ensurePaymentTermsDaysStated, dedupePaymentPeriodSentences, normalizePaymentTermsDays, liabilityCapSectionHtml, ensureApprovalSilenceStated, derivedScheduleRows, lawWithArticle, agencyPaymentTermsText, retainerPaymentTermsHtml, leadLateFeeParagraph, ensureChangeOrderClause, type AgencyStandards } from '@/lib/ai/sow-content'
 import { workspaceTaxDefaults } from '@/lib/documents/tax-defaults'
 import { sowDateStyle } from '@/lib/utils/date-style'
 import { normalizeRevisionNote } from '@/lib/sow/brief-signals'
@@ -485,6 +485,10 @@ export async function POST(request: NextRequest) {
     allContent.payment = ensureLateFeeStated(allContent.payment, contentInput)
     allContent.payment = ensurePaymentTermsDaysStated(allContent.payment, contentInput)
     allContent.payment = dedupePaymentPeriodSentences(allContent.payment, contentInput.paymentTermsDays)
+    allContent.payment = leadLateFeeParagraph(allContent.payment, contentInput)
+    // English retainer: the whole Payment Terms section is data, so the app writes it (fixed labels, fixed order).
+    allContent.payment = retainerPaymentTermsHtml(contentInput, agencyPaymentTermsText(standards)) || allContent.payment
+    allContent.oos = ensureChangeOrderClause(allContent.oos || '', contentInput)
     // The limitation-of-liability clause is its own section (shown only when the workspace chose it), not a paragraph of Termination.
     allContent.liability = liabilityCapSectionHtml(contentInput)
     allContent.revisions = ensureApprovalSilenceStated(allContent.revisions || '', contentInput)
@@ -492,7 +496,7 @@ export async function POST(request: NextRequest) {
     // replaced by the workspace's choice (or removed). Other languages keep the model-written clauses.
     if (!contentInput.language || contentInput.language === 'en') {
       allContent.termination = terminationClauseHtml({ retainer: !!contentInput.retainer, retainerMonths: contentInput.retainer?.months ?? null })
-      allContent.dispute = disputeClauseHtml(contentInput.governingLaw)
+      allContent.dispute = disputeClauseHtml(lawWithArticle(contentInput.governingLaw))
     }
     allContent.ip = applyPortfolioUse(allContent.ip || '', portfolioUse, contentInput.language)
 

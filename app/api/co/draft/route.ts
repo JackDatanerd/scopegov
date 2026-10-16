@@ -4,7 +4,7 @@ export const maxDuration = 60
 
 import { isOpenEndedRetainer } from '@/lib/documents/co-retainer'
 import { normalizeDraftQuantity } from '@/lib/documents/co-draft-quantity'
-import { isGenericScopeReference, stripInternalScopeLabels, ensureCappedQuantityBasis, normalizeLineEnding, scrubProjectNameAsBrand } from '@/lib/documents/co-draft-text'
+import { isGenericScopeReference, stripInternalScopeLabels, ensureCappedQuantityBasis, normalizeLineEnding, scrubProjectNameAsBrand, fixOutOfScopePhrasing } from '@/lib/documents/co-draft-text'
 import { MAX_DESCRIPTION_LEN } from '@/lib/documents/co-totals'
 import { isRealLookupFailure } from '@/lib/documents/co-lookup'
 import { createServiceClient } from '@/lib/supabase/server'
@@ -39,7 +39,7 @@ const DRAFT_CO_TOOL = {
       },
       scopeImpact: {
         type: 'string',
-        description: 'One sentence on how this work sits outside the signed scope — shown to the client as its own line in Impact Analysis. Reference the specific deliverable or SOW section this falls outside of. Omit only if there is genuinely nothing beyond the note worth saying.',
+        description: 'One sentence on how this work relates to the signed scope — shown to the client as its own line in Impact Analysis. Say which SOW item or section it falls under (for example the "Influencer partnerships" item of the "Out of Scope" section) or that it is additional work. Omit only if there is genuinely nothing beyond the note worth saying.',
       },
       timelineImpactDays: {
         type: ['integer', 'null'],
@@ -175,7 +175,7 @@ Rules:
 - Draft line items only for work the Client's request names or plainly requires. Do not add extra deliverables (a brief, report, audit, strategy) that the request did not mention.
 - The project name is an internal label. Never use it as the name of the Client's brand, business or product; say "the Client's brand" instead.
 - note is the REASON for the change. Open with the Client's request (who asked for the work and, in one sentence, what for), then one sentence on what the Provider will do and who bears any third-party cost. Do not list the line items again.
-- scopeImpact should name the specific deliverable or SOW section this falls outside of, quoting the section by its printed title (for example the "Out of Scope" section), not just restate the note.`
+- scopeImpact should name the specific exclusion or SOW section this work falls under, quoting it by its printed title (for example the "Out of Scope" section), not just restate the note. Work listed in the Out of Scope section falls UNDER that section, because it is excluded; never write that it "falls outside" the Out of Scope section.`
 
     // createWithTool: some models (e.g. a newer ANTHROPIC_MODEL) reject a forced tool_choice with a 400 — it retries
     // once with tool_choice 'auto' instead of failing every draft (see lib/ai/tool-call.ts).
@@ -237,7 +237,7 @@ Rules:
     return NextResponse.json({
       title:              truncateText(sanitizePlainText(String(parsed.title ?? '')), 200),
       note:               truncateText(scrubProjectNameAsBrand(stripInternalScopeLabels(sanitizePlainText(String(parsed.note ?? ''))), project.name), 2000),
-      scopeImpact:        parsed.scopeImpact ? truncateText(scrubProjectNameAsBrand(stripInternalScopeLabels(sanitizePlainText(String(parsed.scopeImpact))), project.name), 1000) || null : null,
+      scopeImpact:        parsed.scopeImpact ? truncateText(fixOutOfScopePhrasing(scrubProjectNameAsBrand(stripInternalScopeLabels(sanitizePlainText(String(parsed.scopeImpact))), project.name)), 1000) || null : null,
       timelineImpactDays: !isOpenEndedRetainer(project) && Number.isInteger(days) && days >= MIN_CO_TIMELINE_DAYS && days <= MAX_CO_TIMELINE_DAYS ? days : null,
       lineItems,
     })

@@ -31,6 +31,7 @@ export function terminationClauseHtml(input: TerminationInput): string {
     + '</ul>'
 }
 
+/** `governingLaw` is the phrase as the Governing Law section prints it (with its article: "the State of Texas, United States"). */
 export function disputeClauseHtml(governingLaw: string | null | undefined): string {
   const law = String(governingLaw ?? '').trim()
   const courts = law ? `the competent courts of ${esc(law)}` : 'the competent courts of the governing jurisdiction'

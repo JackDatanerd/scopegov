@@ -90,3 +90,12 @@ export function stripProjectNameFromTitle(title: string, projectName: string | n
     .trim()
   return out ? out.replace(/^([a-z])/, (c) => c.toUpperCase()) : t
 }
+
+/**
+ * "This work falls outside the 'Out of Scope' section" says the opposite of what it means: work listed there is excluded, so it
+ * falls UNDER that section. The drafter's own prompt used to phrase it that way; this rewrites any that slip through.
+ */
+export function fixOutOfScopePhrasing(text: string): string {
+  return String(text ?? '').replace(/\b(falls?|sits?|lies?)\s+outside\s+(?:of\s+)?(the\s+["\u201c\u2018']?Out of Scope["\u201d\u2019']?\s+(?:section|list|items?))/gi,
+    (_m, verb: string, rest: string) => `${verb} under ${rest}`)
+}

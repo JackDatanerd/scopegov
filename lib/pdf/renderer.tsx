@@ -849,7 +849,8 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
         {/* Line items table */}
         <View style={s.section}>
           <Text style={s.secTitle}><Text style={s.secNum}>{itemsSecNum}. </Text>{data.isCredit ? 'Scope Removed / Credited' : 'Description of Change'}</Text>
-          <View style={s.tableHdr}>
+          {/* fixed: react-pdf repeats this row at the top of every page the table continues onto */}
+          <View style={s.tableHdr} fixed>
             <Text style={[s.th, { flex: 1 }]}>Description</Text>
             <Text style={[s.th, { width: 40, textAlign: 'center' }]}>Qty</Text>
             <Text style={[s.th, { width: 80, textAlign: 'right' }]}>Rate</Text>

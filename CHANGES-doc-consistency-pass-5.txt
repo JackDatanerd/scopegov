@@ -1,0 +1,35 @@
+Document consistency pass 5 (V8 re-audit): payment terms, change-order wording, table header, warnings
+=======================================================================================================
+
+No migration.
+
+Bugs
+- Dispute Resolution read "the competent courts of State of Texas, United States" (no article). Governing Law already used
+  lawWithArticle(); the dispute clause now gets the same phrase.
+- The CO Impact Analysis said "This work falls outside the 'Out of Scope' section", the inverse of the meaning (excluded work
+  falls UNDER that section). The drafter's tool schema and rule taught that phrase; both now say "falls under", and any "falls
+  outside the Out of Scope section" is rewritten (fixOutOfScopePhrasing).
+
+Payment Terms (English retainers) are written by the app
+- Everything in the section is data (fee, tax basis, term, billing, start date, payment period, late fee, the agency's standard
+  terms), and the model's version only varied in labels and order ("Payment period." / "Payment terms." / unlabeled late fee).
+  retainerPaymentTermsHtml writes it: Monthly retainer fee, Retainer term, Billing, Sales tax, Payment period, Late payment,
+  Suspension of work, Additional terms. Items with no data are omitted rather than invented. The agency's saved payment terms are
+  kept: repeats are skipped, a suspension sentence gets its own lead. Other languages and payment structures keep the model text,
+  where a bare late-fee paragraph now gets the "Late payment." lead when the rest are labelled.
+
+Other SOW wording
+- Out of Scope always ends with the change-order route ("Any of these items may be performed only under a written change order signed
+  by both parties") when the model left it out.
+- The model may not add Client obligations the brief never named (brand assets, extra systems, extra accounts).
+
+Warnings
+- Send validation warns when no standard review window is set and the Revision Policy defers the period ("agreed in writing before work
+  begins"): a valid draft, but an unresolved term in a signed document.
+
+Layout
+- The CO line-item header row is `fixed`: react-pdf repeats it at the top of a page the table continues onto (verified in a
+  5-line render: page 1 and page 2 each carry one header; a table that fits one page, and the Impact Analysis page, carry none extra).
+  The SOW's short tables are still deliberately kept together on one page.
+
+Tests: tests/doc-consistency-pass-5.test.ts (new); pass-4 wiring test updated for the dispute change. Full suite and tsc pass.

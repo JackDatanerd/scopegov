@@ -133,7 +133,7 @@ describe('wiring', () => {
   const g = read('app/api/sow/generate/route.ts')
   it('generation replaces Termination and Dispute (English), applies portfolio use, freezes the choices', () => {
     expect(g).toContain('allContent.termination = terminationClauseHtml(')
-    expect(g).toContain('allContent.dispute = disputeClauseHtml(contentInput.governingLaw)')
+    expect(g).toContain('allContent.dispute = disputeClauseHtml(lawWithArticle(contentInput.governingLaw))')
     expect(g).toContain('allContent.ip = applyPortfolioUse(allContent.ip')
     expect(g).toContain('...(portfolioUse ? { portfolioUse } : {})')
     expect(g).toContain('...(contentInput.clientDates ? { clientDates: contentInput.clientDates } : {})')

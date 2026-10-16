@@ -145,6 +145,10 @@ export function validateSowForSend(input: {
     .filter((r: any) => !isBlankText(String(r?.deliverable ?? '')))
   if (deliverableRows.length === 0)
     errors.push('List at least one deliverable before sending this SOW.')
+  // No standard review window in Settings: the Revision Policy defers the period ("agreed in writing before work begins"). That is a
+  // valid draft but an unresolved term in a signed document, so say so before it goes out.
+  if (!input.metadata?.approvalSilence?.days && /agreed in writing before work begins/i.test(textOf(byId('revisions')?.content)))
+    warnings.push('The Revision Policy leaves the client review period to be agreed in writing before work begins. Set a standard review window in Settings, or edit the Revision Policy to state it, so the SOW is complete.')
   for (const msg of findClientDateConflicts(deliverables?.table, String(byId('assumptions')?.content ?? ''), input.metadata?.clientDates ? [input.metadata.clientDates.access, input.metadata.clientDates.materials] : null))
     warnings.push(msg)
   if (isBlankText(textOf(byId('oos')?.content)))
