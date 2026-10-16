@@ -10,8 +10,7 @@ import { isTerminalStatus, TERMINAL_PROJECT_STATUSES } from '@/lib/utils/project
 import {
   parseProjectName, parseOptionalText, parseProjectType, parseContractValue,
   parseCurrencyCode, parseStartDate, parseRetainerMonths,
-  MAX_PROJECT_DISC, MAX_PROJECT_REF,
-} from '@/lib/utils/project-input'
+  MAX_PROJECT_DISC, MAX_PROJECT_REF, parseWorkType, isWorkType } from '@/lib/utils/project-input'
 
 // PATCH edits a project's details and pauses/resumes it.
 //
@@ -84,7 +83,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     // a transient failure answered 404 "Not found" for a project that exists. A failed read is a 500, not an answer.
     const { data: project, error: projectErr } = await (service as any)
       .from('projects')
-      .select('id,name,disc,status,stall_reason,type,client_id,currency,contract_value,start_date,internal_ref,retainer_duration_months,created_by,sow_documents(id,status)')
+      .select('id,name,disc,status,stall_reason,type,work_type,client_id,currency,contract_value,start_date,internal_ref,retainer_duration_months,created_by,sow_documents(id,status)')
       .eq('id', id).eq('workspace_id', session.workspaceId).is('deleted_at', null).maybeSingle()
     if (projectErr) {
       console.error('Project update: project read failed:', projectErr)
@@ -186,6 +185,21 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         updates.retainer_duration_months = null
         changes.retainerDurationMonths = { from: project.retainer_duration_months, to: null }
       }
+      // Kind of work (migration 162). Into a retainer the project keeps what it was ("Marketing" becomes a Marketing retainer)
+      // unless the request names one; out of a retainer the column is cleared, because the new type says it.
+      if (p.value === 'retainer') {
+        const named = body.workType !== undefined ? parseWorkType(body.workType) : null
+        if (named && !named.ok) return NextResponse.json({ error: named.error }, { status: 400 })
+        const next = named ? named.value : (isWorkType(project.type) ? project.type : null)
+        if (next !== (project.work_type ?? null)) { updates.work_type = next; changes.workType = { from: project.work_type ?? null, to: next } }
+      } else if (project.work_type) {
+        updates.work_type = null
+        changes.workType = { from: project.work_type, to: null }
+      }
+    } else if (effectiveType === 'retainer' && body.workType !== undefined) {
+      const wtP = parseWorkType(body.workType)
+      if (!wtP.ok) return NextResponse.json({ error: wtP.error }, { status: 400 })
+      if (wtP.value !== (project.work_type ?? null)) { updates.work_type = wtP.value; changes.workType = { from: project.work_type ?? null, to: wtP.value } }
     }
     if (body.currency !== undefined) {
       const p = parseCurrencyCode(body.currency)
@@ -295,7 +309,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     // actually commits, already has one. Folded into the same fresh-read block rather than a second
     // query, since any of these five fields now needs the same re-check.
     if (updates.contract_value !== undefined || updates.retainer_duration_months !== undefined
-      || updates.client_id !== undefined || updates.type !== undefined || updates.currency !== undefined) {
+      || updates.client_id !== undefined || updates.type !== undefined || updates.currency !== undefined || updates.work_type !== undefined) {
       // FIX (Projects & Dashboard pass 10, B1): this re-check is the race guard for the signed-SOW / structural locks, and it failed OPEN —
       // a failed read left `freshSows` as [], which passes every lock and lets the write through. It now fails closed: a failed read is a 500,
       // and a project that vanished in the gap is a 409 (the write below would have matched nothing anyway).
@@ -313,6 +327,10 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         return NextResponse.json({
           error: 'The client, project type and currency can no longer be changed because a SOW already exists for this project.',
         }, { status: 409 })
+      if (updates.work_type !== undefined && updates.type === undefined && freshSows.length > 0) {
+        const lockError = await checkSowLock(service, freshSows, 'kind of work', 'kind of work', 'kind of work')
+        if (lockError) return NextResponse.json({ error: lockError }, { status: 409 })
+      }
       if (billingModelChange && freshSows.length > 0) {
         const lockError = await checkSowLock(service, freshSows, 'billing model (retainer or fixed project)', 'billing model', 'billing model')
         if (lockError) return NextResponse.json({ error: lockError }, { status: 409 })

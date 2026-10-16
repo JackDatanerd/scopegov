@@ -115,24 +115,33 @@ type DefaultsRow = StandardsColumns & { project_type?: string | null }
 const isUnset = (v: unknown) => v === null || v === undefined
 
 /**
- * The standards that apply to a project type: each field comes from that
- * type's own row when it has one, otherwise from the workspace-wide row. A
- * type override that only changes revision rounds therefore doesn't drop the
- * agency's standard exclusions for that type — but a type override that
- * deliberately blanks its exclusions no longer has the workspace-wide list
- * silently reinstated either.
+ * The standards that apply to a project: each field comes from the project type's own row when that row has a value for it, then
+ * (for a retainer) from the row of the kind of work it is for, then from the workspace-wide row. A type override that only
+ * changes revision rounds therefore doesn't drop the agency's standard exclusions for that type — but a type override that
+ * deliberately blanks its exclusions no longer has the workspace-wide list silently reinstated either.
+ *
+ * `workType` exists because a retainer is a way of billing, not a kind of work: a Marketing retainer keeps the agency's
+ * Marketing standards unless the agency saved retainer-specific ones, which still win field by field.
  */
-export function pickAgencyStandards(rows: DefaultsRow[] | null | undefined, projectType: string | null | undefined): AgencyStandards | null {
+export function pickAgencyStandards(
+  rows: DefaultsRow[] | null | undefined, projectType: string | null | undefined, workType?: string | null,
+): AgencyStandards | null {
   const list = Array.isArray(rows) ? rows : []
   const typed = projectType ? list.find(r => r.project_type === projectType) : undefined
+  const work = workType && workType !== projectType ? list.find(r => r.project_type === workType) : undefined
   const global = list.find(r => !r.project_type)
-  if (!typed && !global) return null
+  if (!typed && !work && !global) return null
 
-  const revisionPolicy    = typed && !isUnset(typed.revision_policy)        ? typed.revision_policy        : (global?.revision_policy ?? null)
-  const paymentTerms      = typed && !isUnset(typed.payment_terms)          ? typed.payment_terms          : (global?.payment_terms ?? null)
-  const outOfScopeClauses = typed && !isUnset(typed.out_of_scope_clauses)   ? typed.out_of_scope_clauses   : (global?.out_of_scope_clauses ?? null)
-  const assumptions       = typed && !isUnset(typed.assumptions)            ? typed.assumptions            : (global?.assumptions ?? null)
+  const layers = [typed, work, global]
+  const pick = <K extends keyof StandardsColumns>(key: K): StandardsColumns[K] | null => {
+    for (const row of layers) if (row && !isUnset(row[key])) return row[key] as StandardsColumns[K]
+    return null
+  }
+  const revisionPolicy    = pick('revision_policy')
+  const paymentTerms      = pick('payment_terms')
+  const outOfScopeClauses = pick('out_of_scope_clauses')
+  const assumptions       = pick('assumptions')
 
   if (!hasText(revisionPolicy) && !hasText(paymentTerms) && !hasList(outOfScopeClauses) && !hasList(assumptions)) return null
-  return { revisionPolicy, paymentTerms, outOfScopeClauses, assumptions }
+  return { revisionPolicy, paymentTerms, outOfScopeClauses, assumptions } as AgencyStandards
 }

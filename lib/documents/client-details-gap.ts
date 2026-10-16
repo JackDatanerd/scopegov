@@ -69,6 +69,8 @@ const DOC_NAME: Record<SendDocKind, string> = { sow: 'SOW', co: 'change order', 
 export async function loadSendDetailsWarnings(
   service: any, workspaceId: string, clientId: string | null | undefined, kind: SendDocKind,
   tax?: { projectId: string | null | undefined; taxRate: unknown; taxInclusive: unknown },
+  /** Further acknowledgeable notes about the document itself (e.g. a missing delivery date), listed after the details warnings. */
+  extraWarnings: string[] = [],
 ) {
   const clientDetails = await loadClientDetailsWarning(service, workspaceId, clientId)
   let agencyDetails: AgencyDetailsInfo | null = null
@@ -78,11 +80,12 @@ export async function loadSendDetailsWarnings(
   const taxBasisWarning = tax && kind !== 'sow'
     ? await loadTaxBasisWarning(service, tax.projectId, kind === 'co' ? 'change order' : 'invoice', tax)
     : null
-  if (!clientDetails && !agencyDetails && !taxBasisWarning) return null
+  if (!clientDetails && !agencyDetails && !taxBasisWarning && extraWarnings.length === 0) return null
   const doc = DOC_NAME[kind]
   const messages: string[] = []
   if (taxBasisWarning) messages.push(taxBasisWarning)
   if (agencyDetails) messages.push(`Your agency has no ${agencyDetails.missing.join(' or ')} on file, so the ${doc} will go out without it.`)
   if (clientDetails) messages.push(`${clientDetails.clientName} has no ${clientDetails.missing.join(' or ')} on file, so the ${doc} will go out without it.`)
-  return { clientDetails, agencyDetails, taxBasisWarning, messages }
+  messages.push(...extraWarnings)
+  return { clientDetails, agencyDetails, taxBasisWarning, extraWarnings, messages }
 }

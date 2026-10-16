@@ -49,6 +49,20 @@ export function parseProjectType(raw: unknown): Parsed<ProjectType> {
   return { ok: true, value: raw as ProjectType }
 }
 
+/** The kinds of work a retainer can be for: every project type except retainer itself. */
+export const WORK_TYPES: readonly ProjectType[] = PROJECT_TYPES.filter(t => t !== 'retainer')
+
+export function isWorkType(v: unknown): v is ProjectType {
+  return typeof v === 'string' && (WORK_TYPES as readonly string[]).includes(v)
+}
+
+/** Optional kind of work for a retainer: blank/null means "not specified". */
+export function parseWorkType(raw: unknown): Parsed<ProjectType | null> {
+  if (raw === undefined || raw === null || raw === '') return { ok: true, value: null }
+  if (!isWorkType(raw)) return fail('Unknown kind of work')
+  return { ok: true, value: raw }
+}
+
 /** Accepts a number or a numeric string ("12,500.50"); rejects NaN/Infinity/negative/absurd. */
 export function parseContractValue(raw: unknown): Parsed<number> {
   if (raw === undefined || raw === null || raw === '') return { ok: true, value: 0 }

@@ -25,7 +25,7 @@ export default function CoEditor({ projId, coId }: Props) {
   const [loading,      setLoading]      = useState(!!coId)
   const [saving,       setSaving]       = useState(false)
   const [sending,      setSending]      = useState(false)
-  const [clientWarn,   setClientWarn]   = useState<{ taxOnly?: boolean; info: ClientDetailsInfo | null; agency: AgencyDetailsInfo | null; warnings: string[] } | null>(null)
+  const [clientWarn,   setClientWarn]   = useState<{ taxOnly?: boolean; notesOnly?: boolean; info: ClientDetailsInfo | null; agency: AgencyDetailsInfo | null; warnings: string[] } | null>(null)
   const [error,        setError]        = useState('')
   const [saveStatus,   setSaveStatus]   = useState<'idle'|'saving'|'saved'|'error'>('idle')
   const [title,        setTitle]        = useState('')
@@ -83,6 +83,7 @@ export default function CoEditor({ projId, coId }: Props) {
   // int (or null) only at save time; scopeImpactNote is free text.
   const [timelineImpactDays, setTimelineImpactDays] = useState('')
   const [revisedDeliveryDate, setRevisedDeliveryDate] = useState('')
+  const [deliverySuggested, setDeliverySuggested] = useState(false)
   const [scopeImpactNote,    setScopeImpactNote]    = useState('')
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const savedCoId = useRef<string | null>(coId || null)
@@ -449,8 +450,8 @@ export default function CoEditor({ projId, coId }: Props) {
         body: JSON.stringify({ expiresInDays: parseInt(expiresInDays, 10) || 30, ...(alreadyAcknowledged ? { acknowledgeWarnings: true } : {}) }),
       })
       const json = await res.json().catch(() => ({} as any))
-      if (res.status === 409 && json.needsAcknowledgement && (json.clientDetails || json.agencyDetails || json.taxBasisWarning)) {
-        setClientWarn({ taxOnly: !json.clientDetails && !json.agencyDetails, info: json.clientDetails || null, agency: json.agencyDetails || null, warnings: Array.isArray(json.warnings) && json.warnings.length ? json.warnings : [json.error] })
+      if (res.status === 409 && json.needsAcknowledgement && (json.clientDetails || json.agencyDetails || json.taxBasisWarning || json.documentWarnings?.length)) {
+        setClientWarn({ taxOnly: !json.clientDetails && !json.agencyDetails, notesOnly: !json.clientDetails && !json.agencyDetails && !json.taxBasisWarning, info: json.clientDetails || null, agency: json.agencyDetails || null, warnings: Array.isArray(json.warnings) && json.warnings.length ? json.warnings : [json.error] })
         return
       }
       if (!res.ok) throw new Error(json.error || 'Send failed')
@@ -500,6 +501,8 @@ export default function CoEditor({ projId, coId }: Props) {
       // be sent to the client as a claim about this change order.
       setScopeImpactNote(json.scopeImpact || '')
       setTimelineImpactDays(json.timelineImpactDays != null ? String(json.timelineImpactDays) : '')
+      // One-time work on an open-ended retainer: the draft proposes when it will be delivered (the person can change it).
+      if (retainerOpenEnded && !isRetainerRenewal) { setRevisedDeliveryDate(json.revisedDeliveryDate || ''); setDeliverySuggested(!!json.revisedDeliveryDate) }
       const drafted = json.lineItems.map((li: any) => ({
         id: nanoid(), description: li.description, quantity: li.quantity || 1, rate: 0, total: 0,
       }))
@@ -651,7 +654,10 @@ export default function CoEditor({ projId, coId }: Props) {
             : <label className="flbl">Revised delivery date <span className="fhint">— optional, the new date when the timeline moves</span></label>}
           <input className="finp" type="date" style={{ maxWidth: 200 }} disabled={isLocked}
             value={revisedDeliveryDate}
-            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setRevisedDeliveryDate(e.target.value)} />
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => { setRevisedDeliveryDate(e.target.value); setDeliverySuggested(false) }} />
+          {retainerOpenEnded && !isLocked && deliverySuggested && revisedDeliveryDate.trim() !== '' && (
+            <p style={{ fontSize: 12, color: 'var(--text-3)', margin: '6px 0 0' }}>Suggested from your request — check it before you send.</p>
+          )}
           {retainerOpenEnded && !isLocked && revisedDeliveryDate.trim() === '' && (
             <p style={{ fontSize: 12, color: 'var(--text-3)', margin: '6px 0 0' }}>Without a date, this change order won&apos;t say when the work is due.</p>
           )}
@@ -843,7 +849,7 @@ export default function CoEditor({ projId, coId }: Props) {
 
       {clientWarn && (
         <ClientDetailsWarningModal
-          info={clientWarn.info} agency={clientWarn.agency} warnings={clientWarn.warnings} taxOnly={clientWarn.taxOnly} docLabel="change order" busy={sending}
+          info={clientWarn.info} agency={clientWarn.agency} warnings={clientWarn.warnings} taxOnly={clientWarn.taxOnly} notesOnly={clientWarn.notesOnly} docLabel="change order" busy={sending}
           onCancel={() => setClientWarn(null)}
           onSendAnyway={async () => { await handleSend(true); setClientWarn(null) }}
         />

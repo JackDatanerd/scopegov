@@ -139,7 +139,7 @@ export async function POST(request: NextRequest) {
     // Fetch project + client + workspace for context
     const { data: project, error: projectErr } = await (service as any)
       .from('projects')
-      .select('id,name,disc,type,retainer_duration_months,status,contract_value,currency,client_id,start_date,clients(name,email,company_name),workspaces(agency_name,governing_law,sow_language,legal_address)')
+      .select('id,name,disc,type,work_type,retainer_duration_months,status,contract_value,currency,client_id,start_date,clients(name,email,company_name),workspaces(agency_name,governing_law,sow_language,legal_address)')
       .eq('id', projectId).eq('workspace_id', session.workspaceId).is('deleted_at', null).maybeSingle()
     // SOW lifecycle pass 17, B5: a failed read is not "not found" — fail into the route's 500 handler.
     if (projectErr) throw new Error(`project read failed: ${projectErr.message}`)
@@ -347,7 +347,7 @@ export async function POST(request: NextRequest) {
         .from('workspace_defaults')
         .select('project_type, revision_policy, payment_terms, out_of_scope_clauses, assumptions')
         .eq('workspace_id', session.workspaceId)
-      standards = pickAgencyStandards(Array.isArray(defaultRows) ? defaultRows : [], project.type)
+      standards = pickAgencyStandards(Array.isArray(defaultRows) ? defaultRows : [], project.type, project.work_type)
     } catch (e) { console.error('SOW generate: workspace_defaults lookup failed', e) }
 
     const contentInput: SowContentInput = {

@@ -1,0 +1,34 @@
+Documents close-out (SOW / CO / invoice set review): retainer kind of work, CO exclusions, CO delivery date
+==========================================================================================================
+
+Migration 162 (run it before deploying).
+
+Feature gap closed: a retainer's kind of work
+- A retainer is a way of BILLING, but it shared one column (projects.type) with Web / Marketing / Video, so a social-media
+  retainer had to be "Retainer" and lost every standard the agency saved for Marketing (out-of-scope clauses, revision policy,
+  assumptions): pickAgencyStandards looked up the 'retainer' row or the workspace-wide row, never the Marketing one.
+- projects.work_type (nullable, retainers only, CHECK-enforced). Set in the new-project wizard ("What kind of work is it?",
+  pre-filled from the type the person had picked when they choose monthly billing or accept the brief's retainer offer),
+  in Edit project, and shown on the project page. PATCH: a project moved INTO a retainer keeps what it was (Marketing becomes
+  a Marketing retainer) unless the request names one; moved OUT, the column is cleared; changing it on an existing retainer is
+  locked by the same SOW rules as the billing model once a SOW is out or signed.
+- pickAgencyStandards(rows, type, workType): per field, the retainer row wins, then the kind-of-work row, then the workspace-wide
+  row. Without a kind of work the result is exactly what it was.
+
+Feature gap closed: a change order's line items could exclude things its Impact Analysis never mentioned
+- A line saying "does not include outreach, negotiation, contracting or program management" added exclusions that exist nowhere in
+  the SOW's Out of Scope section, while the Impact note described only the influencer exclusion. The drafter now appends one
+  sentence naming any line-level exclusion the note leaves out (ensureAddedExclusionsStated), and sending a change order (any
+  author) raises an acknowledgeable warning for the same case (unstatedExclusions).
+
+Feature gap closed: one-time work on an open-ended retainer could go out with no delivery date
+- The Delivery date is the only place such a change order says when the work is due. The drafter now returns deliveryDays for it,
+  the editor fills the date (marked "Suggested from your request"), and sending without one raises an acknowledgeable warning
+  (deliveryDateWarning). Renewals, credits, zero-value and fixed-term retainer change orders are not affected.
+- The send-time warning modal has a "Check before sending" mode for notes about the document itself.
+
+Checked and left alone
+- Invoice late-fee / payment-terms lines: already printed while a balance is owed (and hidden once paid, on purpose).
+- Unset client review period: stays a non-blocking send warning (added in pass 5); a valid draft, flagged before it goes out.
+
+Tests: tests/documents-closeout.test.ts, tests/documents-work-type-patch.test.ts (fails 6 of 7 without the PATCH change).

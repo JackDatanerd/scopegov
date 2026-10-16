@@ -4,7 +4,8 @@ export const maxDuration = 60
 
 import { isOpenEndedRetainer } from '@/lib/documents/co-retainer'
 import { normalizeDraftQuantity } from '@/lib/documents/co-draft-quantity'
-import { isGenericScopeReference, stripInternalScopeLabels, ensureCappedQuantityBasis, normalizeLineEnding, scrubProjectNameAsBrand, fixOutOfScopePhrasing } from '@/lib/documents/co-draft-text'
+import { isGenericScopeReference, stripInternalScopeLabels, ensureCappedQuantityBasis, normalizeLineEnding, scrubProjectNameAsBrand, fixOutOfScopePhrasing, ensureAddedExclusionsStated } from '@/lib/documents/co-draft-text'
+import { deliveryDateFromDays } from '@/lib/documents/co-delivery'
 import { MAX_DESCRIPTION_LEN } from '@/lib/documents/co-totals'
 import { isRealLookupFailure } from '@/lib/documents/co-lookup'
 import { createServiceClient } from '@/lib/supabase/server'
@@ -44,6 +45,10 @@ const DRAFT_CO_TOOL = {
       timelineImpactDays: {
         type: ['integer', 'null'],
         description: 'Net day shift to the project timeline this change order introduces, signed (e.g. 5, -2). Null if there is no clear timeline effect — never guess a number to fill the field.',
+      },
+      deliveryDays: {
+        type: ['integer', 'null'],
+        description: 'ONLY for one-time work on a monthly retainer: calendar days from today until this work is delivered. Use the turnaround the request states; otherwise a realistic estimate for the stated limit (for example about 10 days for a shortlist of candidates). Null for anything else.',
       },
       lineItems: {
         type: 'array',
@@ -199,6 +204,7 @@ Rules:
       // FIX (build): declared `number | null`, so the `typeof rawDays === 'string'` guard below narrowed to `never`
       // and `.trim()` failed type-checking. The model can return a string here (that is exactly what the guard is for).
       timelineImpactDays?: number | string | null
+      deliveryDays?: number | string | null
       lineItems: Array<{ description: string; quantity: number }>
     }
 
@@ -237,7 +243,11 @@ Rules:
     return NextResponse.json({
       title:              truncateText(sanitizePlainText(String(parsed.title ?? '')), 200),
       note:               truncateText(scrubProjectNameAsBrand(stripInternalScopeLabels(sanitizePlainText(String(parsed.note ?? ''))), project.name), 2000),
-      scopeImpact:        parsed.scopeImpact ? truncateText(fixOutOfScopePhrasing(scrubProjectNameAsBrand(stripInternalScopeLabels(sanitizePlainText(String(parsed.scopeImpact))), project.name)), 1000) || null : null,
+      // Whatever the lines say the work does NOT include is also stated in the Impact Analysis (see ensureAddedExclusionsStated).
+      scopeImpact:        parsed.scopeImpact ? truncateText(ensureAddedExclusionsStated(fixOutOfScopePhrasing(scrubProjectNameAsBrand(stripInternalScopeLabels(sanitizePlainText(String(parsed.scopeImpact))), project.name)), lineItems) ?? '', 1000) || null : null,
+      // One-time work on an open-ended retainer: the delivery date is the only statement of when it is due (the editor fills it in
+      // from this, the person can change it, and sending without one warns).
+      revisedDeliveryDate: isOpenEndedRetainer(project) ? deliveryDateFromDays(parsed.deliveryDays) : null,
       timelineImpactDays: !isOpenEndedRetainer(project) && Number.isInteger(days) && days >= MIN_CO_TIMELINE_DAYS && days <= MAX_CO_TIMELINE_DAYS ? days : null,
       lineItems,
     })

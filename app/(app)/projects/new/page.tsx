@@ -123,6 +123,9 @@ function NewProjectPageInner() {
   const [switchingBilling, setSwitchingBilling] = useState(false)
   // The work type to go back to when "Billing" is flipped from monthly back to one fixed fee.
   const [fixedTypeMemory,  setFixedTypeMemory]  = useState<ProjectType>('other')
+  // The kind of work a retainer is for (migration 162): '' = not specified. A retainer is a way of billing, so it keeps the work type
+  // the person had picked (Marketing, Web…) instead of replacing it, and the agency's standards for that kind of work still apply.
+  const [workType, setWorkType] = useState<string>('')
   // Who the contract is with. Asked here, before anything is drafted, so the Parties clause, the PDFs and the signature block
   // all name the right party from the first draft (the SOW generator used to learn this only on a later regenerate).
   const [clientCompany,    setClientCompany]    = useState('')
@@ -289,7 +292,7 @@ function NewProjectPageInner() {
             name: projectName, disc: projectDisc || null, type: projectType,
             contractValue: parseFloat(contractValue) || 0, currency,
             startDate: startDate || null, internalRef: internalRef || null,
-            ...(projectType === 'retainer' ? { retainerDurationMonths: retainerMonths || null } : {}),
+            ...(projectType === 'retainer' ? { retainerDurationMonths: retainerMonths || null, workType: workType || null } : {}),
           }),
         })
         const pj = await pr.json().catch(() => ({}))
@@ -306,6 +309,7 @@ function NewProjectPageInner() {
           contractValue: parseFloat(contractValue) || 0, currency,
           startDate: startDate || null, internalRef: internalRef || null,
           retainerDurationMonths: projectType === 'retainer' ? (retainerMonths || null) : null,
+          ...(projectType === 'retainer' ? { workType: workType || null } : {}),
         }),
       })
       const json = await res.json().catch(() => ({} as any))
@@ -397,8 +401,8 @@ function NewProjectPageInner() {
   // month. Retainer billing is carried by the Retainer type, so this control moves between that type and the work type the person
   // had chosen, instead of making them guess which of eight tiles means "monthly".
   function chooseBilling(model: 'fixed' | 'monthly') {
-    if (model === 'monthly' && projectType !== 'retainer') { setFixedTypeMemory(projectType); setProjectType('retainer') }
-    if (model === 'fixed' && projectType === 'retainer') setProjectType(fixedTypeMemory)
+    if (model === 'monthly' && projectType !== 'retainer') { setFixedTypeMemory(projectType); setWorkType(projectType === 'other' ? '' : projectType); setProjectType('retainer') }
+    if (model === 'fixed' && projectType === 'retainer') { setProjectType((workType || fixedTypeMemory) as ProjectType); setWorkType('') }
   }
 
   async function acceptRetainerOffer() {
@@ -419,6 +423,7 @@ function NewProjectPageInner() {
       if (!res.ok) throw new Error(j.error || 'Could not switch this project to monthly billing')
       if (offer.feeAmount && !(parseFloat(contractValue) > 0)) setContractValue(String(offer.feeAmount))
       setFixedTypeMemory(projectType)
+      setWorkType(projectType === 'other' ? '' : projectType)
       setProjectType('retainer')
       setRetainerMonths(offer.termMonths ? String(offer.termMonths) : '')
       setPaymentStructure('monthly')
@@ -623,7 +628,11 @@ function NewProjectPageInner() {
               <div className="type-grid">
                 {PROJECT_TYPES.map(pt => (
                   <button key={pt.key} type="button" className={`type-card${projectType === pt.key ? ' selected' : ''}`}
-                    onClick={() => setProjectType(pt.key)}>
+                    onClick={() => {
+                      if (pt.key === 'retainer' && projectType !== 'retainer') { setFixedTypeMemory(projectType); setWorkType(projectType === 'other' ? '' : projectType) }
+                      if (pt.key !== 'retainer') setWorkType('')
+                      setProjectType(pt.key)
+                    }}>
                     <i className={`ti ${PROJECT_TYPE_ICONS[pt.key]} type-icon`} />
                     <div className="type-name">{pt.label}</div>
                     <div className="type-sub">{pt.sub}</div>
@@ -652,6 +661,16 @@ function NewProjectPageInner() {
                   : 'The amount below is the whole project, invoiced as one fee or in instalments.'}
               </p>
             </div>
+
+            {projectType === 'retainer' && (
+              <div className="fgrp">
+                <label className="flbl">What kind of work is it? <span className="fhint">— optional; your saved standard terms for that kind of work apply to the SOW</span></label>
+                <select className="finp" value={workType} onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setWorkType(e.target.value)}>
+                  <option value="">Not specified</option>
+                  {PROJECT_TYPES.filter(pt => pt.key !== 'retainer').map(pt => <option key={pt.key} value={pt.key}>{pt.label}</option>)}
+                </select>
+              </div>
+            )}
 
             <div className="f2">
               <div className="fgrp">

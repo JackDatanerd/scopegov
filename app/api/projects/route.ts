@@ -11,8 +11,7 @@ import { escapeLike, sameEmail } from '@/lib/utils/escape-like'
 import {
   parseProjectName, parseOptionalText, parseProjectType, parseContractValue,
   parseCurrencyCode, parseStartDate, parseRetainerMonths,
-  MAX_PROJECT_DISC, MAX_PROJECT_REF,
-} from '@/lib/utils/project-input'
+  MAX_PROJECT_DISC, MAX_PROJECT_REF, parseWorkType } from '@/lib/utils/project-input'
 
 // FIX (Projects & Dashboard independent pass): a plain, unbounded .select()
 // against `projects` — PostgREST silently caps a plain select at 1000 rows
@@ -70,7 +69,12 @@ export async function POST(request: NextRequest) {
     // (billed monthly until the project is completed or archived); a number is a fixed term. A value for a
     // non-retainer type has no effect and is ignored.
     let retainerDuration: number | null = null
+    // The kind of work a retainer is for (migration 162). Meaningless on any other project, whose type already says it.
+    let workType: string | null = null
     if (typeP.value === 'retainer') {
+      const wtP = parseWorkType(body.workType)
+      if (!wtP.ok) return NextResponse.json({ error: wtP.error }, { status: 400 })
+      workType = wtP.value
       const retP = parseRetainerMonths(retainerDurationMonths)
       if (!retP.ok) return NextResponse.json({ error: retP.error }, { status: 400 })
       retainerDuration = retP.value
@@ -189,6 +193,7 @@ export async function POST(request: NextRequest) {
         start_date:     dateP.value,
         internal_ref:   refP.value,
         retainer_duration_months: retainerDuration,
+        work_type:      workType,
         created_by:     session.id,
       })
       .select('id')

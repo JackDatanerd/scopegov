@@ -69,6 +69,8 @@ export default function EditProjectModal({
 
   const [name, setName] = useState<string>(project.name || '')
   const [type, setType] = useState<ProjectType>(project.type)
+  // Kind of work for a retainer (migration 162); '' = not specified.
+  const [workType, setWorkType] = useState<string>(project.work_type || '')
   const [disc, setDisc] = useState<string>(project.disc || '')
   const [contractValue, setContractValue] = useState<string>(
     project.contract_value !== null && project.contract_value !== undefined ? String(project.contract_value) : ''
@@ -128,6 +130,8 @@ export default function EditProjectModal({
     // Same structural-edit gate as client/currency: the API blocks a type
     // change once a SOW exists (see PATCH /api/projects/[id]).
     if (!hasAnySow && type !== project.type) body.type = type
+    // The kind of work only travels with a retainer; the server keeps/clears it when the type changes.
+    if (!hasAnySow && type === 'retainer' && workType !== (project.work_type || '')) body.workType = workType || null
     // retainerMonths is only meaningful (and only shown below) for the
     // CURRENTLY SELECTED type, not the project's original one — a type
     // switch away from retainer clears it server-side automatically
@@ -180,9 +184,29 @@ export default function EditProjectModal({
           </p>
         ) : (
           <select className="form-input" value={type} style={{ marginBottom: 12 }}
-            onChange={e => setType(e.target.value as ProjectType)}>
+            onChange={e => {
+              const next = e.target.value as ProjectType
+              // switching INTO a retainer keeps what the project was ("Marketing" -> a Marketing retainer); the server does the same
+              if (next === 'retainer' && type !== 'retainer') setWorkType(project.type !== 'retainer' && project.type !== 'other' ? project.type : '')
+              if (next !== 'retainer') setWorkType('')
+              setType(next)
+            }}>
             {PROJECT_TYPES.map(t => <option key={t} value={t}>{PROJECT_TYPE_LABELS[t] || t}</option>)}
           </select>
+        )}
+
+        {type === 'retainer' && (
+          <>
+            <label className="form-label">Kind of work <span style={{ fontWeight: 400, color: 'var(--text-3)' }}>— optional; your saved standard terms for it apply to the SOW</span></label>
+            {hasAnySow ? (
+              <p style={{ fontSize: 12.5, marginBottom: 12 }}>{project.work_type ? (PROJECT_TYPE_LABELS[project.work_type] || project.work_type) : 'Not specified'}</p>
+            ) : (
+              <select className="form-input" value={workType} style={{ marginBottom: 12 }} onChange={e => setWorkType(e.target.value)}>
+                <option value="">Not specified</option>
+                {PROJECT_TYPES.filter(t => t !== 'retainer').map(t => <option key={t} value={t}>{PROJECT_TYPE_LABELS[t] || t}</option>)}
+              </select>
+            )}
+          </>
         )}
 
         <label className="form-label">Client</label>

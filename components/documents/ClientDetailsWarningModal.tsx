@@ -16,7 +16,7 @@ export interface AgencyDetailsInfo {
 }
 
 export default function ClientDetailsWarningModal({
-  info, agency, warnings, docLabel, busy, onSendAnyway, onCancel, taxOnly,
+  info, agency, warnings, docLabel, busy, onSendAnyway, onCancel, taxOnly, notesOnly,
 }: {
   info?: ClientDetailsInfo | null
   agency?: AgencyDetailsInfo | null
@@ -27,6 +27,8 @@ export default function ClientDetailsWarningModal({
   onCancel: () => void
   // Only a tax-basis mismatch is being flagged (no missing details): different heading and closing line.
   taxOnly?: boolean
+  // Only notes about the document itself are being flagged (nothing missing on the client or agency): its own heading and closing line.
+  notesOnly?: boolean
 }) {
   return (
     <div role="dialog" aria-modal="true" aria-labelledby="cdw-title"
@@ -34,12 +36,12 @@ export default function ClientDetailsWarningModal({
       onClick={e => { if (e.target === e.currentTarget && !busy) onCancel() }}>
       <div style={{ background: 'var(--surface, #fff)', borderRadius: 10, maxWidth: 460, width: '100%', padding: 24, boxShadow: '0 12px 40px rgba(0,0,0,.25)' }}>
         <div id="cdw-title" style={{ fontSize: 16, fontWeight: 600, marginBottom: 10, display: 'flex', alignItems: 'center', gap: 8 }}>
-          <i className="ti ti-alert-triangle" style={{ color: 'var(--amber, #B45309)' }} /> Details are incomplete
+          <i className="ti ti-alert-triangle" style={{ color: 'var(--amber, #B45309)' }} /> {notesOnly ? 'Check before sending' : 'Details are incomplete'}
         </div>
         <div style={{ fontSize: 13, color: 'var(--text-2)', lineHeight: 1.6 }}>
           {warnings.map((w, i) => <p key={i} style={{ margin: '0 0 8px' }}>{w}</p>)}
           <p style={{ margin: '8px 0 0' }}>
-            {taxOnly ? `Correct the tax setting on your ${docLabel} first, or send it as it is.` : `Add them now so your ${docLabel} is complete, or send it as is.`}
+            {notesOnly ? `Update your ${docLabel} first, or send it as it is.` : taxOnly ? `Correct the tax setting on your ${docLabel} first, or send it as it is.` : `Add them now so your ${docLabel} is complete, or send it as is.`}
           </p>
         </div>
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap', marginTop: 20 }}>

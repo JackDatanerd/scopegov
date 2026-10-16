@@ -99,3 +99,43 @@ export function fixOutOfScopePhrasing(text: string): string {
   return String(text ?? '').replace(/\b(falls?|sits?|lies?)\s+outside\s+(?:of\s+)?(the\s+["\u201c\u2018']?Out of Scope["\u201d\u2019']?\s+(?:section|list|items?))/gi,
     (_m, verb: string, rest: string) => `${verb} under ${rest}`)
 }
+
+/**
+ * What a change order's lines say the work does NOT include ("… it does not include outreach, negotiation, contracting or
+ * management"). A line can exclude things the signed SOW's Out of Scope section never mentions (outreach, program management),
+ * so the Impact Analysis has to say so, or the amended SOW reads as if those activities are now open.
+ */
+export function excludedActivities(lines: Array<{ description?: string | null }>): string[] {
+  const out: string[] = []
+  for (const l of lines || []) {
+    const m = /\b(?:does|do|will)\s+not\s+include\s+([^.;]+)/i.exec(String(l?.description ?? ''))
+    if (!m) continue
+    for (const raw of m[1].split(/,|\band\b|\bor\b/i)) {
+      const a = raw.trim().replace(/^(?:any|the|its|their)\s+/i, '').replace(/\s+/g, ' ')
+      if (a && a.length <= 40 && !out.some(x => x.toLowerCase() === a.toLowerCase())) out.push(a)
+    }
+  }
+  return out
+}
+
+// "contracting" / "contract", "managing" / "management", "negotiation" / "negotiating": five letters of the last word match them all.
+const stemOf = (activity: string) => (activity.toLowerCase().split(/\s+/).pop() || '').slice(0, 5)
+
+/** Activities a line excludes that the Scope impact note does not mention. */
+export function unstatedExclusions(scopeImpact: string | null | undefined, lines: Array<{ description?: string | null }>): string[] {
+  const note = String(scopeImpact ?? '').toLowerCase()
+  return excludedActivities(lines).filter(a => { const st = stemOf(a); return st.length >= 4 && !note.includes(st) })
+}
+
+function joinList(items: string[]): string {
+  return items.length <= 1 ? (items[0] ?? '') : `${items.slice(0, -1).join(', ')} or ${items[items.length - 1]}`
+}
+
+/** Appends one sentence naming any line-level exclusion the note leaves out. Nothing changes when the note already covers them. */
+export function ensureAddedExclusionsStated(scopeImpact: string | null | undefined, lines: Array<{ description?: string | null }>): string | null {
+  const note = String(scopeImpact ?? '').trim()
+  const missing = unstatedExclusions(note, lines)
+  if (!note || missing.length === 0) return note || null
+  const sep = /[.!?]$/.test(note) ? ' ' : '. '
+  return `${note}${sep}The added work does not include ${joinList(missing)}.`
+}

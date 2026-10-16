@@ -616,7 +616,7 @@ function OverviewTab({ project, milestones, amendments, permissions, currency, r
             </div>
             <div>
               <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 2 }}>Type</div>
-              <div>{PROJECT_TYPE_LABELS[project.type] || project.type || '—'}</div>
+              <div>{PROJECT_TYPE_LABELS[project.type] || project.type || '—'}{project.type === 'retainer' && project.work_type ? ` · ${PROJECT_TYPE_LABELS[project.work_type] || project.work_type}` : ''}</div>
             </div>
             {permissions.viewFinancials && (
               <div>
