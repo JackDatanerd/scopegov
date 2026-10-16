@@ -1,0 +1,23 @@
+Payment Terms: no repeated due-days sentence, no conflicting late fee, and a soft warning for a high late fee
+==============================================================================================================
+
+No migration. Found by reading a retainer SOW whose Payment Terms said "Payment period. Each invoice is due within 14 days of its
+invoice date." and then, two paragraphs later, "Additional terms. Invoices are due 14 days of issue."
+
+1. Repeated, badly worded payment period (lib/ai/sow-content.ts)
+   The app now writes the retainer and fixed-fee Payment Terms itself (retainerPaymentTermsHtml / fixedFeePaymentTermsHtml). That
+   happens AFTER dedupePaymentPeriodSentences runs on the model's text, and the shared tail only skipped agency-standard sentences
+   that were exact substrings of what was already written. A standard written in other words slipped through as "Additional terms".
+   - restatesPaymentPeriod(): recognises "Invoices are due 14 days of issue", "Payment is due within 14 days", "Net 14" in any
+     wording. Sentences about suspension or late payment that only mention the same number of days are NOT treated as restating it.
+   - statesLateFeePercent(): an agency-standard sentence giving a late-fee percentage is not added when the SOW already states the
+     workspace late fee, so one SOW can never carry two different rates.
+   - Both apply only when the SOW writes its own payment period / late fee. With no period set, the agency's sentence stays.
+
+2. Soft warning for a high late fee (lib/documents/late-fee.ts, lib/sow/validate-send.ts, components/settings/SettingsClient.tsx)
+   The late-fee field accepts up to 100% a month. Above 1.5% a month (18% a year) a note now shows under the Settings field, and the
+   SOW send dialog lists it as an acknowledgeable warning. It never blocks. Example: "2.7% per month is about 32.4% a year". The
+   contract sentence still limits the fee to the legal maximum. This is a prompt to check, not legal advice.
+
+tests/payment-terms-fixes.test.ts (26 new). Checked: tsc, next lint (0 errors), full suite 356 files / 3565 tests.
+Already-signed SOWs keep their frozen text. Only SOWs generated from now on change.

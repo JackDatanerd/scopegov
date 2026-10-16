@@ -492,6 +492,25 @@ export function agencyPaymentTermsText(standards: AgencyStandards | null | undef
   return standards ? visibleText(truncateText(sanitizePlainText(standards.paymentTerms || ''), 1500)) : ''
 }
 
+/**
+ * True when a sentence states when invoices fall due in a given number of days, in any wording ("Invoices are due 14 days of
+ * issue.", "Payment is due within 14 days.", "Net 14."). A suspension or late-payment sentence that merely mentions the same number
+ * of days ("Work pauses on any invoice more than 14 days overdue.") is not a statement of the period.
+ */
+export function restatesPaymentPeriod(sentence: string, days: number): boolean {
+  const t = String(sentence ?? '').replace(/<[^>]+>/g, ' ')
+  if (/\b(overdue|late|past\s+due|paus\w*|suspen\w*|halt\w*|interest|penalt\w*)\b/i.test(t)) return false
+  const d = String(Math.trunc(days))
+  const period = new RegExp(`\\b${d}\\s*(?:calendar\\s+)?days?\\b|\\bnet\\s*${d}\\b`, 'i')
+  return period.test(t) && /\b(due|payable|payment|net)\b/i.test(t) && /\b(invoices?|payments?|fees?|net)\b/i.test(t)
+}
+
+/** True when a sentence is about a late or overdue charge and gives a percentage. */
+export function statesLateFeePercent(sentence: string): boolean {
+  const t = String(sentence ?? '').replace(/<[^>]+>/g, ' ')
+  return /\d+(?:\.\d+)?\s*%/.test(t) && /\b(late|overdue|past\s+due|interest)\b/i.test(t)
+}
+
 const ppara = (lead: string, text: string) => `<p><strong>${lead}</strong> ${text}</p>`
 
 /**
@@ -506,7 +525,13 @@ function paymentTermsTail(input: SowContentInput, out: string[], taxText: string
   if (rate) out.push(ppara('Late payment.', escapeHtml(lateFeeContractSentence(rate))))
   const have = norm(out.join(' '))
   const stripEnd = (t: string) => t.replace(/[\s.!?;:,]+$/g, '')
-  const extra = agencyText.split(/(?<=[.!?])\s+/).map(x => x.trim()).filter(Boolean).filter(x => !have.includes(stripEnd(norm(x))))
+  const extra = agencyText.split(/(?<=[.!?])\s+/).map(x => x.trim()).filter(Boolean)
+    .filter(x => !have.includes(stripEnd(norm(x))))
+    // The section already states the payment period and the late fee in fixed wording. An agency-standard sentence saying the
+    // same thing in other words ("Invoices are due 14 days of issue.") would only repeat it, and a different late-fee figure
+    // would contradict it, so neither is added.
+    .filter(x => !(days && restatesPaymentPeriod(x, days)))
+    .filter(x => !(rate && statesLateFeePercent(x)))
   const suspension = extra.filter(x => /\b(paus\w*|suspen\w*|halt\w*)\b/i.test(x))
   const other = extra.filter(x => !suspension.includes(x))
   if (suspension.length) out.push(ppara('Suspension of work.', escapeHtml(suspension.join(' '))))

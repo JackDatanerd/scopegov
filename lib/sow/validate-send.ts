@@ -17,6 +17,7 @@ import { parseTableAmount, isTableSection, milestoneName } from '@/lib/sow/table
 import { roundCurrency } from '@/lib/utils/format'
 import { paymentStructureError, storedPaymentStructure } from '@/lib/sow/payment-structure'
 import { isBlankText } from '@/lib/utils/client-input'
+import { lateFeeRateWarning } from '@/lib/documents/late-fee'
 
 export interface SowSendValidation {
   errors: string[]
@@ -241,6 +242,9 @@ export function validateSowForSend(input: {
     if (!new RegExp(`${r}\\s*%`).test(paymentText))
       warnings.push(`Invoices and change orders will quote a ${lateFee}% monthly late fee, but the Payment Terms text never states it. State it so the signed SOW supports it.`)
   }
+  // A late fee high enough to pass what many jurisdictions allow: a reminder to check, never a block.
+  const lateFeeHigh = Number.isFinite(lateFee) && lateFee > 0 ? lateFeeRateWarning(lateFee) : null
+  if (lateFeeHigh) warnings.push(lateFeeHigh)
 
   // Milestone structure: the schedule is part of the agreement and has to foot.
   if (input.metadata?.paymentStructure === 'milestones') {

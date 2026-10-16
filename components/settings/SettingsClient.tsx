@@ -41,6 +41,7 @@ import { GRACE_DAYS } from '@/lib/billing/plans'
 import { isValidTimeZone, formatDateInZone } from '@/lib/utils/timezone'
 import { sameValue } from '@/lib/utils/audit-diff'
 import { isBlankText } from '@/lib/utils/client-input'
+import { lateFeeRateWarning } from '@/lib/documents/late-fee'
 
 type SettingsTab = 'account' | 'workspace' | 'branding' | 'defaults' | 'guardian' | 'billing' | 'notifications' | 'integrations' | 'danger'
 
@@ -1095,6 +1096,9 @@ function WorkspaceTab({ form, setForm, permissions, onSave, saving, slugChangedA
           <label className="flbl">Late fee (% per month) <InfoTip text="Optional. When set, new SOWs state that overdue amounts accrue this late fee each month, and change orders and invoices under that SOW repeat it. Leave blank to charge none. This is a stated term only: ScopeGov doesn&apos;t add the fee to invoices for you." /></label>
           <input className="finp" type="number" min={0} max={100} step={0.01} style={{ maxWidth: 160 }} value={form.defaultLateFeeRate}
             placeholder="e.g. 1.5" onChange={(e: React.ChangeEvent<HTMLInputElement>) => set('defaultLateFeeRate', e.target.value)} />
+          {lateFeeRateWarning(form.defaultLateFeeRate) && (
+            <div className="fhint" role="note" style={{ marginTop: 6, maxWidth: 520, color: 'var(--amber, #B7791F)' }}>{lateFeeRateWarning(form.defaultLateFeeRate)}</div>
+          )}
         </div>
         <div className="fgrp">
           <label className="flbl">Limitation of liability <InfoTip text="Optional. When chosen, new SOWs include this standard clause as its own Limitation of Liability section. Wording is fixed by ScopeGov and is not legal advice: have a lawyer review it for your jurisdiction before relying on it. Leave on 'None' to add no clause." /></label>
