@@ -492,11 +492,33 @@ export function agencyPaymentTermsText(standards: AgencyStandards | null | undef
   return standards ? visibleText(truncateText(sanitizePlainText(standards.paymentTerms || ''), 1500)) : ''
 }
 
+const ppara = (lead: string, text: string) => `<p><strong>${lead}</strong> ${text}</p>`
+
 /**
- * English retainer Payment Terms, written by the app. Every fact in this section is data (the fee, its tax basis, the term, how it
- * is billed, the start date, the payment period, the late fee, the agency's standard terms); there is nothing for the model to add,
- * and its version only varied in labels and order from run to run ("Payment period." / "Payment terms." / no label at all).
- * Fixed leads, fixed order. Empty when this isn't an English retainer (the model-written section is kept).
+ * The paragraphs every app-written Payment Terms ends with, in a fixed order: Sales tax (when it applies), Payment period, Late
+ * payment, then the agency's own standard terms (sentences already said above are skipped; a suspension sentence gets its own lead).
+ */
+function paymentTermsTail(input: SowContentInput, out: string[], taxText: string, agencyText: string): void {
+  if (taxText) out.push(ppara('Sales tax.', taxText))
+  const days = normalizePaymentTermsDays(input.paymentTermsDays)
+  if (days) out.push(ppara('Payment period.', `Each invoice is due within ${days} day${days === 1 ? '' : 's'} of its invoice date.`))
+  const rate = normalizeLateFeeRate(input.lateFeeRate)
+  if (rate) out.push(ppara('Late payment.', escapeHtml(lateFeeContractSentence(rate))))
+  const have = norm(out.join(' '))
+  const stripEnd = (t: string) => t.replace(/[\s.!?;:,]+$/g, '')
+  const extra = agencyText.split(/(?<=[.!?])\s+/).map(x => x.trim()).filter(Boolean).filter(x => !have.includes(stripEnd(norm(x))))
+  const suspension = extra.filter(x => /\b(paus\w*|suspen\w*|halt\w*)\b/i.test(x))
+  const other = extra.filter(x => !suspension.includes(x))
+  if (suspension.length) out.push(ppara('Suspension of work.', escapeHtml(suspension.join(' '))))
+  if (other.length) out.push(ppara('Additional terms.', escapeHtml(other.join(' '))))
+}
+
+/**
+ * English Payment Terms, written by the app, for a monthly retainer or a fixed fee paid upfront / 50-50 / on delivery. Every fact in
+ * the section is data (the fee, its tax basis, the term or structure, the start date, the payment period, the late fee, the agency's
+ * standard terms); there is nothing for the model to add, and its version only varied in labels and order ("Payment period." /
+ * "Payment terms." / no label at all). Fixed leads, fixed order. Items with no data are omitted, never invented.
+ * Empty for any other language and for milestone payments (their schedule is authored per project): the model-written section is kept.
  */
 export function retainerPaymentTermsHtml(input: SowContentInput, agencyText = ''): string {
   if ((input.language && input.language !== 'en') || !input.retainer) return ''
@@ -505,31 +527,50 @@ export function retainerPaymentTermsHtml(input: SowContentInput, agencyText = ''
   const money = (n: number) => escapeHtml(formatMoneyText(input.currency, n))
   const tax = input.tax && input.tax.rate > 0 ? input.tax : null
   const sp = splitTax(cv, tax)
-  const para = (lead: string, text: string) => `<p><strong>${lead}</strong> ${text}</p>`
   const out: string[] = []
-  out.push(para('Monthly retainer fee.', `The Client will pay the Provider a recurring retainer fee of ${money(cv)} per month${tax ? (tax.inclusive ? ', tax included' : ', plus sales tax') : ''}. This is a monthly fee and not a one-off contract total.`))
+  out.push(ppara('Monthly retainer fee.', `The Client will pay the Provider a recurring retainer fee of ${money(cv)} per month${tax ? (tax.inclusive ? ', tax included' : ', plus sales tax') : ''}. This is a monthly fee and not a one-off contract total.`))
   const months = Number(input.retainer.months)
   const total = retainerTotalPretty(input)
-  out.push(para('Retainer term.', months > 0
+  out.push(ppara('Retainer term.', months > 0
     ? `The retainer runs for ${months} month${months === 1 ? '' : 's'}${total ? ` (total commitment ${escapeHtml(total)})` : ''} and is billed monthly.`
     : 'The retainer is open-ended and is billed monthly until either party ends it in writing.'))
   const start = formatIsoDateForPrompt(input.startDate, input.dateStyle)
-  out.push(para('Billing.', `The retainer is billed monthly in advance. Each monthly invoice is issued before the month of service it covers begins${start ? `, with the first invoice issued before work commences on ${escapeHtml(start)}` : ''}.`))
-  if (tax) out.push(para('Sales tax.', tax.inclusive
-    ? `Sales tax at ${tax.rate}% is included in the monthly retainer fee: each monthly fee of ${money(sp.gross)} includes ${money(sp.tax)} of tax (net ${money(sp.net)}).`
-    : `The monthly retainer fee is stated exclusive of sales tax. Sales tax at ${tax.rate}% (${money(sp.tax)} on the ${money(sp.net)} monthly fee) is added to each monthly invoice, for a total payable of ${money(sp.gross)} per month.`))
-  const days = normalizePaymentTermsDays(input.paymentTermsDays)
-  if (days) out.push(para('Payment period.', `Each invoice is due within ${days} day${days === 1 ? '' : 's'} of its invoice date.`))
-  const rate = normalizeLateFeeRate(input.lateFeeRate)
-  if (rate) out.push(para('Late payment.', escapeHtml(lateFeeContractSentence(rate))))
-  // The agency's own standard terms (Settings): sentences already said above are skipped; a suspension sentence gets its own lead.
-  const have = norm(out.join(' '))
-  const stripEnd = (t: string) => t.replace(/[\s.!?;:,]+$/g, '')
-  const extra = agencyText.split(/(?<=[.!?])\s+/).map(x => x.trim()).filter(Boolean).filter(x => !have.includes(stripEnd(norm(x))))
-  const suspension = extra.filter(x => /\b(paus\w*|suspen\w*|halt\w*)\b/i.test(x))
-  const other = extra.filter(x => !suspension.includes(x))
-  if (suspension.length) out.push(para('Suspension of work.', escapeHtml(suspension.join(' '))))
-  if (other.length) out.push(para('Additional terms.', escapeHtml(other.join(' '))))
+  out.push(ppara('Billing.', `The retainer is billed monthly in advance. Each monthly invoice is issued before the month of service it covers begins${start ? `, with the first invoice issued before work commences on ${escapeHtml(start)}` : ''}.`))
+  const taxText = tax
+    ? (tax.inclusive
+      ? `Sales tax at ${tax.rate}% is included in the monthly retainer fee: each monthly fee of ${money(sp.gross)} includes ${money(sp.tax)} of tax (net ${money(sp.net)}).`
+      : `The monthly retainer fee is stated exclusive of sales tax. Sales tax at ${tax.rate}% (${money(sp.tax)} on the ${money(sp.net)} monthly fee) is added to each monthly invoice, for a total payable of ${money(sp.gross)} per month.`)
+    : ''
+  paymentTermsTail(input, out, taxText, agencyText)
+  return out.join('')
+}
+
+/** The fixed-fee twin of retainerPaymentTermsHtml: upfront, 50/50 or on delivery. Milestones are not covered (authored per project). */
+export function fixedFeePaymentTermsHtml(input: SowContentInput, agencyText = ''): string {
+  if ((input.language && input.language !== 'en') || input.retainer) return ''
+  const structure = input.paymentStructure
+  if (structure !== '50_50' && structure !== '100_upfront' && structure !== 'on_delivery') return ''
+  const cv = Number(input.contractValue)
+  if (!Number.isFinite(cv) || cv <= 0) return ''
+  const money = (n: number) => escapeHtml(formatMoneyText(input.currency, n))
+  const tax = input.tax && input.tax.rate > 0 ? input.tax : null
+  const sp = splitTax(cv, tax)
+  const start = formatIsoDateForPrompt(input.startDate, input.dateStyle)
+  const before = `before work commences${start ? ` on ${escapeHtml(start)}` : ''}`
+  const how = structure === '50_50'
+    ? `The fee is invoiced in two equal instalments of 50%: the first ${before}, and the second on final delivery approval, as set out in the Payment Schedule.`
+    : structure === '100_upfront'
+      ? `The fee is invoiced in full ${before}, as set out in the Payment Schedule.`
+      : 'The fee is invoiced in full on final delivery approval, as set out in the Payment Schedule.'
+  const out: string[] = []
+  out.push(ppara('Fee.', `The Client will pay the Provider a fixed fee of ${money(cv)}${tax ? (tax.inclusive ? ', tax included' : ', plus sales tax') : ''}.`))
+  out.push(ppara('Payment structure.', how))
+  const taxText = tax
+    ? (tax.inclusive
+      ? `All amounts include sales tax at ${tax.rate}% (${money(sp.tax)} of the ${money(sp.gross)} fee; net ${money(sp.net)}).`
+      : `All amounts are stated exclusive of sales tax. Sales tax at ${tax.rate}% (${money(sp.tax)} on the ${money(sp.net)} fee) is added to each invoice, for a total payable of ${money(sp.gross)}.`)
+    : ''
+  paymentTermsTail(input, out, taxText, agencyText)
   return out.join('')
 }
 

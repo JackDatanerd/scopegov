@@ -135,7 +135,7 @@ describe('CO table header repeats on a continued page', () => {
   })
   it('the generator uses the app-written retainer terms, the late-fee lead and the change-order sentence', () => {
     const g = read('app/api/sow/generate/route.ts')
-    expect(g).toContain('retainerPaymentTermsHtml(contentInput, agencyPaymentTermsText(standards)) || allContent.payment')
+    expect(g).toContain('retainerPaymentTermsHtml(contentInput, agencyPaymentTermsText(standards))')
     expect(g).toContain('leadLateFeeParagraph(allContent.payment, contentInput)')
     expect(g).toContain("ensureChangeOrderClause(allContent.oos || '', contentInput)")
   })

@@ -1,0 +1,16 @@
+App-written Payment Terms for English fixed-fee SOWs (upfront / 50-50 / on delivery)
+=====================================================================================
+
+No migration. Built on top of the "Documents close-out" commit (b505b4d); that commit was reviewed with the rest (tsc clean, full
+suite green) and left untouched.
+
+Why: pass 5 made the English retainer Payment Terms app-written because every fact in the section is data and the model's version
+only varied in labels and order. Fixed-fee SOWs, the most common kind, still had that variance. fixedFeePaymentTermsHtml does the
+same for them: Fee, Payment structure (upfront / 50-50 / on delivery, with the start date when there is one), Sales tax (when it
+applies, inclusive or exclusive), Payment period, Late payment, then the agency's own standard terms (a suspension sentence gets
+its own lead, repeats are skipped). Items with no data are omitted, never invented.
+
+The shared tail (tax, payment period, late fee, agency terms) is one helper used by both versions, so retainer output is unchanged.
+Milestone payments (their schedule is authored per project) and non-English SOWs keep the model-written section.
+
+Tests: tests/doc-consistency-pass-6.test.ts (new); the pass-5 wiring test follows the new generator line. Full suite and tsc pass.
