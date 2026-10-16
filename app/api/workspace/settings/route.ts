@@ -60,6 +60,7 @@ const COLUMNS: Record<string, string> = {
   defaultPaymentTermsDays:    'default_payment_terms_days',
   defaultLateFeeRate:         'default_late_fee_rate',
   defaultLiabilityCap:        'default_liability_cap',
+  defaultClientMaterialsTerms: 'default_client_materials_terms',
   defaultApprovalSilence:     'default_approval_silence',
   defaultApprovalDays:        'default_approval_days',
   defaultPortfolioUse:        'default_portfolio_use',
@@ -244,6 +245,12 @@ function parseField(key: string, value: unknown): unknown {
       // null / blank = no limitation clause. The only choice today is the fixed "fees paid" wording (lib/documents/liability-cap.ts).
       if (value === null || (typeof value === 'string' && value.trim() === '')) return null
       if (value !== 'fees_paid') throw new FieldError('Choose a listed liability option, or none')
+      return value
+    }
+    case 'defaultClientMaterialsTerms': {
+      // null / blank = the SOW states nothing about client-supplied materials (lib/documents/client-materials.ts).
+      if (value === null || (typeof value === 'string' && value.trim() === '')) return null
+      if (value !== 'standard') throw new FieldError('Choose a listed client-materials option, or none')
       return value
     }
     case 'defaultApprovalSilence': {

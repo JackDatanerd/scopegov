@@ -128,6 +128,7 @@ function workspaceToForm(ws: any) {
     defaultPaymentTermsDays:    ws?.default_payment_terms_days != null ? String(ws.default_payment_terms_days) : '',
     defaultLateFeeRate:         ws?.default_late_fee_rate != null ? String(ws.default_late_fee_rate) : '',
     defaultLiabilityCap:        ws?.default_liability_cap || '',
+    defaultClientMaterialsTerms: ws?.default_client_materials_terms || '',
     defaultApprovalSilence:     ws?.default_approval_silence || '',
     defaultApprovalDays:        ws?.default_approval_days != null ? String(ws.default_approval_days) : '',
     defaultPortfolioUse:        ws?.default_portfolio_use || '',
@@ -167,6 +168,7 @@ function toServerValue(key: string, value: any): unknown {
     case 'defaultPaymentTermsDays':    return trimText(value) === '' ? null : Number(value)
     case 'defaultLateFeeRate':         return trimText(value) === '' ? null : Math.round(Number(value) * 100) / 100
     case 'defaultLiabilityCap':        return trimText(value) === '' ? null : trimText(value)
+    case 'defaultClientMaterialsTerms': return trimText(value) === '' ? null : trimText(value)
     case 'defaultApprovalSilence':     return trimText(value) === '' ? null : trimText(value)
     case 'defaultApprovalDays':        return trimText(value) === '' ? null : Number(value)
     case 'defaultPortfolioUse':        return trimText(value) === '' ? null : trimText(value)
@@ -1106,6 +1108,14 @@ function WorkspaceTab({ form, setForm, permissions, onSave, saving, slugChangedA
             onChange={(e: React.ChangeEvent<HTMLSelectElement>) => set('defaultLiabilityCap', e.target.value)}>
             <option value="">None — don&apos;t add a clause</option>
             <option value="fees_paid">Exclude indirect damages; cap the Provider at fees paid under the SOW</option>
+          </select>
+        </div>
+        <div className="fgrp">
+          <label className="flbl">Client-supplied materials <InfoTip text="Optional. When chosen, new SOWs add fixed wording: the client confirms it holds the rights and consents to have its materials edited and published and licenses you to use them, and on a retainer, what happens when materials do not arrive in time (the fee is unchanged and the shortfall is not carried over). Wording is fixed by ScopeGov and is not legal advice: have a lawyer review it for your jurisdiction. Leave on 'None' to add nothing." /></label>
+          <select className="finp" style={{ maxWidth: 420 }} value={form.defaultClientMaterialsTerms}
+            onChange={(e: React.ChangeEvent<HTMLSelectElement>) => set('defaultClientMaterialsTerms', e.target.value)}>
+            <option value="">None — don&apos;t add wording</option>
+            <option value="standard">Client confirms rights; fee unchanged if materials are late</option>
           </select>
         </div>
         <div className="fgrp">

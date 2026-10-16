@@ -1,0 +1,35 @@
+SOW clauses: client-supplied materials, data access for reports, supply shortfall, review window against cadence
+===============================================================================================================
+
+Migration 163 (default_client_materials_terms). Found by reading a retainer where the Client supplies UGC footage and the Provider
+reports Shopify traffic, 6 posts a week, with 7 business days to review each post.
+
+1. Client-supplied materials terms (opt-in; Settings -> Client-supplied materials)
+   The SOW said the Client keeps ownership of its footage but never that it holds the rights and consents to have it edited and
+   published, and gave the Provider no licence to use it. The drafting prompt forbids the model from writing any warranty or
+   indemnity, so it could not appear at all. lib/documents/client-materials.ts now owns two fixed sentences, applied only when the
+   workspace chooses "standard", English only, frozen into the SOW metadata:
+   - Intellectual Property: the Client confirms it owns or has the rights, licences, consents and releases (including from anyone
+     who appears in or created the materials), is responsible for third-party claims that the materials as supplied infringe, and
+     licenses the Provider to use them to perform the services. No indemnity wording.
+   - Assumptions, retainers only: if materials a recurring deliverable depends on do not arrive in time, the Provider delivers what
+     the supplied materials allow, the monthly fee is unchanged, and the shortfall is not carried over or credited unless agreed in
+     writing. (Closes "ongoing footage, as needed" having no consequence.)
+   Both are idempotent and are never added when the setting is off.
+
+2. A report on data the Provider does not control needs access to that data
+   A SOW promised "social-to-Shopify traffic referrals" while the Client's dependencies listed only TikTok and Instagram access and
+   Shopify management was excluded, so the report could not be produced as written.
+   - Drafting: when the brief promises a report on traffic, referrals, sales, conversions or analytics, the model is told to add a
+     Roles row and an Assumption for view-only access (or a regular export), due with the account access, and to say it is not
+     administration of any store or system.
+   - Send: a SOW that promises such a report without stating that access raises an acknowledgeable warning. Never a block.
+
+3. Review window against cadence (send warning)
+   More than 5 business days to review, with a weekly or daily deliverable, now raises an acknowledgeable warning: reviews would
+   outlast the cadence, so work piles up or goes out late. Never a block.
+
+tests/client-materials-fixes.test.ts (32 new), including the retainer from the three documents. Checked: tsc, next lint (0 errors),
+full suite 358 files / 3609 tests.
+Apply migration 163 before using the new Settings field. Settings and SOW generation read it tolerantly, so a deploy ahead of the
+migration only loses this one field. Signed SOWs are untouched; only SOWs drafted from now on change.

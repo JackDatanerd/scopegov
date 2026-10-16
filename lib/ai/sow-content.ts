@@ -40,6 +40,7 @@ import { normalizeLateFeeRate, lateFeeContractSentence } from '@/lib/documents/l
 import { normalizeLiabilityCap, liabilityCapSentence, type LiabilityCap } from '@/lib/documents/liability-cap'
 import { approvalSilenceSentence, APPROVAL_SILENCE_LEAD, type ApprovalSilence } from '@/lib/documents/approval-silence'
 import type { PortfolioUse } from '@/lib/documents/standard-clauses'
+import { dataAccessPromptLine, type ClientMaterialsTerms } from '@/lib/documents/client-materials'
 import type { ClientDependencyDates } from '@/lib/documents/client-dates'
 import { escapeHtml, sanitizePlainText, truncateText } from '@/lib/utils/sanitize'
 import { isBlankText } from '@/lib/utils/client-input'
@@ -152,6 +153,8 @@ export interface SowContentInput {
   approvalSilence?: ApprovalSilence | null
   // Optional portfolio-use right chosen in settings; fixed wording added to Intellectual Property (see lib/documents/standard-clauses.ts).
   portfolioUse?: PortfolioUse | null
+  // Optional client-materials terms chosen in settings (rights confirmation; supply shortfall on a retainer); fixed wording, see lib/documents/client-materials.ts.
+  clientMaterialsTerms?: ClientMaterialsTerms | null
   // Platform-set deadlines for what the Client owes (access, initial materials), so the model never chooses its own.
   clientDates?: ClientDependencyDates | null
 }
@@ -887,6 +890,8 @@ export function draftingRulesBlock(input: SowContentInput): string {
     lines.push(`- The platform has set the Client's dates. Account or system access is due on ${accessText}; supply of the initial materials (footage, content, assets) is due on ${materialsText}. Use exactly these two dates for those items everywhere they appear (Deliverables table, Timeline, Roles notes, Assumptions). Never choose another date for anything the Client must supply.`)
   }
   lines.push('- Every item the Client must supply or grant (account access, raw materials, approvals) gets its OWN row in the Deliverables table with its own date. Never combine items that have different dates into one row, and each date must be exactly the one the Assumptions state for that item.')
+  const dataAccess = dataAccessPromptLine(input)
+  if (dataAccess) lines.push(dataAccess)
   if (input.retainer) {
     lines.push('- This is a RETAINER. In the Deliverables table, a deliverable that recurs (weekly posting, monthly reporting, ongoing research) shows its cadence in the Target date cell as a short label such as \"Weekly\" or \"Monthly\", never a single calendar date; this overrides the Target date rule above for those rows. A calendar date is used only for one-off setup items (access, onboarding, supply of client materials), and it must be the same deadline the Assumptions state for that item.')
     lines.push('- This is a RETAINER. Each monthly fee covers a full month starting on the start date. The Timeline must say what the first month includes (any onboarding period inside it) and must not describe the first posting period as starting later without saying why it is part of the first monthly fee. A report due a number of days after month end must not also carry a target date that is earlier than that.')

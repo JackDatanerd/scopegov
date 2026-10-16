@@ -18,6 +18,7 @@ import { roundCurrency } from '@/lib/utils/format'
 import { paymentStructureError, storedPaymentStructure } from '@/lib/sow/payment-structure'
 import { isBlankText } from '@/lib/utils/client-input'
 import { lateFeeRateWarning } from '@/lib/documents/late-fee'
+import { reportsOnExternalData, dataAccessStated, DATA_ACCESS_WARNING, reviewWindowCadenceWarning } from '@/lib/documents/client-materials'
 
 export interface SowSendValidation {
   errors: string[]
@@ -152,6 +153,13 @@ export function validateSowForSend(input: {
     warnings.push('The Revision Policy leaves the client review period to be agreed in writing before work begins. Set a standard review window in Settings, or edit the Revision Policy to state it, so the SOW is complete.')
   for (const msg of findClientDateConflicts(deliverables?.table, String(byId('assumptions')?.content ?? ''), input.metadata?.clientDates ? [input.metadata.clientDates.access, input.metadata.clientDates.materials] : null))
     warnings.push(msg)
+  // A report on traffic or sales data needs the Client to give access to where that data lives, and the review period must fit the cadence.
+  const tableText = (id: string) => (Array.isArray(byId(id)?.table) ? byId(id).table : []).map((r: any) => Object.values(r ?? {}).join(' ')).join('. ')
+  const deliverablesText = tableText('deliverables')
+  const dependencyText = [tableText('deliverables'), tableText('roles'), textOf(byId('assumptions')?.content), textOf(byId('roles')?.content)].join('. ')
+  if (reportsOnExternalData(deliverablesText) && !dataAccessStated(dependencyText)) warnings.push(DATA_ACCESS_WARNING)
+  const cadenceWarning = reviewWindowCadenceWarning(input.metadata?.approvalSilence?.days, deliverablesText)
+  if (cadenceWarning) warnings.push(cadenceWarning)
   if (isBlankText(textOf(byId('oos')?.content)))
     errors.push('Fill in the Out of Scope section before sending this SOW — it is what protects both sides from scope creep. Write "None" if nothing is excluded.')
   if (isBlankText(textOf(byId('payment')?.content)))

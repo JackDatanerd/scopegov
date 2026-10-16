@@ -27,6 +27,7 @@ import { parseStatedTax } from '@/lib/documents/tax-basis'
 import { normalizeLateFeeRate } from '@/lib/documents/late-fee'
 import { normalizeLiabilityCap } from '@/lib/documents/liability-cap'
 import { normalizeApprovalSilence } from '@/lib/documents/approval-silence'
+import { normalizeClientMaterialsTerms, applyClientMaterialsTerms, applySupplyShortfall } from '@/lib/documents/client-materials'
 import { findClientDateConflicts } from '@/lib/sow/date-conflicts'
 import { terminationClauseHtml, disputeClauseHtml, applyPortfolioUse, normalizePortfolioUse } from '@/lib/documents/standard-clauses'
 import { clientDependencyDates, normalizeClientMaterialsDays } from '@/lib/documents/client-dates'
@@ -276,6 +277,12 @@ export async function POST(request: NextRequest) {
       portfolioUse = normalizePortfolioUse(pf?.default_portfolio_use)
       clientMaterialsDays = normalizeClientMaterialsDays(pf?.default_client_materials_days)
     } catch { /* no portfolio rule, materials due on the start date */ }
+    // Client-materials terms (migration 163) — own tolerant read; NULL = the SOW states nothing about them.
+    let clientMaterialsTerms: ReturnType<typeof normalizeClientMaterialsTerms> = null
+    try {
+      const { data: cm } = await (service as any).from('workspaces').select('default_client_materials_terms').eq('id', session.workspaceId).maybeSingle()
+      clientMaterialsTerms = normalizeClientMaterialsTerms(cm?.default_client_materials_terms)
+    } catch { /* no client-materials terms */ }
     // FIX (SOW-lifecycle fix round — headline finding): contractValue and
     // currency used to come straight from the request body — every other
     // legally-material field in this route is validated against a closed
@@ -371,6 +378,7 @@ export async function POST(request: NextRequest) {
       liabilityCap,
       approvalSilence,
       portfolioUse,
+      clientMaterialsTerms,
       clientDates: clientDependencyDates(typeof project.start_date === 'string' ? project.start_date : null, clientMaterialsDays),
       dateStyle: sowDateStyle(project.workspaces?.legal_address),
       // The model is told what day it is and when the project starts, instead of guessing a year (see SowContentInput).
@@ -502,6 +510,8 @@ export async function POST(request: NextRequest) {
       allContent.dispute = disputeClauseHtml(lawWithArticle(contentInput.governingLaw))
     }
     allContent.ip = applyPortfolioUse(allContent.ip || '', portfolioUse, contentInput.language)
+    allContent.ip = applyClientMaterialsTerms(allContent.ip, clientMaterialsTerms, contentInput.language)
+    allContent.assumptions = applySupplyShortfall(allContent.assumptions || '', clientMaterialsTerms, !!contentInput.retainer, contentInput.language)
 
     const parsed: { sections: any[]; metadata: any } = {
       sections: SOW_SECTION_DEFS.map(def => ({
@@ -530,6 +540,7 @@ export async function POST(request: NextRequest) {
         // The client-review rule in force when this SOW was drafted (frozen with the document).
         ...(approvalSilence ? { approvalSilence } : {}),
         ...(portfolioUse ? { portfolioUse } : {}),
+        ...(clientMaterialsTerms ? { clientMaterialsTerms } : {}),
         // The Client dates the platform set when this SOW was drafted (the send-time check compares the table against them).
         ...(contentInput.clientDates ? { clientDates: contentInput.clientDates } : {}),
         ...(clientRepresentative ? { clientRepresentative, ...(clientRepresentativeTitle ? { clientRepresentativeTitle } : {}) } : {}),
