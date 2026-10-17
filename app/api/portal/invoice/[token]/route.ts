@@ -1,5 +1,6 @@
 export const runtime = 'nodejs'
 
+import { documentDateLocale } from '@/lib/utils/date-style'
 import { resolveInvoiceSowTerms } from '@/lib/documents/invoice-refs'
 import { markFirstViewed } from '@/lib/utils/client-viewed'
 import { computeContractPosition, toInvoiceContractPosition, type InvoiceContractPosition } from '@/lib/reports/contract-position'
@@ -76,6 +77,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       invoice: {
         id: invoice.id,
         title: invoice.title,
+        language: invoiceSow.language,
         amount: invoice.amount,
         amountPaid: invoice.amount_paid,
         subtotal: invoice.subtotal,
@@ -125,6 +127,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         agencyName: workspace?.agency_name,
         // FIX (bug — React error #31, same root cause as the SOW portal route)
         agencyAddress: formatAddress(workspace?.legal_address) || null,
+        dateLocale: documentDateLocale(null, (workspace?.legal_address as any)?.country),
         agencyTaxId: workspace?.tax_id || null,
         agencyPhone: workspace?.phone || null,
         agencyWebsite: workspace?.website || null,

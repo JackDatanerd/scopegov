@@ -1,5 +1,7 @@
 export const runtime = 'nodejs'
 
+import { documentDateLocale } from '@/lib/utils/date-style'
+import { loadCoImpactContext } from '@/lib/documents/co-impact'
 import { sanitizeRichTextOrNull } from '@/lib/utils/sanitize'
 import { markFirstViewed } from '@/lib/utils/client-viewed'
 import { createServiceClient } from '@/lib/supabase/server'
@@ -11,10 +13,10 @@ import { getWorkspaceJwtSecret, isWorkspaceDeleted } from '@/lib/utils/workspace
 
 const CO_COLUMNS = `id,title,note,status,version,is_credit,line_items,subtotal,tax_rate,tax_inclusive,
   total,expires_at,flag_id,workspace_id,accepted_by,accepted_at,client_signature_data,first_viewed_at,
-  timeline_impact_days,revised_delivery_date,scope_impact_note,is_retainer_renewal,renewal_term_months,
-  projects(id,name,type,retainer_duration_months,currency,clients(name,email,cc_emails,company_name,billing_address,vat_number),
+  timeline_impact_days,revised_delivery_date,invoice_timing,scope_impact_note,is_retainer_renewal,renewal_term_months,
+  projects(id,name,type,contract_value,retainer_duration_months,currency,clients(name,email,cc_emails,company_name,billing_address,vat_number),
     workspaces(id,agency_name,brand_colour,logo_storage_path,agency_signature_data,
-      legal_address,tax_id,phone,website))`
+      legal_address,tax_id,phone,website,default_payment_terms_days))`
 
 async function getCoByToken(token: string, service: any, userAgent: string | null = null) {
   const { data: revoked } = await (service as any)
@@ -181,6 +183,13 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 
     const lineItems = typeof co.line_items === 'string' ? JSON.parse(co.line_items) : (co.line_items || [])
 
+    // The impact block and the payment statement the PDF carries, so the page the client accepts on shows what they are signing.
+    const isRenewalCo = !!co.is_retainer_renewal && co.projects?.type === 'retainer'
+    const impact = await loadCoImpactContext(service, {
+      coId: co.id, projectId: co.projects?.id, project: co.projects, isRenewal: isRenewalCo, isCredit: !!co.is_credit,
+      workspaceDefaultTermsDays: ws?.default_payment_terms_days,
+    })
+
     return NextResponse.json({
       co: {
         id:          co.id,
@@ -227,6 +236,14 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         scopeImpactNote:    co.scope_impact_note || null,
         timelineImpactDays: co.timeline_impact_days ?? null,
         revisedDeliveryDate: co.revised_delivery_date ?? null,
+        invoiceTiming: co.invoice_timing ?? null,
+        dateLocale: documentDateLocale(null, (ws?.legal_address as any)?.country),
+        contractValueBefore: impact.contractValueBefore ?? null,
+        retainerMonthlyNet: impact.retainerMonthlyNet ?? null,
+        isRetainerRenewal: isRenewalCo,
+        sowNumber: impact.sow?.document_number ?? null,
+        paymentTermsDays: impact.paymentTermsDays ?? null,
+        lateFeeRate: impact.lateFeeRate ?? null,
         // CO-1: accepting a retainer renewal extends the retainer by this many months - the client has to see that before signing.
         renewalTermMonths:  renewalTermForDocument(co, co.projects),
       },

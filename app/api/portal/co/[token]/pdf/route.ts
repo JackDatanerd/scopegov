@@ -1,5 +1,6 @@
 export const runtime = 'nodejs'
 
+import { loadCoImpactContext } from '@/lib/documents/co-impact'
 import { monthlyRateFromCo } from '@/lib/documents/co-retainer'
 import { effectivePaymentTermsDays } from '@/lib/documents/payment-terms'
 import { normalizeLateFeeRate } from '@/lib/documents/late-fee'
@@ -139,19 +140,10 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const lineItems = parseStoredLineItems(co.line_items)
     const isRenewalCo = !!co.is_retainer_renewal && project?.type === 'retainer'
 
-    const { data: sow } = await (service as any)
-      .from('sow_documents')
-      .select('document_number, version, metadata')
-      .eq('project_id', co.project_id)
-      .eq('status', 'signed')
-      .order('version', { ascending: false })
-      .limit(1)
-      .maybeSingle()
-
-    const contractValueBefore = await getContractValueBefore(
-      service, co.project_id, co.id, project?.contract_value ?? null, { isRenewal: isRenewalCo, project }
-    )
-    const retainerMonthlyNet = await retainerMonthlyNetForOneTimeCo(service, co.project_id, project, { isRenewal: isRenewalCo, isCredit: !!co.is_credit })
+    // One loader for the SOW cross-reference, the before-value, the retainer figure and the billing terms (lib/documents/co-impact.ts).
+    const { sow, contractValueBefore, retainerMonthlyNet, paymentTermsDays: coPaymentTermsDays, lateFeeRate: coLateFeeRate } = await loadCoImpactContext(service, {
+      coId: co.id, projectId: co.project_id, project: project, isRenewal: isRenewalCo, isCredit: !!co.is_credit, workspaceDefaultTermsDays: ws?.default_payment_terms_days,
+    })
 
     const pdfBuffer = await renderCoPdf({
       timeZone: ws?.timezone,
@@ -161,8 +153,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       agencyAddress: ws?.legal_address || null,
       agencyTaxId:   ws?.tax_id || null,
       agencyPhone:   ws?.phone || null,
-      paymentTermsDays: effectivePaymentTermsDays(sow?.metadata, ws?.default_payment_terms_days),
-      lateFeeRate: normalizeLateFeeRate(sow?.metadata?.lateFeeRate),
+      paymentTermsDays: coPaymentTermsDays,
+      lateFeeRate: coLateFeeRate,
       agencyWebsite: ws?.website || null,
       clientName:    client?.name || 'Client',
       clientCompany: client?.company_name || null,

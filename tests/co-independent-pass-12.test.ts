@@ -156,7 +156,7 @@ describe('CO-1: a retainer renewal states its term wherever the client reads or 
     expect(read('app/api/portal/co/[token]/pdf/route.ts')).toContain('renewalTermMonths: isRenewalCo ? renewalTermForDocument(co, project) : null')
     const portal = read('app/api/portal/co/[token]/route.ts')
     expect(portal).toContain('is_retainer_renewal,renewal_term_months')
-    expect(portal).toContain('projects(id,name,type,retainer_duration_months')
+    expect(portal).toMatch(/projects\(id,name,type,[a-z_,]*retainer_duration_months/)
     expect(portal).toContain('renewalTermMonths:  renewalTermForDocument(co, co.projects)')
     expect(read('app/portal/co/[token]/page.tsx')).toContain('Retainer term: ')
     expect(read('lib/documents/send-co.ts')).toContain('renewalTermMonths: renewalTermForDocument(co, project)')

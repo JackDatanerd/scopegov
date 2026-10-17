@@ -1,0 +1,19 @@
+Documents, independent pass 4
+
+1. Regenerating one SOW section (api/sow/regenerate-section) now keeps what drafting guarantees (lib/sow/regenerated-section.ts):
+   - English Termination / Dispute Resolution are fixed clauses: with no instruction no model call is made and the clause is kept.
+   - Paragraphs written from workspace settings (Portfolio use, Client materials, Supply of materials, Late payment) survive word
+     for word; volunteered portfolio wording is stripped; the payment period sentence is restored if the rewrite drops it.
+   - Out of Scope keeps its change-order clause; Revisions states the chosen review window; "the Services" is lower-cased
+     unless the document defines it.
+2. The CO portal page now shows what the PDF carries: the value impact block (one-time fee on a retainer, or original / change /
+   revised value, or renewal rate), the "amends SOW No." sentence and the payment statement (invoicing timing, period, late fee).
+   Numbers and wording come from one place (lib/documents/co-impact-view.ts, loader in co-impact.ts) used by the PDF, the portal
+   PDF and the portal page. The staff and portal CO PDF routes use the same loader.
+3. Dates read one way on screen and on paper: portal CO, invoice and SOW pages use the agency country's English style (or the SOW's
+   language), the same rule as the PDFs (documentDateLocale in lib/utils/date-style.ts; formatDate takes a locale).
+4. The CO portal page labels a one-time delivery date on a retainer "Delivery date", as the PDF does.
+5. Title Case (English only) now also covers the payment schedule table rows in the PDF and on the SOW portal page, and the
+   portal invoice title (lib/sow/display-rows.ts). Display only; stored rows are untouched.
+Tests: tests/documents-round4.test.ts; co-independent-pass-2 / -12 source-shape assertions follow the shared loader.
+No migration.

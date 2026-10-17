@@ -22,3 +22,13 @@ export function sowDateStyle(legalAddress: { country?: string | null } | null | 
 export function englishDateLocale(style: DateStyle): string {
   return style === 'us' ? 'en-US' : 'en-GB'
 }
+
+const DOC_LANGUAGE_LOCALES: Record<string, string> = { es: 'es', fr: 'fr', pt: 'pt', de: 'de', sw: 'sw' }
+
+/**
+ * The Intl locale a document prints calendar dates in: the drafting language's own for a non-English SOW, otherwise the English style
+ * of the agency's country. The PDF renderer and the portal pages both use it, so one document reads one way on screen and on paper.
+ */
+export function documentDateLocale(language: string | null | undefined, country: string | null | undefined): string {
+  return (language && DOC_LANGUAGE_LOCALES[language]) || englishDateLocale(dateStyleForCountry(country))
+}

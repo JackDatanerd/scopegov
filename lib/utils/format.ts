@@ -157,7 +157,7 @@ export function formatCurrencyExact(
 }
 
 // ── DATES ─────────────────────────────────────────────────────────────────────
-export function formatDate(date: string | Date | null, opts?: Intl.DateTimeFormatOptions): string {
+export function formatDate(date: string | Date | null, opts?: Intl.DateTimeFormatOptions, locale: string = 'en-GB'): string {
   if (!date) return '—'
   try {
     // FIX (section-7 independent pass, B1): a date-only value ('2026-10-01' — projects.start_date, milestone and
@@ -166,7 +166,7 @@ export function formatDate(date: string | Date | null, opts?: Intl.DateTimeForma
     // A calendar date has no zone: format it in UTC. Real timestamps keep the viewer's zone unless the caller sets one.
     const dateOnly = typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date)
     const base: Intl.DateTimeFormatOptions = opts || { day: 'numeric', month: 'short', year: 'numeric' }
-    return new Intl.DateTimeFormat('en-GB', dateOnly && !base.timeZone ? { ...base, timeZone: 'UTC' } : base)
+    return new Intl.DateTimeFormat(locale, dateOnly && !base.timeZone ? { ...base, timeZone: 'UTC' } : base)
       .format(new Date(date))
   } catch { return '—' }
 }

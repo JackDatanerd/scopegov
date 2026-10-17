@@ -1,5 +1,7 @@
 export const runtime = 'nodejs'
 
+import { displayTableRows } from '@/lib/sow/display-rows'
+import { documentDateLocale } from '@/lib/utils/date-style'
 import { markFirstViewed } from '@/lib/utils/client-viewed'
 import { hydrateSections } from '@/lib/sow/sections'
 import { sowRetainerTerms } from '@/lib/sow/retainer'
@@ -211,6 +213,7 @@ async function buildSowResponse(sow: any, service: any, userAgent: string | null
       // formatAddress does, so the API contract for this field actually
       // matches the `string | null` the page's interface always claimed.
       agencyAddress: formatAddress(workspace?.legal_address) || null,
+      dateLocale:    documentDateLocale(sow.metadata?.language, (workspace?.legal_address as any)?.country),
       agencyTaxId:   workspace?.tax_id || null,
       agencyPhone:   workspace?.phone || null,
       agencyWebsite: workspace?.website || null,
@@ -240,7 +243,8 @@ async function buildSowResponse(sow: any, service: any, userAgent: string | null
       // Hidden sections are the agency's decision NOT to show this text to the client — never ship
       // their content over the wire (it was returned with visible:false and only hidden by the
       // page). hydrateSections also repairs legacy HTML-escaped table cells.
-      sections:      hydrateSections(sow.sections || [], sow.metadata).filter((sec: any) => sec.visible !== false),
+      sections:      hydrateSections(sow.sections || [], sow.metadata).filter((sec: any) => sec.visible !== false)
+        .map((sec: any) => (sec.table ? { ...sec, table: displayTableRows(sec.id, sec.table, sow.metadata?.language) } : sec)),
       version:       sow.version,
       expiresAt:     sow.expires_at,
     },

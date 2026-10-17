@@ -3,6 +3,8 @@
 // Pure Node.js — no browser, no timeout risk on Vercel Hobby.
 // npm install @react-pdf/renderer
 
+import { displayTableRows } from '@/lib/sow/display-rows'
+import { coImpactNumbers, coPaymentStatement } from '@/lib/documents/co-impact-view'
 import { toTitleCaseFor } from '@/lib/documents/title-case'
 import React from 'react'
 import {
@@ -22,7 +24,7 @@ import { formatRenewalTerm } from '@/lib/documents/co-renewal-term'
 import { coWatermarkLabel, CO_STATUS_LABEL } from '@/lib/pdf/co-watermark'
 import { invoiceSingleLineAmount, invoiceLineSubtext } from '@/lib/pdf/invoice-line'
 import { formatRate } from '@/lib/utils/money'
-import { dateStyleForCountry, englishDateLocale } from '@/lib/utils/date-style'
+import { documentDateLocale } from '@/lib/utils/date-style'
 import { lateFeeReminder } from '@/lib/documents/late-fee'
 
 // Phase 11: the ScopeGov credit in the footer of every document is a real
@@ -288,14 +290,13 @@ function stripHtml(html: string): string {
 // shift a day. Real instants (sent/accepted/signed/generated) print in the workspace's own timezone — the server
 // runs in UTC, so without this a document stamped 00:00–03:00 EAT printed the previous day.
 // Month names follow the document's drafting language (a Swahili SOW must not print "7 October 2026").
-const DATE_LOCALES: Record<string, string> = { es: 'es', fr: 'fr', pt: 'pt', de: 'de', sw: 'sw' }
 function fmtDate(iso: string, tz?: string | null, language?: string | null, country?: string | null) {
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return '—'
   const dateOnly = /^\d{4}-\d{2}-\d{2}(T00:00:00(\.0+)?(Z|\+00:00)?)?$/.test(String(iso))
   // English documents print "June 16, 2026" for a US agency and "16 June 2026" otherwise — the same rule the SOW prompt
   // gives the model (lib/utils/date-style.ts), so prose dates and printed dates never use two styles on one document.
-  return new Intl.DateTimeFormat((language && DATE_LOCALES[language]) || englishDateLocale(dateStyleForCountry(country)), {
+  return new Intl.DateTimeFormat(documentDateLocale(language, country), {
     day: 'numeric', month: 'long', year: 'numeric',
     timeZone: dateOnly ? 'UTC' : resolveTimeZone(tz),
   }).format(d)
@@ -378,7 +379,7 @@ function SowSection({ sec, num, s, language, currency }: { sec: SowPdfData['sect
       keepTogether={keepTogether}
       title={<><Text style={s.secNum}>{num}. </Text>{sec.title}</>}
       content={lead => isTableSection(sec.id)
-        ? <SowTable sectionId={sec.id} rows={sec.table || []} language={language} lead={lead} currency={currency} />
+        ? <SowTable sectionId={sec.id} rows={displayTableRows(sec.id, sec.table, language)} language={language} lead={lead} currency={currency} />
         : <RichText html={sec.content} style={s.body} lead={lead} />}
     />
   )
@@ -776,12 +777,7 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
   // Contract values are always stated NET of tax (tax is never part of what was scoped — see lib/reports/contract-position.ts),
   // so the impact block adds this change order's net subtotal, not its tax-inclusive total. Mixing the two printed a
   // "revised contract value" that was neither the net nor the gross figure.
-  const taxApplies = data.taxRate > 0
-  const netChange = taxApplies ? data.subtotal : data.total
-  const exTax = taxApplies ? ' (excl. tax)' : ''
-  const revisedValue = data.revisedContractValue != null
-    ? data.revisedContractValue
-    : data.contractValueBefore != null ? data.contractValueBefore + netChange : null
+  const { taxApplies, netChange, exTax, revisedValue } = coImpactNumbers(data)
   const isRenewalDoc = !!data.isRetainerRenewal
 
   return (
@@ -976,7 +972,7 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
                         derived rather than assumed. */}
                     <Text style={s.mono}>
                       {(() => {
-                        const delta = isRenewalDoc ? revisedValue - data.contractValueBefore! : netChange
+                        const delta = coImpactNumbers(data).delta ?? netChange
                         // ASCII hyphen, not U+2212: this row was once Courier (WinAnsi), which has no glyph for U+2212, so the sign was dropped
                         // and a credit / rate decrease printed as an unsigned (apparent increase) amount.
                         return `${delta < 0 ? '-' : '+'}${data.currency} ${fm(Math.abs(delta))}`
@@ -999,16 +995,13 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
             This change order amends SOW No. {data.sowNumber}. Except as expressly amended here, all terms of that SOW remain unchanged and in full force.
           </Text>
         )}
-        {/* When the money falls due: stated only when the agency has standard payment terms and this change order charges something. */}
-        {!data.isRetainerRenewal && !data.isCredit && data.total > 0 && (data.paymentTermsDays || 0) > 0 && (
-          <Text style={{ fontSize: 9, color: '#555', lineHeight: 1.5, marginTop: 4 }}>
-            Payment: this change order is invoiced separately once {data.invoiceTiming === 'on_delivery' ? 'the work is delivered' : 'it is accepted'}, and each invoice is due within {data.paymentTermsDays} day{data.paymentTermsDays === 1 ? '' : 's'} of its invoice date.
-            {data.lateFeeRate ? ` ${lateFeeReminder(data.lateFeeRate, data.sowNumber)}` : ''}
-          </Text>
-        )}
-        {!(!data.isRetainerRenewal && !data.isCredit && data.total > 0 && (data.paymentTermsDays || 0) > 0) && !data.isRetainerRenewal && !data.isCredit && data.total > 0 && data.lateFeeRate ? (
-          <Text style={{ fontSize: 9, color: '#555', lineHeight: 1.5, marginTop: 4 }}>{lateFeeReminder(data.lateFeeRate, data.sowNumber)}</Text>
-        ) : null}
+        {/* When the money falls due: stated only when the agency has standard payment terms and this change order charges something.
+            One wording with the page the client accepts on (lib/documents/co-impact.ts). */}
+        {(() => {
+          const stmt = coPaymentStatement(data)
+          const text = stmt.payment ?? stmt.lateOnly
+          return text ? <Text style={{ fontSize: 9, color: '#555', lineHeight: 1.5, marginTop: 4 }}>{text}</Text> : null
+        })()}
 
         {/* Signature block. FIX (doc-quality audit round 3): same
             missing wrap={false} as the SOW's — could split mid-block

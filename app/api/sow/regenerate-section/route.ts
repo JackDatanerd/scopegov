@@ -1,6 +1,7 @@
 export const runtime = 'nodejs'
 export const maxDuration = 60
 
+import { finalizeRegeneratedSection, isFixedClauseSection } from '@/lib/sow/regenerated-section'
 import { isUuidString } from '@/lib/utils/uuid'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
@@ -61,7 +62,7 @@ export async function POST(request: NextRequest) {
 
     const service = createServiceClient()
     const { data: sow, error: sowReadErr } = await (service as any)
-      .from('sow_documents').select('id, sent_at, project_id, metadata').eq('id', sowId)
+      .from('sow_documents').select('id, sent_at, project_id, metadata, sections').eq('id', sowId)
       .eq('workspace_id', session.workspaceId).maybeSingle()
     // FIX (SOW lifecycle independent pass 15, B4): a failed read is not "not found" — fail into the route's 500 handler.
     if (sowReadErr) throw new Error(`SOW read failed: ${sowReadErr.message}`)
@@ -83,6 +84,13 @@ export async function POST(request: NextRequest) {
         { error: 'This SOW has a pending approval request — cancel it before editing.' },
         { status: 409 }
       )
+    }
+
+    // A fixed clause (English Termination / Dispute Resolution) is written by the app, not the model. With no instruction there is
+    // nothing to improve, so say so instead of spending a model call that can only reword it.
+    if (!instruction && isFixedClauseSection(sectionId, (sow as any).metadata?.language)) {
+      const kept = sanitizeRichText(currentContent || '')
+      return NextResponse.json({ content: kept, wordCount: countWords(kept), truncated: true, fixedClause: true })
     }
 
     // FIX (audit round 3): no rate limiting existed on this route.
@@ -183,7 +191,11 @@ No preamble, no explanation, no markdown fences. Just the HTML content.`
         figuresChanged: true,
       })
     }
-    return NextResponse.json({ content: sanitizeRichText(raw), wordCount: newWords })
+    const finalHtml = sanitizeRichText(finalizeRegeneratedSection({
+      sectionId, before: currentContent || '', after: raw, language: (sow as any).metadata?.language, metadata: (sow as any).metadata,
+      otherSectionsText: ((sow as any).sections || []).filter((sec: any) => sec?.id !== sectionId).map((sec: any) => String(sec?.content ?? '')),
+    }))
+    return NextResponse.json({ content: finalHtml, wordCount: countWords(finalHtml) })
   } catch (err) {
     console.error('Section regeneration error:', err)
     return NextResponse.json({ error: 'Regeneration failed. Please try again.' }, { status: 500 })

@@ -1,4 +1,5 @@
 'use client'
+import { toTitleCaseFor } from '@/lib/documents/title-case'
 import { invoiceLineSubtext } from '@/lib/pdf/invoice-line'
 import { useState, useEffect } from 'react'
 import { useParams } from 'next/navigation'
@@ -13,6 +14,8 @@ type PortalState = 'loading' | 'error' | 'ready'
 
 interface InvoiceData {
   id: string
+  language?: string | null
+  dateLocale?: string
   title: string
   amount: number
   amountPaid: number
@@ -81,9 +84,10 @@ const METHOD_LABEL: Record<string, string> = {
 // parsed as UTC midnight and was formatted in the CLIENT'S zone, so anyone west of UTC saw the previous day
 // (due 15 Oct showed as 14 Oct while the PDF and email said 15 Oct). formatDate formats a calendar date in
 // UTC and leaves real timestamps (claimed / flagged / resolved) in the viewer's zone.
-function fmtDate(d: string | null) {
+function fmtDate(d: string | null, locale?: string) {
   if (!d) return ''
-  return formatDate(d, { day: 'numeric', month: 'long', year: 'numeric' })
+  // The agency's own date style ("October 30, 2026" for a US agency), the one its PDF prints.
+  return formatDate(d, { day: 'numeric', month: 'long', year: 'numeric' }, locale || 'en-GB')
 }
 
 export default function InvoicePortalPage() {
@@ -195,7 +199,7 @@ export default function InvoicePortalPage() {
                 <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.08em', color: '#909090', marginBottom: 6 }}>
                   Invoice{invoice.invoiceNumber ? ` · ${invoice.invoiceNumber}` : ''}
                 </div>
-                <h1 style={{ fontFamily: 'Georgia,serif', fontSize: 24, fontWeight: 400, margin: '0 0 6px', letterSpacing: '-0.01em' }}>{invoice.title}</h1>
+                <h1 style={{ fontFamily: 'Georgia,serif', fontSize: 24, fontWeight: 400, margin: '0 0 6px', letterSpacing: '-0.01em' }}>{toTitleCaseFor(invoice.title, invoice.language)}</h1>
                 <div style={{ fontSize: 13, color: '#555' }}>
                   <strong>{invoice.agencyName}</strong> → <strong>{invoice.clientCompany || invoice.clientName}</strong> · {invoice.projectName}
                 </div>
@@ -218,7 +222,7 @@ export default function InvoicePortalPage() {
                 <div style={{ fontSize: 24, fontFamily: 'Georgia,serif', color: accent, fontWeight: 400 }}>
                   {invoice.currency} {formatAmount(invoice.amount, invoice.currency)}
                 </div>
-                {invoice.dueDate && <div style={{ fontSize: 11, color: '#909090', marginTop: 2 }}>Due {fmtDate(invoice.dueDate)}</div>}
+                {invoice.dueDate && <div style={{ fontSize: 11, color: '#909090', marginTop: 2 }}>Due {fmtDate(invoice.dueDate, invoice.dateLocale)}</div>}
               </div>
             </div>
           </div>
@@ -353,7 +357,7 @@ export default function InvoicePortalPage() {
                 <div className="portal-section-title">Payments received</div>
                 {payments.map((p, i) => (
                   <div key={i} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5, color: '#555', padding: '7px 0', borderBottom: '1px solid #F2F0EA' }}>
-                    <span>{fmtDate(p.paid_at)} · {METHOD_LABEL[p.method] || p.method}{p.reference_note ? ` · ${p.reference_note}` : ''}</span>
+                    <span>{fmtDate(p.paid_at, invoice.dateLocale)} · {METHOD_LABEL[p.method] || p.method}{p.reference_note ? ` · ${p.reference_note}` : ''}</span>
                     <span style={{ fontFamily: 'IBM Plex Mono, monospace', color: '#333' }}>{invoice.currency} {formatAmount(p.amount, invoice.currency)}</span>
                   </div>
                 ))}
@@ -427,7 +431,7 @@ export default function InvoicePortalPage() {
             )}
             {invoice.paymentClaim && invoice.paymentClaim.open && invoice.status !== 'paid' && (
               <span style={{ fontSize: 12.5, color: '#2F5D45', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                <i className="ti ti-circle-check" style={{ fontSize: 13 }} /> You told us you paid on {fmtDate(invoice.paymentClaim.claimedAt)}
+                <i className="ti ti-circle-check" style={{ fontSize: 13 }} /> You told us you paid on {fmtDate(invoice.paymentClaim.claimedAt, invoice.dateLocale)}
                 {invoice.paymentClaim.reference ? ` (ref: ${invoice.paymentClaim.reference})` : ''} — the agency will confirm once it arrives
               </span>
             )}
@@ -437,7 +441,7 @@ export default function InvoicePortalPage() {
                 rather than re-offering the form. */}
             {invoice.disputedAt && !invoice.disputeResolvedAt ? (
               <span style={{ fontSize: 12.5, color: '#B45309', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                <i className="ti ti-flag" style={{ fontSize: 13 }} /> You flagged this on {fmtDate(invoice.disputedAt)}
+                <i className="ti ti-flag" style={{ fontSize: 13 }} /> You flagged this on {fmtDate(invoice.disputedAt, invoice.dateLocale)}
               </span>
             ) : !disputeOpen ? (
               <button type="button" className="btn btn-ghost" onClick={() => setDisputeOpen(true)}>
@@ -449,7 +453,7 @@ export default function InvoicePortalPage() {
           {/* The agency has answered the client's earlier question (api/invoices/[id]/dispute-resolve). */}
           {invoice.disputedAt && invoice.disputeResolvedAt && (
             <div style={{ marginTop: 14, padding: '12px 14px', background: '#F0F7F3', border: '1px solid #CFE3D7', borderRadius: 6, fontSize: 13, color: '#2F5D45' }}>
-              <strong>Your question was marked resolved on {fmtDate(invoice.disputeResolvedAt)}.</strong>
+              <strong>Your question was marked resolved on {fmtDate(invoice.disputeResolvedAt, invoice.dateLocale)}.</strong>
               {invoice.disputeResolutionNote && (
                 <div style={{ marginTop: 6, whiteSpace: 'pre-line', color: '#3F3F3F' }}>{invoice.disputeResolutionNote}</div>
               )}

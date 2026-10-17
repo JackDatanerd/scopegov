@@ -1,4 +1,5 @@
 'use client'
+import { coImpactNumbers, coPaymentStatement } from '@/lib/documents/co-impact-view'
 import { useState, useEffect, useRef } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import SignaturePad, { type SignaturePadHandle } from '@/components/ui/SignaturePad'
@@ -43,6 +44,14 @@ interface CoData {
   scopeImpactNote:    string | null
   timelineImpactDays: number | null
   revisedDeliveryDate?: string | null
+  dateLocale?: string
+  invoiceTiming?: 'on_acceptance' | 'on_delivery' | null
+  contractValueBefore?: number | null
+  retainerMonthlyNet?: number | null
+  isRetainerRenewal?: boolean
+  sowNumber?: string | null
+  paymentTermsDays?: number | null
+  lateFeeRate?: number | null
   // CO-1: months a retainer renewal extends the retainer by (null when this is not a fixed-term renewal).
   renewalTermMonths?: number | null
 }
@@ -343,7 +352,7 @@ export default function CoPortalPage() {
                 the page the client is actually deciding on. Plain text only, rendered as
                 normal JSX (never dangerouslySetInnerHTML): CoEditor collects this via a
                 <textarea>, not a rich-text field. */}
-            {(co.scopeImpactNote || co.timelineImpactDays !== null || !!co.revisedDeliveryDate || !!co.renewalTermMonths) && (
+            {(co.scopeImpactNote || co.timelineImpactDays !== null || !!co.revisedDeliveryDate || !!co.renewalTermMonths || co.retainerMonthlyNet != null || co.contractValueBefore != null) && (
               <div style={{ marginTop: 24 }}>
                 <div className="portal-section-title">Impact analysis</div>
                 {co.scopeImpactNote && (
@@ -367,12 +376,48 @@ export default function CoPortalPage() {
                 )}
                 {co.revisedDeliveryDate && (
                   <div style={{ fontSize: 13, color: '#333', lineHeight: 1.6, marginTop: co.timelineImpactDays !== null ? 4 : 0 }}>
-                    <strong>Revised delivery date: </strong>
-                    {new Date(`${co.revisedDeliveryDate}T00:00:00Z`).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric', timeZone: 'UTC' })}
+                    <strong>{co.retainerMonthlyNet != null ? 'Delivery date: ' : 'Revised delivery date: '}</strong>
+                    {new Date(`${co.revisedDeliveryDate}T00:00:00Z`).toLocaleDateString(co.dateLocale || 'en-GB', { year: 'numeric', month: 'long', day: 'numeric', timeZone: 'UTC' })}
                   </div>
                 )}
+                {(() => {
+                  // The same figures the PDF's Impact Analysis shows (lib/documents/co-impact-view.ts), so the client sees on this
+                  // page what the document they are accepting says about the contract value.
+                  const n = coImpactNumbers({ taxRate: co.taxRate, subtotal: co.subtotal, total: co.total, contractValueBefore: co.contractValueBefore, retainerMonthlyNet: co.retainerMonthlyNet, isRetainerRenewal: co.isRetainerRenewal })
+                  const money = (v: number) => `${co.currency} ${formatAmount(Math.abs(v), co.currency)}`
+                  const row = (label: string, value: string, strong = false) => (
+                    <div key={label} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 13, color: strong ? '#1A1A1A' : '#555', fontWeight: strong ? 600 : 400, padding: '3px 0' }}>
+                      <span>{label}</span><span style={{ fontFamily: 'IBM Plex Mono, monospace' }}>{value}</span>
+                    </div>
+                  )
+                  let rows: JSX.Element[] = []
+                  if (n.oneTimeOnRetainer) {
+                    rows = [row(`Monthly retainer, unchanged${n.exTax}`, money(co.retainerMonthlyNet as number)), row(`One-time fee, billed once${n.exTax}`, `+${money(n.netChange)}`, true)]
+                    if (n.taxApplies) rows.push(row(`Including tax (${co.taxRate}%)`, money(co.total)))
+                  } else if (n.revisedValue != null && co.contractValueBefore != null && n.delta != null) {
+                    rows = [
+                      row(n.isRenewal ? 'Current monthly rate' : `Original contract value${n.exTax}`, money(co.contractValueBefore)),
+                      row(n.isRenewal ? 'Rate change' : `${co.isCredit ? 'This credit' : 'This change order'}${n.exTax}`, `${n.delta < 0 ? '-' : '+'}${money(n.delta)}`),
+                      row(n.isRenewal ? 'New monthly rate' : `Revised contract value${n.exTax}`, money(n.revisedValue), true),
+                    ]
+                  }
+                  return rows.length ? <div style={{ marginTop: 10, paddingTop: 8, borderTop: '1px solid #F2F0EA' }}>{rows}</div> : null
+                })()}
               </div>
             )}
+
+            {/* What this change order amends, and when it is billed: the same sentences the PDF carries. */}
+            {(() => {
+              const stmt = coPaymentStatement({ isRetainerRenewal: co.isRetainerRenewal, isCredit: co.isCredit, total: co.total, paymentTermsDays: co.paymentTermsDays, lateFeeRate: co.lateFeeRate, sowNumber: co.sowNumber, invoiceTiming: co.invoiceTiming })
+              const text = stmt.payment ?? stmt.lateOnly
+              if (!co.sowNumber && !text) return null
+              return (
+                <div style={{ marginTop: 18, fontSize: 12, color: '#555', lineHeight: 1.6 }}>
+                  {co.sowNumber && <p style={{ margin: '0 0 6px' }}>This change order amends SOW No. {co.sowNumber}. Except as expressly amended here, all terms of that SOW remain unchanged and in full force.</p>}
+                  {text && <p style={{ margin: 0 }}>{text}</p>}
+                </div>
+              )
+            })()}
           </div>
         </div>
 
@@ -398,7 +443,7 @@ export default function CoPortalPage() {
                 portal page shows this same field. Without it the client
                 has no warning before their link goes dead. */}
             <p style={{ fontSize: 11, color: '#B0B0B0', marginTop: 14 }}>
-              This link expires {new Date(co.expiresAt).toLocaleDateString('en-GB', { day:'numeric', month:'long', year:'numeric' })}.
+              This link expires {new Date(co.expiresAt).toLocaleDateString(co.dateLocale || 'en-GB', { day:'numeric', month:'long', year:'numeric' })}.
             </p>
           </div>
         )}

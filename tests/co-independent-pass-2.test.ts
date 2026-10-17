@@ -58,8 +58,10 @@ describe('CO-1: getContractValueBefore uses the app-wide contract definition', (
     for (const f of ['app/api/pdf/co/[id]/route.ts', 'app/api/portal/co/[token]/pdf/route.ts']) {
       const src = read(f)
       expect(src).toMatch(/retainer_duration_months/)
-      expect(src).toMatch(/getContractValueBefore\([\s\S]*?project/)
+      // The before-value is loaded by the shared CO impact loader (lib/documents/co-impact.ts), which each route hands the project shape.
+      expect(src).toMatch(/loadCoImpactContext\([\s\S]*?project:/)
     }
+    expect(read('lib/documents/co-impact.ts')).toMatch(/getContractValueBefore\([\s\S]*?project: args\.project/)
     for (const f of ['app/api/portal/co/[token]/accept/route.ts', 'app/api/portal/co/[token]/countersign/route.ts'])
       expect(read(f)).toMatch(/contract_value,retainer_duration_months/)
     expect(read('lib/documents/finalize-co.ts')).toMatch(/\{ project \}\)/)

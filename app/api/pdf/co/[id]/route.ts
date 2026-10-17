@@ -1,5 +1,6 @@
 export const runtime = 'nodejs'
 
+import { loadCoImpactContext } from '@/lib/documents/co-impact'
 import { monthlyRateFromCo } from '@/lib/documents/co-retainer'
 import { effectivePaymentTermsDays } from '@/lib/documents/payment-terms'
 import { normalizeLateFeeRate } from '@/lib/documents/late-fee'
@@ -82,24 +83,10 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     // effort: a project with no signed SOW on file (shouldn't normally
     // happen for a project that has change orders, but not enforced at
     // the DB level) just omits the cross-reference line.
-    const { data: sow } = await (service as any)
-      .from('sow_documents')
-      .select('document_number, version, metadata')
-      .eq('project_id', co.project_id)
-      .eq('status', 'signed')
-      .order('version', { ascending: false })
-      .limit(1)
-      .maybeSingle()
-
-    // FIX (portal audit, section 18): see lib/documents/co-contract-value.ts
-    // — the old inline computation here assumed contract_value already
-    // included this (and every prior) accepted CO's amount. It never did;
-    // this understated both the before AND revised value on every accepted
-    // CO's PDF, not just the multi-CO case the old comment disclosed.
-    const contractValueBefore = await getContractValueBefore(
-      service, co.project_id, co.id, co.projects?.contract_value ?? null, { isRenewal: isRenewalCo, project: co.projects }
-    )
-    const retainerMonthlyNet = await retainerMonthlyNetForOneTimeCo(service, co.project_id, co.projects, { isRenewal: isRenewalCo, isCredit: !!co.is_credit })
+    // One loader for the SOW cross-reference, the before-value, the retainer figure and the billing terms (lib/documents/co-impact.ts).
+    const { sow, contractValueBefore, retainerMonthlyNet, paymentTermsDays: coPaymentTermsDays, lateFeeRate: coLateFeeRate } = await loadCoImpactContext(service, {
+      coId: co.id, projectId: co.project_id, project: co.projects, isRenewal: isRenewalCo, isCredit: !!co.is_credit, workspaceDefaultTermsDays: ws?.default_payment_terms_days,
+    })
 
     const pdfBuffer = await renderCoPdf({
       timeZone: ws?.timezone,
@@ -109,8 +96,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       agencyAddress: ws?.legal_address || null,
       agencyTaxId:   ws?.tax_id || null,
       agencyPhone:   ws?.phone || null,
-      paymentTermsDays: effectivePaymentTermsDays(sow?.metadata, ws?.default_payment_terms_days),
-      lateFeeRate: normalizeLateFeeRate(sow?.metadata?.lateFeeRate),
+      paymentTermsDays: coPaymentTermsDays,
+      lateFeeRate: coLateFeeRate,
       agencyWebsite: ws?.website || null,
       clientName:  co.projects?.clients?.name || 'Client',
       clientCompany: co.projects?.clients?.company_name || null,

@@ -21,6 +21,7 @@ type PortalState =
 
 interface SowData {
   id:          string
+  dateLocale?: string
   projectName: string
   agencyName:  string
   brandColour: string
@@ -403,7 +404,7 @@ export default function SowPortalPage() {
               </button>
             </div>
             <p style={{ fontSize: 11, color: '#B0B0B0', marginTop: 14 }}>
-              This link expires {new Date(sow.expiresAt).toLocaleDateString('en-GB', { day:'numeric', month:'long', year:'numeric' })}.
+              This link expires {new Date(sow.expiresAt).toLocaleDateString(sow.dateLocale || 'en-GB', { day:'numeric', month:'long', year:'numeric' })}.
             </p>
           </div>
         )}
