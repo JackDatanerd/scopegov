@@ -167,6 +167,36 @@ export function unbilledChangeOrderValue(
 }
 
 /**
+ * WHICH change orders unbilledChangeOrderValue is counting: ids of the approved change orders that still have an amount no live
+ * invoice has billed, in the order their amendments were recorded. A figure on an invoice that cannot be tied to a document
+ * ("USD 700 of approved change orders not yet invoiced") leaves the reader unable to check it; the PDF names them.
+ */
+export function unbilledChangeOrderIds(
+  amendments: AmendmentLike[] | null | undefined,
+  invoices: Array<{ co_id?: string | null; subtotal?: number | string | null; amount?: number | string | null; status?: string | null }> | null | undefined,
+  projectType: string | null | undefined,
+): string[] {
+  const isRetainer = projectType === 'retainer'
+  const billedByCo = new Map<string, number>()
+  for (const inv of invoices || []) {
+    if (!inv?.co_id || inv.status === 'draft' || inv.status === 'void') continue
+    billedByCo.set(inv.co_id, (billedByCo.get(inv.co_id) || 0) + (Number(inv.subtotal ?? inv.amount) || 0))
+  }
+  const impactByCo = new Map<string, number>()
+  for (const a of amendments || []) {
+    if (!a?.change_order_id) continue
+    if (isRetainer && isRenewalAmendment(a)) continue
+    impactByCo.set(a.change_order_id, (impactByCo.get(a.change_order_id) || 0) + (Number(a.financial_impact) || 0))
+  }
+  const ids: string[] = []
+  for (const [coId, impact] of impactByCo) {
+    if (impact <= 0) continue
+    if (impact - (billedByCo.get(coId) || 0) > 0.004) ids.push(coId)
+  }
+  return ids
+}
+
+/**
  * The same unbilled change orders as unbilledChangeOrderValue, expressed GROSS (what the client actually owes, tax included).
  * Grossing the rounded net back up (369.52 x 1.0825 = 400.005 -> 400.01) does not round-trip to a tax-inclusive change order's own
  * total (400.00), so each change order's stored total is scaled by the share of it that is still unbilled instead. A change order

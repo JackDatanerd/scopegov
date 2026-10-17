@@ -7,9 +7,10 @@
 // an answer, so it is reported separately from "none found".
 
 import { normalizeLateFeeRate } from '@/lib/documents/late-fee'
+import { sowPaymentTermsDays } from '@/lib/documents/payment-terms'
 
 export type SignedSowLookup =
-  | { ok: true; sow: { id: string; document_number: string | null; version?: number | null; lateFeeRate?: number | null } | null }
+  | { ok: true; sow: { id: string; document_number: string | null; version?: number | null; lateFeeRate?: number | null; paymentTermsDays?: number | null } | null }
   | { ok: false; error: string }
 
 export const SIGNED_SOW_LOOKUP_FAILED = 'Could not check this project\u2019s signed SOW \u2014 please try again.'
@@ -29,5 +30,5 @@ export async function findSignedSow(service: any, projectId: string, opts: { new
     console.error('signed-SOW lookup failed:', error.message ?? error)
     return { ok: false, error: error.message ?? 'lookup failed' }
   }
-  return { ok: true, sow: data ? { id: data.id, document_number: data.document_number ?? null, version: data.version ?? null, lateFeeRate: normalizeLateFeeRate(data.metadata?.lateFeeRate) } : null }
+  return { ok: true, sow: data ? { id: data.id, document_number: data.document_number ?? null, version: data.version ?? null, lateFeeRate: normalizeLateFeeRate(data.metadata?.lateFeeRate), paymentTermsDays: sowPaymentTermsDays(data.metadata) } : null }
 }

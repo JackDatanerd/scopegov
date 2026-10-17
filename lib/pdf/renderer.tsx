@@ -219,7 +219,7 @@ export interface InvoicePdfData {
   sentAt?:      string | null
   paymentInstructions?: string | null
   payments:     Array<{ amount: number; paidAt: string; method: string; referenceNote?: string | null }>
-  contractPosition?: { contractedValue: number; invoicedToDate: number; paidToDate: number; excludesTax?: boolean; unbilledChangeOrders?: number; unbilledChangeOrdersGross?: number; openEndedRetainer?: boolean } | null
+  contractPosition?: { contractedValue: number; invoicedToDate: number; paidToDate: number; excludesTax?: boolean; unbilledChangeOrders?: number; unbilledChangeOrdersGross?: number; unbilledChangeOrdersRefs?: string[]; openEndedRetainer?: boolean } | null
   // Cross-references (doc-quality audit round 2) — the underlying
   // sow_id/co_id FKs already existed on `invoices`, just weren't being
   // read into the PDF. Mirrors Meridian sample's "For services rendered
@@ -997,7 +997,7 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
         {/* When the money falls due: stated only when the agency has standard payment terms and this change order charges something. */}
         {!data.isRetainerRenewal && !data.isCredit && data.total > 0 && (data.paymentTermsDays || 0) > 0 && (
           <Text style={{ fontSize: 9, color: '#555', lineHeight: 1.5, marginTop: 4 }}>
-            Payment: this change order is invoiced separately, and each invoice is due within {data.paymentTermsDays} day{data.paymentTermsDays === 1 ? '' : 's'} of its invoice date.
+            Payment: this change order is invoiced separately once it is accepted, and each invoice is due within {data.paymentTermsDays} day{data.paymentTermsDays === 1 ? '' : 's'} of its invoice date.
             {data.lateFeeRate ? ` ${lateFeeReminder(data.lateFeeRate, data.sowNumber)}` : ''}
           </Text>
         )}
@@ -1336,7 +1336,13 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
                 : null
               return (
                 <View style={[s.cpRow, data.contractPosition!.openEndedRetainer ? { borderTop: '1 solid #F2F0EA', paddingTop: 6, marginTop: 2 } : { paddingTop: 0 }]}>
-                  <Text style={{ color: '#909090', fontSize: 9 }}>{data.contractPosition!.openEndedRetainer ? 'Approved change orders not yet invoiced' : '   of which approved change orders not yet invoiced'}{data.contractPosition!.excludesTax ? ' (excl. tax)' : ''}</Text>
+                  <Text style={{ color: '#909090', fontSize: 9 }}>{data.contractPosition!.openEndedRetainer ? 'Approved change orders not yet invoiced' : '   of which approved change orders not yet invoiced'}{(() => {
+                    // Name the change orders (up to three) so the figure can be checked against a document, e.g. "(CO-0011, excl. tax)".
+                    const refs = (data.contractPosition!.unbilledChangeOrdersRefs || []).filter(Boolean)
+                    const named = refs.length > 3 ? `${refs.slice(0, 3).join(', ')} +${refs.length - 3} more` : refs.join(', ')
+                    const parts = [named, data.contractPosition!.excludesTax ? 'excl. tax' : ''].filter(Boolean)
+                    return parts.length ? ` (${parts.join(', ')})` : ''
+                  })()}</Text>
                   <Text style={{ fontFamily: PDF_FONT.sans, color: '#909090', fontSize: 9 }}>{data.currency} {fmtInv(net)}{gross != null ? ` (${data.currency} ${fmtInv(gross)} incl. tax)` : ''}</Text>
                 </View>
               )

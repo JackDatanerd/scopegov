@@ -284,6 +284,7 @@ export interface SowMetadata {
   revisionRounds?: number
   revisionPolicy?: string
   paymentDueDays?: number
+  paymentTermsDays?: number
   lateFeeRate?: number
   extraRevisionRate?: number
 }

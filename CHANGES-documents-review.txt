@@ -1,0 +1,18 @@
+Documents review (SOW-0012 / CO-0011 / INV-0011 test set)
+
+1. Invoice due date vs the SOW's payment period
+   - The default due date was counted on the BROWSER's calendar while the invoice prints its issue date in the WORKSPACE zone,
+     so a person ahead of the workspace zone issued an invoice due 15 days after its printed date under a 14-day term. The
+     default due date and the Record Payment default date now use the workspace calendar (BillingTab, projects/[id]/page).
+   - The SOW freezes its payment period in metadata.paymentTermsDays at drafting (like lateFeeRate). Change-order PDFs, the
+     portal CO PDF, the executed CO copy and invoices read it (lib/documents/payment-terms.ts) instead of the live workspace default.
+   - Sending an invoice is refused when its due date is later than the SOW's period allows from the issue date (workspace zone).
+     Earlier dates pass; SOWs drafted before this change carry no frozen term and are not checked.
+2. SOW PDF: a long table starting near the foot of a page overlapped its heading and rows (extra wrapping View around the
+   unsplittable first group, lib/pdf/sow-table.tsx). It is now a fragment; the group moves whole to the next page.
+3. Change order PDF: payment line states invoicing happens once the CO is accepted.
+4. Invoice contract position names the unbilled change orders ("CO-0011, excl. tax") on the PDF and the portal page.
+5. AI drafts: CO titles are Title Case (lib/documents/title-case.ts); costs borne by the Client go in the Impact Analysis, not the
+   reason for change; SOW prompt requires a Deliverables row per brief item, a start date on recurring rows that wait for Client
+   inputs, and no party names in Roles notes.
+Tests: title-case-and-payment-terms, sow-table-layout; late-fee and co-independent-pass-10 expectations gained paymentTermsDays.

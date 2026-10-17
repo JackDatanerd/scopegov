@@ -23,7 +23,7 @@
 
 import { projectTaxBases, netOfTax } from '@/lib/documents/tax-basis'
 import { fetchAll } from '@/lib/utils/fetch-all'
-import { amendmentImpact, baseContractValue, loadRetainerMonthsBilled, unbilledChangeOrderValue, unbilledChangeOrderGross, type PositionProject } from '@/lib/utils/contract-value'
+import { amendmentImpact, baseContractValue, loadRetainerMonthsBilled, unbilledChangeOrderValue, unbilledChangeOrderGross, unbilledChangeOrderIds, type PositionProject } from '@/lib/utils/contract-value'
 
 export { baseContractValue }
 export type { PositionProject }
@@ -41,6 +41,8 @@ export interface ContractPosition {
   unbilledChangeOrderValue?: number
   /** The same change orders as their own tax-inclusive totals (not the net grossed back up, which can be a cent off). */
   unbilledChangeOrderGross?: number
+  /** Document numbers of those change orders ("CO-0011"), so the figure can be tied to a document. */
+  unbilledChangeOrderRefs?: string[]
   /** A retainer with no end date: "contracted" is the months billed so far, a figure that moves every month, so documents do not print it. */
   openEndedRetainer?: boolean
 }
@@ -54,6 +56,8 @@ export interface InvoiceContractPosition {
   unbilledChangeOrders?: number
   /** Gross twin of unbilledChangeOrders: the change orders' own totals, tax included. */
   unbilledChangeOrdersGross?: number
+  /** Document numbers of the unbilled change orders. */
+  unbilledChangeOrdersRefs?: string[]
   openEndedRetainer?: boolean
 }
 
@@ -64,7 +68,8 @@ export function toInvoiceContractPosition(position: ContractPosition): InvoiceCo
     ? { contractedValue: position.contractedValue, invoicedToDate: position.invoicedToDate, paidToDate: position.paidToDateNet ?? position.paidToDate, excludesTax: true }
     : { contractedValue: position.contractedValue, invoicedToDate: position.invoicedToDate, paidToDate: position.paidToDate }
   const unbilledGross = Math.round(Math.max(0, position.unbilledChangeOrderGross || 0) * 100) / 100
-  const withUnbilled = unbilled > 0 ? { ...base, unbilledChangeOrders: unbilled, ...(unbilledGross > 0 ? { unbilledChangeOrdersGross: unbilledGross } : {}) } : base
+  const refs = (position.unbilledChangeOrderRefs || []).filter(Boolean)
+  const withUnbilled = unbilled > 0 ? { ...base, unbilledChangeOrders: unbilled, ...(unbilledGross > 0 ? { unbilledChangeOrdersGross: unbilledGross } : {}), ...(refs.length ? { unbilledChangeOrdersRefs: refs } : {}) } : base
   return position.openEndedRetainer ? { ...withUnbilled, openEndedRetainer: true } : withUnbilled
 }
 
@@ -95,7 +100,7 @@ export async function computeContractPositions(
           .in('project_id', chunk).in('status', ['awaiting_response', 'stalled', 'countered', 'awaiting_countersignature'])
           .order('id').range(from, to)),
       fetchAll<any>('position CO totals', (from, to) =>
-        service.from('change_orders').select('id, project_id, total')
+        service.from('change_orders').select('id, project_id, total, document_number')
           .in('project_id', chunk).order('id').range(from, to)),
     ])
 
@@ -149,6 +154,11 @@ export async function computeContractPositions(
           project.type,
           coTotals.filter((c: any) => c.project_id === id),
         ),
+        unbilledChangeOrderRefs: (() => {
+          const numberOf = new Map<string, string>(coTotals.filter((c: any) => c.project_id === id && c.document_number).map((c: any) => [c.id, String(c.document_number)]))
+          return unbilledChangeOrderIds(amendments.filter((a: any) => a.project_id === id), invoices.filter((inv: any) => inv.project_id === id), project.type)
+            .map(coId => numberOf.get(coId)).filter((n): n is string => !!n)
+        })(),
         atRiskValue:     openCos.filter((c: any) => c.project_id === id).reduce((s: number, c: any) => s + (Number(c.total) || 0), 0),
         ...(project.type === 'retainer' && !(Number(project.retainer_duration_months) > 0) ? { openEndedRetainer: true } : {}),
       })

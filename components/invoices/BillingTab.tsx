@@ -14,6 +14,7 @@ import { isOpenEndedRetainer } from '@/lib/utils/contract-value'
 import ClientDetailsWarningModal, { type ClientDetailsInfo, type AgencyDetailsInfo } from '@/components/documents/ClientDetailsWarningModal'
 import { isPaymentClaimOpen } from '@/lib/utils/invoice-registry'
 import { amountFieldForNet, buildInvoiceEditPatch, lineTotal, itemizedSubtotal, type EditFormState } from '@/lib/documents/invoice-form'
+import { dateStringInZone, addDaysToDateString } from '@/lib/utils/timezone'
 
 const METHOD_LABELS: Record<string, string> = {
   bank_transfer: 'Bank transfer', stripe: 'Stripe', check: 'Check', cash: 'Cash', other: 'Other',
@@ -28,7 +29,7 @@ interface Props {
   currency: string
   router: any
   defaultPaymentInstructions?: string
-  billingDefaults?: { taxRate: number; taxInclusive: boolean; paymentTermsDays: number | null }
+  billingDefaults?: { taxRate: number; taxInclusive: boolean; paymentTermsDays: number | null; timeZone?: string | null }
   // FIX (section-12 audit — feature gap follow-through): invoices can now
   // be gated by an approval workflow (see /api/invoices/[id]/send). An
   // invoice's own status stays 'draft' the whole time it's pending — this
@@ -580,6 +581,7 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
 
       {payingId && (
         <RecordPaymentModal
+          timeZone={billingDefaults?.timeZone}
           invoice={invoices.find((i: any) => i.id === payingId)}
           onClose={() => setPayingId(null)}
           onRecorded={async () => { setPayingId(null); await refresh() }}
@@ -739,11 +741,11 @@ function MetricBlock({ label, value, color }: { label: string; value: string; co
 
 // ── CREATE INVOICE ────────────────────────────────────────────
 // The due date `days` from today, as the yyyy-mm-dd a date input expects (local calendar day).
-function dueDateFromTerms(days: number | null | undefined): string {
+function dueDateFromTerms(days: number | null | undefined, timeZone?: string | null): string {
   if (days == null || !Number.isFinite(days)) return ''
-  const d = new Date()
-  d.setDate(d.getDate() + days)
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  // The invoice prints its issue date in the WORKSPACE's zone, so the due date is counted on that calendar too. Using the browser's
+  // local date made a person a few hours ahead of the workspace issue an invoice due 15 days after its printed date.
+  return addDaysToDateString(dateStringInZone(timeZone), days)
 }
 
 function CreateInvoiceModal({ projectId, projectCurrency, milestones, sows, cos, defaultPaymentInstructions, billingDefaults, onClose, onCreated }: any) {
@@ -752,7 +754,7 @@ function CreateInvoiceModal({ projectId, projectCurrency, milestones, sows, cos,
   const [amount, setAmount] = useState('')
   // FEATURE (Settings & Team round): workspace billing defaults pre-fill the due date and tax terms.
   // A milestone or change order picked below still brings its own terms over these.
-  const defaultDue = dueDateFromTerms(billingDefaults?.paymentTermsDays)
+  const defaultDue = dueDateFromTerms(billingDefaults?.paymentTermsDays, billingDefaults?.timeZone)
   const [dueDate, setDueDate] = useState(defaultDue)
   // FIX (section-12 audit — feature gap): po_number was fully modeled and
   // rendered on every invoice PDF/portal view but had no input anywhere in
@@ -1536,15 +1538,12 @@ function SourceRow({ active, label, sub, onClick }: { active: boolean; label: st
 }
 
 // ── RECORD PAYMENT ────────────────────────────────────────────
-function RecordPaymentModal({ invoice, onClose, onRecorded }: any) {
+function RecordPaymentModal({ invoice, timeZone, onClose, onRecorded }: any) {
   const balance = Math.max(0, Number(invoice.amount) - Number(invoice.amount_paid))
   const [amount, setAmount] = useState(roundCurrency(balance).toFixed(2))
-  // Local calendar day, not the UTC one — `toISOString()` gave yesterday/tomorrow around midnight
-  // for anyone away from UTC (same convention dueDateFromTerms uses).
-  const [paidAt, setPaidAt] = useState(() => {
-    const d = new Date()
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-  })
+  // Today on the WORKSPACE's calendar, the one every document prints its dates in. The browser's local day put a payment a day
+  // after the document that records it whenever the person is ahead of the workspace's zone.
+  const [paidAt, setPaidAt] = useState(() => dateStringInZone(timeZone))
   const [method, setMethod] = useState('bank_transfer')
   const [referenceNote, setReferenceNote] = useState('')
   const [submitting, setSubmitting] = useState(false)

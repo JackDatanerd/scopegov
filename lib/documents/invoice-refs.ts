@@ -7,17 +7,18 @@
 // invoice, through the amendment the accepted change order recorded (amendments.signed_sow_id).
 //
 import { normalizeLateFeeRate } from '@/lib/documents/late-fee'
+import { sowPaymentTermsDays } from '@/lib/documents/payment-terms'
 
 // Never throws: a failed lookup just means no reference line, same as before.
 
 export const INVOICE_SOW_EMBEDS = 'sow_documents(document_number, metadata), payment_milestones(sow_documents(document_number, metadata))'
 
-export interface InvoiceSowTerms { number: string | null; lateFeeRate: number | null }
+export interface InvoiceSowTerms { number: string | null; lateFeeRate: number | null; paymentTermsDays: number | null }
 
 /** The SOW an invoice sits under and the late fee that SOW froze at drafting (null when none). */
 export async function resolveInvoiceSowTerms(service: any, invoice: any): Promise<InvoiceSowTerms> {
   const pick = (sow: any): InvoiceSowTerms | null =>
-    sow?.document_number ? { number: String(sow.document_number), lateFeeRate: normalizeLateFeeRate(sow?.metadata?.lateFeeRate) } : null
+    sow?.document_number ? { number: String(sow.document_number), lateFeeRate: normalizeLateFeeRate(sow?.metadata?.lateFeeRate), paymentTermsDays: sowPaymentTermsDays(sow?.metadata) } : null
   const direct = pick(invoice?.sow_documents) || pick(invoice?.payment_milestones?.sow_documents)
   if (direct) return direct
   if (invoice?.co_id) {
@@ -31,7 +32,7 @@ export async function resolveInvoiceSowTerms(service: any, invoice: any): Promis
       console.error('invoice SOW reference lookup failed (printing no reference):', e)
     }
   }
-  return { number: null, lateFeeRate: null }
+  return { number: null, lateFeeRate: null, paymentTermsDays: null }
 }
 
 export async function resolveInvoiceSowNumber(service: any, invoice: any): Promise<string | null> {

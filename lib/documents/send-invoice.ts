@@ -45,6 +45,7 @@ import { resolveReplyTo } from '@/lib/email/reply-to'
 import { checkedSend } from '@/lib/email/delivery'
 import { formatMoney } from '@/lib/utils/money'
 import { isDueDateInPast } from '@/lib/documents/preflight'
+import { dueDateExceedsTerm } from '@/lib/documents/payment-terms'
 
 export type SendInvoiceResult =
   | { ok: true; token: string; portalUrl: string; invoiceNumber: string; projectId: string; projectName: string; emailSent: boolean; emailError?: string }
@@ -114,6 +115,14 @@ export async function sendInvoiceDocument(service: any, params: {
   // being consulted at all.
   const invoiceSow = await resolveInvoiceSowTerms(service, invoice)
     const invoiceSowNumber = invoiceSow.number
+  // The SOW states one payment period and every invoice under it must honour it: a due date later than the period allows (counted
+  // from the day this invoice is issued, in the workspace's zone) contradicts the signed contract. Nothing else is touched, so the
+  // approval stays in place and the person only changes the due date and retries.
+  {
+    const over = dueDateExceedsTerm(invoice.due_date, new Date(), invoiceSow.paymentTermsDays, workspace?.timezone)
+    if (over)
+      return { ok: false, error: `The due date (${over.due}) is later than the ${invoiceSow.paymentTermsDays} days the SOW allows from the invoice date (${over.issued}), which is ${over.latest}. Change the due date to ${over.latest} or earlier, then send.`, status: 400 }
+  }
   const ccEmails = await withPrimaryContactCc(service, project.client_id, client.email, client.cc_emails, 'invoice')
 
   const jwtSecret = await getWorkspaceJwtSecret(service, workspaceId)

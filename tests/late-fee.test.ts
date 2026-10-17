@@ -51,10 +51,11 @@ describe('SOW drafting with a late fee', () => {
 describe('invoice resolves the late fee from its SOW', () => {
   const svc = { from: () => ({ select: () => ({ eq: () => ({ limit: () => ({ maybeSingle: async () => ({ data: { sow_documents: { document_number: 'SOW-0007', metadata: { lateFeeRate: 2 } } } }) }) }) }) }) }
   it('direct, via milestone, via amendment, none', async () => {
-    expect(await resolveInvoiceSowTerms(svc, { sow_documents: { document_number: 'SOW-0001', metadata: { lateFeeRate: 1.5 } } })).toEqual({ number: 'SOW-0001', lateFeeRate: 1.5 })
-    expect(await resolveInvoiceSowTerms(svc, { payment_milestones: { sow_documents: { document_number: 'SOW-0002', metadata: {} } } })).toEqual({ number: 'SOW-0002', lateFeeRate: null })
-    expect(await resolveInvoiceSowTerms(svc, { co_id: 'c' })).toEqual({ number: 'SOW-0007', lateFeeRate: 2 })
-    expect(await resolveInvoiceSowTerms(svc, {})).toEqual({ number: null, lateFeeRate: null })
+    expect(await resolveInvoiceSowTerms(svc, { sow_documents: { document_number: 'SOW-0001', metadata: { lateFeeRate: 1.5 } } })).toEqual({ number: 'SOW-0001', lateFeeRate: 1.5, paymentTermsDays: null })
+    expect(await resolveInvoiceSowTerms(svc, { payment_milestones: { sow_documents: { document_number: 'SOW-0002', metadata: {} } } })).toEqual({ number: 'SOW-0002', lateFeeRate: null, paymentTermsDays: null })
+    expect(await resolveInvoiceSowTerms(svc, { co_id: 'c' })).toEqual({ number: 'SOW-0007', lateFeeRate: 2, paymentTermsDays: null })
+    expect(await resolveInvoiceSowTerms(svc, {})).toEqual({ number: null, lateFeeRate: null, paymentTermsDays: null })
+    expect(await resolveInvoiceSowTerms(svc, { sow_documents: { document_number: 'SOW-0003', metadata: { paymentTermsDays: 14 } } })).toEqual({ number: 'SOW-0003', lateFeeRate: null, paymentTermsDays: 14 })
   })
 })
 

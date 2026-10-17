@@ -536,6 +536,9 @@ export async function POST(request: NextRequest) {
         ...(taxDefaults.taxRate > 0 ? { taxRate: taxDefaults.taxRate, taxInclusive: taxDefaults.taxInclusive } : {}),
         // The late fee in force when this SOW was drafted: change orders and invoices under it print this rate.
         ...(lateFeeRate ? { lateFeeRate } : {}),
+        // The payment period in force when this SOW was drafted: change orders and invoices under it print and obey this, not the
+        // workspace default as it stands on the day they are made.
+        ...(paymentTermsDays ? { paymentTermsDays } : {}),
         ...(liabilityCap ? { liabilityCap } : {}),
         // The client-review rule in force when this SOW was drafted (frozen with the document).
         ...(approvalSilence ? { approvalSilence } : {}),

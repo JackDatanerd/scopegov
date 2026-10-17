@@ -1,6 +1,7 @@
 export const runtime = 'nodejs'
 
 import { monthlyRateFromCo } from '@/lib/documents/co-retainer'
+import { effectivePaymentTermsDays } from '@/lib/documents/payment-terms'
 import { normalizeLateFeeRate } from '@/lib/documents/late-fee'
 import { createServiceClient } from '@/lib/supabase/server'
 import { lookupMissResponse } from '@/lib/documents/co-lookup'
@@ -108,7 +109,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       agencyAddress: ws?.legal_address || null,
       agencyTaxId:   ws?.tax_id || null,
       agencyPhone:   ws?.phone || null,
-      paymentTermsDays: ws?.default_payment_terms_days ?? null,
+      paymentTermsDays: effectivePaymentTermsDays(sow?.metadata, ws?.default_payment_terms_days),
       lateFeeRate: normalizeLateFeeRate(sow?.metadata?.lateFeeRate),
       agencyWebsite: ws?.website || null,
       clientName:  co.projects?.clients?.name || 'Client',

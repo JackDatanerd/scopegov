@@ -28,7 +28,7 @@ interface InvoiceData {
   invoiceNumber: string | null
   poNumber: string | null
   milestoneTrigger: string | null
-  contractPosition: { contractedValue: number; invoicedToDate: number; paidToDate: number; excludesTax?: boolean; unbilledChangeOrders?: number } | null
+  contractPosition: { contractedValue: number; invoicedToDate: number; paidToDate: number; excludesTax?: boolean; unbilledChangeOrders?: number; unbilledChangeOrdersRefs?: string[] } | null
   // FIX (section-12 audit, flagship finding): the API now sends these
   // (see the matching route fix) — added here so the page can render
   // the itemized breakdown and SOW/CO cross-reference the PDF already
@@ -392,7 +392,7 @@ export default function InvoicePortalPage() {
                       </div>
                       {unbilledCo > 0 && (
                         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11.5, color: '#909090', padding: '3px 0 0 12px' }}>
-                          <span>of which approved change orders not yet invoiced</span>
+                          <span>of which approved change orders not yet invoiced{(() => { const refs = (invoice.contractPosition.unbilledChangeOrdersRefs || []).filter(Boolean); return refs.length ? ` (${refs.length > 3 ? `${refs.slice(0, 3).join(', ')} +${refs.length - 3} more` : refs.join(', ')})` : '' })()}</span>
                           <span style={{ fontFamily: 'IBM Plex Mono, monospace' }}>{invoice.currency} {formatAmount(unbilledCo, invoice.currency)}</span>
                         </div>
                       )}

@@ -409,7 +409,7 @@ export async function finalizeCoAcceptance(service: any, params: {
     try {
       const { data: tzRow } = await (service as any).from('workspaces').select('timezone, default_payment_terms_days').eq('id', co.workspace_id).maybeSingle()
       timeZone = tzRow?.timezone ?? null
-      paymentTermsDays = tzRow?.default_payment_terms_days ?? null
+      paymentTermsDays = signedSow.paymentTermsDays ?? tzRow?.default_payment_terms_days ?? null
     } catch { /* falls back to UTC / no payment-terms line, as before */ }
     pdfBuffer = await renderCoPdf({
       timeZone, paymentTermsDays, lateFeeRate: signedSow.lateFeeRate ?? null,

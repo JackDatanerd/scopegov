@@ -111,9 +111,9 @@ export function SowTable({ sectionId, rows, language, lead, currency }: { sectio
 
   const s = {
     box:    { border: '1 solid #E5E1D8', borderRadius: 4, overflow: 'hidden' as const },
-    hdrRow: { flexDirection: 'row' as const, backgroundColor: '#F9F8F5', borderBottom: '1 solid #E5E1D8', paddingVertical: 5, paddingHorizontal: 8 },
+    hdrRow: { flexShrink: 0, flexDirection: 'row' as const, backgroundColor: '#F9F8F5', borderBottom: '1 solid #E5E1D8', paddingVertical: 5, paddingHorizontal: 8 },
     th:     { fontSize: 7.5, fontFamily: PDF_FONT.bold, color: '#909090', textTransform: 'uppercase' as const, letterSpacing: 0.4 },
-    row:    { flexDirection: 'row' as const, borderBottom: '1 solid #F2F0EA', paddingVertical: 6, paddingHorizontal: 8 },
+    row:    { flexShrink: 0, flexDirection: 'row' as const, borderBottom: '1 solid #F2F0EA', paddingVertical: 6, paddingHorizontal: 8 },
     lastRow:{ borderBottom: 'none' as const },
     td:     { fontSize: 9, color: '#1A1A1A', lineHeight: 1.4 },
   }
@@ -161,22 +161,26 @@ export function SowTable({ sectionId, rows, language, lead, currency }: { sectio
     const tailRows = rows.slice(n - tailCount)
     const hasRest  = midRows.length > 0 || tailRows.length > 0
     const closing  = { borderBottom: line, borderBottomLeftRadius: 4, borderBottomRightRadius: 4 }
+    // FIX (document review): this used to be wrapped in an outer <View>. react-pdf cannot move an unsplittable group out of a
+    // wrapping parent, so a long table starting near the foot of a page was drawn squeezed into the space left: the heading, header
+    // and first rows overlapped and the rest was clipped. The group and the continuation are siblings (a fragment) so the group
+    // moves whole to the next page. tests/sow-table-layout.test.ts guards the structure.
     return (
-      <View>
-        <View wrap={false}>
+      <>
+        <View wrap={false} style={{ flexShrink: 0 }}>
           {lead}
-          <View style={{ borderTop: line, borderLeft: line, borderRight: line, borderTopLeftRadius: 4, borderTopRightRadius: 4, overflow: 'hidden', ...(hasRest ? {} : closing) }}>
+          <View style={{ borderTop: line, borderLeft: line, borderRight: line, borderTopLeftRadius: 4, borderTopRightRadius: 4, ...(hasRest ? {} : closing) }}>
             {header}
             {headRows.map((row, i) => renderRow(row, i))}
           </View>
         </View>
         {hasRest && (
-          <View style={{ borderLeft: line, borderRight: line, overflow: 'hidden', ...closing }}>
+          <View style={{ borderLeft: line, borderRight: line, ...closing }}>
             {midRows.map((row, i) => renderRow(row, headCount + i))}
-            {tailRows.length > 0 && <View wrap={false}>{tailRows.map((row, i) => renderRow(row, n - tailCount + i))}</View>}
+            {tailRows.length > 0 && <View wrap={false} style={{ flexShrink: 0 }}>{tailRows.map((row, i) => renderRow(row, n - tailCount + i))}</View>}
           </View>
         )}
-      </View>
+      </>
     )
   }
 

@@ -1043,6 +1043,9 @@ Rules:
 - Out of scope section must list every item from the out-of-scope brief as explicit exclusions. Be specific.
 - Revision policy must reference exactly ${input.revisionRounds} revision round(s).
 - Deliverables table rows must cover every item in the deliverables brief above — one row per deliverable, not grouped.
+- Count the deliverables brief before writing the Deliverables table and make sure the table has a row for each one, reports, research and strategy included; items the Client must supply (access, materials, footage) are additional rows owned by the Client. Do not leave a Provider deliverable that appears in the brief (for example a monthly report) out of the table because the Roles table or the prose also mentions it.
+- When recurring work cannot begin until something the Client supplies has arrived, the Target Date of that recurring row says when it starts (for example "Weekly from <date>"), never a bare "Weekly", and the Timeline says whether the first period's fee still covers the whole period.
+- Roles table notes carry only a date or a condition that the row needs. Never put a party's name, the row's own text, or the words "as Provider" / "as Client" in notes; leave notes empty when there is nothing to add.
 - Roles table must reflect that ${input.agencyName} is the Provider and ${input.clientName} is the Client.
 - Write with professional, authoritative language appropriate for a legal document.
 - Never add a late fee, late-fee rate or revision fee unless it is explicitly provided above.

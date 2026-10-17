@@ -2,6 +2,7 @@
 export const runtime = 'nodejs'
 export const maxDuration = 60
 
+import { toTitleCase } from '@/lib/documents/title-case'
 import { isOpenEndedRetainer } from '@/lib/documents/co-retainer'
 import { normalizeDraftQuantity } from '@/lib/documents/co-draft-quantity'
 import { isGenericScopeReference, stripInternalScopeLabels, ensureCappedQuantityBasis, normalizeLineEnding, scrubProjectNameAsBrand, fixOutOfScopePhrasing, ensureAddedExclusionsStated } from '@/lib/documents/co-draft-text'
@@ -32,7 +33,7 @@ const DRAFT_CO_TOOL = {
     properties: {
       title: {
         type: 'string',
-        description: "Short, client-facing title, e.g. 'Additional homepage redesign'.",
+        description: "Short, client-facing title in Title Case, e.g. 'Additional Homepage Redesign'.",
       },
       note: {
         type: 'string',
@@ -166,7 +167,8 @@ Rules:
 - Never set a dollar rate. Pricing always comes from the agency, not the model.
 - Only include work that is genuinely NOT already covered by "Already in scope" above.
 - quantity is how many times the line's fee applies. One document, brief, report or shortlist is quantity 1, however many items it contains; put that limit in the description (for example \"up to 15 candidates\"), never in the quantity. Use a quantity above 1 only when each unit is a real repeated unit (hours, posts, candidates contacted) and the description says what one unit is (\"per candidate\"). Default to 1 if unclear.
-- Keep title and note client-facing and professional — no internal jargon.
+- Keep title and note client-facing and professional — no internal jargon. Write the title in Title Case (\"Additional Homepage Redesign\"), like the SOW and invoice titles it sits beside.
+- Who bears third-party costs (creator fees, affiliate commissions, platform or tool costs, ad spend) is a term of the work, not the reason for it: state it in scopeImpact, never in note. note is only the Client's request and what the Provider will do.
 - Write note and scopeImpact in the third person, as a contract would: refer to "the Provider" and "the Client" and never use "we", "us", "you" or "your".
 - Any quantity named in note or scopeImpact (pages, rounds, hours) must equal the line-item quantities exactly. Never write "a round" or "one" when a line item says 2. If a line item adds revision rounds, say they are in addition to any revision rounds already included in the SOW.
 - Bound every line item: its description must state its limit (for example the number of creators, outreach rounds, pages or posts) so the extra work cannot grow open-ended. If the request gives no number, choose a small sensible one and state it.
@@ -243,7 +245,7 @@ Rules:
     const days = rawDays === null || rawDays === undefined || (typeof rawDays === 'string' && rawDays.trim() === '') ? NaN : Number(rawDays)
 
     return NextResponse.json({
-      title:              truncateText(sanitizePlainText(String(parsed.title ?? '')), 200),
+      title:              truncateText(toTitleCase(sanitizePlainText(String(parsed.title ?? ''))), 200),
       note:               truncateText(scrubProjectNameAsBrand(stripInternalScopeLabels(sanitizePlainText(String(parsed.note ?? ''))), project.name), 2000),
       // Whatever the lines say the work does NOT include is also stated in the Impact Analysis (see ensureAddedExclusionsStated).
       scopeImpact:        parsed.scopeImpact ? truncateText(ensureAddedExclusionsStated(fixOutOfScopePhrasing(scrubProjectNameAsBrand(stripInternalScopeLabels(sanitizePlainText(String(parsed.scopeImpact))), project.name)), lineItems) ?? '', 1000) || null : null,
