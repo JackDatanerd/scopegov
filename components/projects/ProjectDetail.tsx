@@ -92,7 +92,7 @@ interface Props {
   invoices: any[]
   reconciliation: any[]
   defaultPaymentInstructions?: string
-  billingDefaults?: { taxRate: number; taxInclusive: boolean; paymentTermsDays: number | null; timeZone?: string | null }
+  billingDefaults?: { taxRate: number; taxInclusive: boolean; paymentTermsDays: number | null; termFromSow?: boolean; timeZone?: string | null }
   // Shared definition (lib/utils/contract-value.ts). All null when the viewer lacks VIEW_FINANCIALS.
   effectiveContractValue: number | null
   baseContractValue: number | null

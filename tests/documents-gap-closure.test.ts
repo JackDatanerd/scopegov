@@ -78,3 +78,47 @@ describe('change order invoice timing', () => {
     expect(parseCoFields({ invoiceTiming: 'whenever' }).ok).toBe(false)
   })
 })
+
+import { toTitleCaseFor } from '@/lib/documents/title-case'
+import { readPaymentTerms } from '@/lib/documents/payment-terms'
+
+describe('round 3: other languages are not damaged', () => {
+  const es = [sec('payment', '<p>Cada factura vence dentro de 30 días desde la fecha de la factura.</p>')]
+  const de = [sec('payment', '<p>Jede Rechnung ist innerhalb von 14 Tagen nach Rechnungsdatum fällig.</p>')]
+  const sw = [sec('payment', '<p>Kila ankara hulipwa ndani ya siku 14.</p>')]
+
+  it('keeps the frozen period when a non-English text cannot be read', () => {
+    for (const sections of [es, de, sw]) {
+      const lang = sections === es ? 'es' : sections === de ? 'de' : 'sw'
+      const r = reconcileSowPaymentTerms({ language: lang, paymentTermsDays: 14, lateFeeRate: 2 }, sections)
+      expect(r.changed).toBe(false)
+      expect(r.metadata.paymentTermsDays).toBe(14)
+    }
+  })
+  it('keeps the frozen period when an English text has a day count the reader cannot interpret', () => {
+    const odd = [sec('payment', '<p>Payment is expected 21 days after we send the bill.</p>')]
+    expect(readPaymentTerms(odd)).toEqual({ days: null, unreadable: true })
+    expect(reconcileSowPaymentTerms({ paymentTermsDays: 14 }, odd).changed).toBe(false)
+  })
+  it('reads "Net 30" and still drops the period for an English text that states none', () => {
+    expect(paymentTermsDaysFromText([sec('payment', '<p>Terms: Net 30.</p>')])).toBe(30)
+    expect(reconcileSowPaymentTerms({ paymentTermsDays: 14 }, [sec('payment', '<p>Payment is due on receipt.</p>')]).metadata.paymentTermsDays).toBeUndefined()
+  })
+  it('a readable period still wins in any language', () => {
+    const r = reconcileSowPaymentTerms({ language: 'es', paymentTermsDays: 14 }, [sec('payment', '<p>Each invoice is due within 30 days of its invoice date.</p>')])
+    expect(r.metadata.paymentTermsDays).toBe(30)
+  })
+  it('Title Case is English only', () => {
+    expect(toTitleCaseFor('Monthly retainer', null)).toBe('Monthly Retainer')
+    expect(toTitleCaseFor('Monthly retainer', 'en')).toBe('Monthly Retainer')
+    expect(toTitleCaseFor('Pago inicial (50%)', 'es')).toBe('Pago inicial (50%)')
+    expect(toTitleCaseFor('Acompte (50 %)', 'fr')).toBe('Acompte (50 %)')
+    expect(toTitleCaseFor('Malipo ya awali', 'sw')).toBe('Malipo ya awali')
+  })
+  it('coverage ignores non-English SOWs and reads accented words whole', () => {
+    const rows = [{ deliverable: 'Redacción de subtítulos', acceptanceCriteria: '', owner: 'Proveedor', targetDate: '' }]
+    expect(uncoveredDeliverablesWarning('informe mensual de analítica', rows, 'es')).toBeNull()
+    expect(uncoveredDeliverables('redacción de subtítulos', rows)).toEqual([])
+    expect(uncoveredDeliverables('informe mensual de analítica', rows)).toEqual(['informe mensual de analítica'])
+  })
+})

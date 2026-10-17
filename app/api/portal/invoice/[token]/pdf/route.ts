@@ -100,6 +100,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       paymentInstructions: sanitizeRichTextOrNull(invoice.payment_instructions),
       sowNumber:  invoiceSowNumber,
       lateFeeRate: invoiceSow.lateFeeRate,
+      language: invoiceSow.language,
       coNumber:   invoice.change_orders?.document_number || null,
       coTitle:    invoice.change_orders?.title || null,
       lineItems:  typeof invoice.line_items === 'string' ? JSON.parse(invoice.line_items) : (invoice.line_items || []),

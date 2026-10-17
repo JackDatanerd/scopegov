@@ -1,0 +1,11 @@
+Documents, independent pass 3
+
+1. Sending a non-English SOW no longer erases its frozen payment period. The text reader only overrides the frozen value when it can
+   read the text: another language, or an English day count it cannot interpret, keeps what was frozen. It also reads "Net N". An
+   English text that mentions no day count still drops the period. (lib/documents/payment-terms.ts: readPaymentTerms, reconcile)
+2. Title Case is applied to English documents only (toTitleCaseFor). Invoice PDFs now carry the SOW's language (invoice-refs,
+   pdf/invoice, portal invoice pdf, send-invoice) so a Spanish/French/Swahili invoice keeps its titles as written.
+3. Deliverables coverage check reads accented words whole and says nothing for a SOW drafted in another language.
+4. The invoice modal's default due date is the signed SOW's period whenever the SOW states one (billingDefaults.termFromSow); a
+   milestone's own later date no longer produces a default that sending refuses. Workspaces with no SOW term keep the old rule.
+Tests: tests/documents-gap-closure.test.ts (es/de/sw cases); late-fee.test.ts expects the new `language` field.

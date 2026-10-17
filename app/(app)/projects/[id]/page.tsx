@@ -349,7 +349,7 @@ export default async function ProjectPage({ params, searchParams }: Props) {
   // FEATURE (Settings & Team round): workspace billing defaults (migration 076) — read separately and
   // tolerantly, like the client-reminder columns in Settings, so a deploy that runs ahead of the
   // migration shows a plain invoice form instead of failing the whole project page.
-  let billingDefaults = { taxRate: 0, taxInclusive: false, paymentTermsDays: null as number | null, timeZone: null as string | null }
+  let billingDefaults = { taxRate: 0, taxInclusive: false, paymentTermsDays: null as number | null, termFromSow: false, timeZone: null as string | null }
   {
     const { data: bd, error: bdErr } = await (service as any)
       .from('workspaces')
@@ -372,6 +372,7 @@ export default async function ProjectPage({ params, searchParams }: Props) {
         taxRate: rate,
         taxInclusive: rate > 0 ? (bd.default_tax_inclusive ?? true) : false,
         paymentTermsDays: bd.default_payment_terms_days ?? null,
+        termFromSow: false,
         timeZone: bd.timezone ?? null,
       }
       // The engagement's SOW states the tax basis; invoices start from it rather than from the workspace default.
@@ -380,7 +381,7 @@ export default async function ProjectPage({ params, searchParams }: Props) {
       // Likewise the payment period: an invoice under a signed SOW falls due when THAT SOW says (sending refuses a later date),
       // not on whatever the workspace default has become since.
       const signedTerm = sowPaymentTermsDays(((project.sow_documents || []) as any[]).find(s => s.status === 'signed')?.metadata)
-      if (signedTerm) billingDefaults = { ...billingDefaults, paymentTermsDays: signedTerm }
+      if (signedTerm) billingDefaults = { ...billingDefaults, paymentTermsDays: signedTerm, termFromSow: true }
     }
   }
 

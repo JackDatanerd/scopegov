@@ -3,7 +3,7 @@
 // Pure Node.js — no browser, no timeout risk on Vercel Hobby.
 // npm install @react-pdf/renderer
 
-import { toTitleCase } from '@/lib/documents/title-case'
+import { toTitleCaseFor } from '@/lib/documents/title-case'
 import React from 'react'
 import {
   Document, Page, View, Text, Image, Link,
@@ -188,6 +188,8 @@ export interface CoPdfData {
 }
 
 export interface InvoicePdfData {
+  /** The language of the SOW this invoice is under (null = English); Title Case is applied to English titles only. */
+  language?:     string | null
   timeZone?:     string | null
   agencyName:   string
   logoUrl:      string | null
@@ -599,7 +601,7 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
               const rowView = (m: NonNullable<SowPdfData['paymentSchedule']>[number], i: number) => (
                 <View key={i} wrap={false} style={s.schedRow}>
                   <View style={{ flex: 1 }}>
-                    <Text style={s.td}>{toTitleCase(m.title)}</Text>
+                    <Text style={s.td}>{toTitleCaseFor(m.title, data.language)}</Text>
                     <Text style={s.tdSub}>{m.trigger}{m.percentage ? ` · ${m.percentage}%` : ''}</Text>
                   </View>
                   <Text style={[s.td, s.mono, { width: 90, textAlign: 'right' }]}>{data.currency} {fm(m.amount)}</Text>
@@ -1192,7 +1194,7 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
           <View style={s.lineBox}>
             <View style={s.lineRow}>
               <View>
-                <Text style={s.lineDesc}>{toTitleCase(data.title)}</Text>
+                <Text style={s.lineDesc}>{toTitleCaseFor(data.title, data.language)}</Text>
                 {invoiceLineSubtext(data.title, data.milestoneTrigger) && <Text style={s.lineSub}>{invoiceLineSubtext(data.title, data.milestoneTrigger)}</Text>}
               </View>
               <Text style={s.lineAmt}>{data.currency} {fmtInv(invoiceSingleLineAmount({ amount: data.amount, subtotal: data.subtotal, taxRate: data.taxRate, taxInclusive: data.taxInclusive }))}</Text>

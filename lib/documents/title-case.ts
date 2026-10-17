@@ -34,3 +34,11 @@ export function toTitleCase(input: string): string {
     }).join('-')
   }).join('')
 }
+
+/**
+ * Title Case is an English convention. Spanish, French, Portuguese and Swahili titles are written in sentence case and German
+ * capitalises nouns by its own rules, so a document in another language keeps its titles exactly as written.
+ */
+export function toTitleCaseFor(text: string, language: string | null | undefined): string {
+  return !language || /^en\b/i.test(String(language)) ? toTitleCase(text) : String(text ?? '')
+}

@@ -155,7 +155,7 @@ export function validateSowForSend(input: {
   for (const msg of findClientDateConflicts(deliverables?.table, String(byId('assumptions')?.content ?? ''), input.metadata?.clientDates ? [input.metadata.clientDates.access, input.metadata.clientDates.materials] : null))
     warnings.push(msg)
   // A brief item with no row of its own is a promise the signed table does not state.
-  const coverageWarning = uncoveredDeliverablesWarning(input.metadata?.brief?.deliverables, deliverables?.table)
+  const coverageWarning = uncoveredDeliverablesWarning(input.metadata?.brief?.deliverables, deliverables?.table, input.metadata?.language)
   if (coverageWarning) warnings.push(coverageWarning)
   // A report on traffic or sales data needs the Client to give access to where that data lives, and the review period must fit the cadence.
   const tableText = (id: string) => (Array.isArray(byId(id)?.table) ? byId(id).table : []).map((r: any) => Object.values(r ?? {}).join(' ')).join('. ')

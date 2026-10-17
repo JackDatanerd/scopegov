@@ -29,7 +29,7 @@ interface Props {
   currency: string
   router: any
   defaultPaymentInstructions?: string
-  billingDefaults?: { taxRate: number; taxInclusive: boolean; paymentTermsDays: number | null; timeZone?: string | null }
+  billingDefaults?: { taxRate: number; taxInclusive: boolean; paymentTermsDays: number | null; termFromSow?: boolean; timeZone?: string | null }
   // FIX (section-12 audit — feature gap follow-through): invoices can now
   // be gated by an approval workflow (see /api/invoices/[id]/send). An
   // invoice's own status stays 'draft' the whole time it's pending — this
@@ -907,7 +907,9 @@ function CreateInvoiceModal({ projectId, projectCurrency, milestones, sows, cos,
           // deadline. Using it as the due date made the invoice fall due on the 1st whatever the SOW's \"within N days of invoice
           // date\" says, so with a standard term set the due date comes from the term, like any other invoice. It stays editable.
           const ms = m.type === 'retainer_monthly' && defaultDue ? '' : (m.due_date ? String(m.due_date).slice(0, 10) : '')
-          setDueDate(ms && defaultDue ? (ms > defaultDue ? ms : defaultDue) : (ms || defaultDue))
+          // A period the signed SOW states governs every invoice under it (sending refuses a later date), so a milestone's own date
+          // never pushes the due date past it. Only a workspace default with no SOW term keeps the older "later of the two" rule.
+          setDueDate(billingDefaults?.termFromSow && defaultDue ? defaultDue : ms && defaultDue ? (ms > defaultDue ? ms : defaultDue) : (ms || defaultDue))
         }
         // payment_milestones.tax_rate is NOT NULL DEFAULT 0 and nothing in the product sets it, so a
         // milestone's 0% means "no tax terms of its own", not "tax-free on purpose": fall back to the

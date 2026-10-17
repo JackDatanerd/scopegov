@@ -31,7 +31,7 @@ export function briefItems(brief: unknown): string[] {
 const stem = (w: string) => w.slice(0, 5)
 
 function keywordStems(text: string): string[] {
-  const words = plain(text).toLowerCase().match(/[a-z]{4,}/g) ?? []
+  const words = plain(text).toLowerCase().match(/\p{L}{4,}/gu) ?? []
   return [...new Set(words.filter(w => !STOP.has(w)).map(stem))]
 }
 
@@ -54,7 +54,10 @@ export function uncoveredDeliverables(brief: unknown, rows: Array<Record<string,
   return missing
 }
 
-export function uncoveredDeliverablesWarning(brief: unknown, rows: Array<Record<string, string>> | null | undefined): string | null {
+export function uncoveredDeliverablesWarning(brief: unknown, rows: Array<Record<string, string>> | null | undefined, language?: string | null): string | null {
+  // The table of a SOW drafted in another language is written in that language from a brief that may not be, so wording cannot be
+  // compared across them: say nothing rather than warn about rows that are only translated.
+  if (language && !/^en\b/i.test(String(language))) return null
   const missing = uncoveredDeliverables(brief, rows)
   if (missing.length === 0) return null
   const list = missing.slice(0, 4).map(m => `\u201c${m}\u201d`).join(', ') + (missing.length > 4 ? ` and ${missing.length - 4} more` : '')
