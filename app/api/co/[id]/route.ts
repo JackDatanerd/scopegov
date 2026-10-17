@@ -173,6 +173,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     if (parsedFields.fields.scopeImpactNote !== undefined)    update.scope_impact_note = parsedFields.fields.scopeImpactNote
     if (parsedFields.fields.timelineImpactDays !== undefined) update.timeline_impact_days = parsedFields.fields.timelineImpactDays
     if (parsedFields.fields.revisedDeliveryDate !== undefined) update.revised_delivery_date = parsedFields.fields.revisedDeliveryDate
+    if (parsedFields.fields.invoiceTiming !== undefined) update.invoice_timing = parsedFields.fields.invoiceTiming
     if (isOpenEndedRetainer(co.projects)) {
       // no delivery date exists to move on an open-ended retainer
       if ('timeline_impact_days' in update) update.timeline_impact_days = null

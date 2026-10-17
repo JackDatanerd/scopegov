@@ -1,0 +1,14 @@
+Documents, independent pass 2
+
+1. Payment period follows the SOW text. The frozen metadata.paymentTermsDays could disagree with an edited Payment Terms sentence
+   (client signs the text; CO PDFs printed the frozen number and invoices were refused against it). The period is now re-read from
+   the text ("due within N days of its invoice date") in the same claim that sends the SOW (lib/documents/send-sow.ts,
+   lib/documents/payment-terms.ts). A business-day term is not read as calendar days; a text with no period drops the frozen value.
+2. The invoice modal's default due date now uses the signed SOW's period (projects/[id]/page.tsx), not the workspace default.
+3. Deliverables coverage check: send validation warns when a brief item has no Provider-owned row in the Deliverables table
+   (lib/sow/deliverable-coverage.ts, lib/sow/validate-send.ts). Warning only; Client-owned rows are ignored in the match.
+4. PDF titles: payment schedule rows and the invoice's billed-line title print in Title Case (display only; stored titles unchanged).
+5. Change order billing timing: new change_orders.invoice_timing (migration 164: 'on_acceptance' | 'on_delivery', NULL = on acceptance).
+   Editor select, create/patch/revise, CO PDFs (staff, portal, executed) and the signing fingerprint (only when set) carry it.
+   Run migration 164 before deploying.
+Tests: tests/documents-gap-closure.test.ts

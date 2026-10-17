@@ -83,6 +83,7 @@ export default function CoEditor({ projId, coId }: Props) {
   // int (or null) only at save time; scopeImpactNote is free text.
   const [timelineImpactDays, setTimelineImpactDays] = useState('')
   const [revisedDeliveryDate, setRevisedDeliveryDate] = useState('')
+  const [invoiceTiming, setInvoiceTiming] = useState<'on_acceptance' | 'on_delivery'>('on_acceptance')
   const [deliverySuggested, setDeliverySuggested] = useState(false)
   const [scopeImpactNote,    setScopeImpactNote]    = useState('')
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -198,6 +199,7 @@ export default function CoEditor({ projId, coId }: Props) {
           setRenewalTermMonths(co.renewal_term_months != null ? String(co.renewal_term_months) : '')
           setTimelineImpactDays(co.timeline_impact_days != null ? String(co.timeline_impact_days) : '')
           setRevisedDeliveryDate(co.revised_delivery_date ? String(co.revised_delivery_date).slice(0, 10) : '')
+          setInvoiceTiming(co.invoice_timing === 'on_delivery' ? 'on_delivery' : 'on_acceptance')
           setScopeImpactNote(co.scope_impact_note || '')
           setFlagId(co.flag_id || null)
           setFlagRequestText(co.flagRequestText || null)
@@ -240,7 +242,7 @@ export default function CoEditor({ projId, coId }: Props) {
   // A create in flight — a second doSave (Save draft then Send in quick succession) awaits it and then PATCHes,
   // instead of racing a second POST that would create a duplicate change order.
   const createInFlight = useRef<Promise<string> | null>(null)
-  const snapshot = JSON.stringify([title, note, lineItems, taxRate, taxInclusive, isCredit, isRetainerRenewal, renewalTermMonths, timelineImpactDays, revisedDeliveryDate, scopeImpactNote])
+  const snapshot = JSON.stringify([title, note, lineItems, taxRate, taxInclusive, isCredit, isRetainerRenewal, renewalTermMonths, timelineImpactDays, revisedDeliveryDate, invoiceTiming, scopeImpactNote])
   // FIX (CO independent pass 9, CO-2): the latest on-screen state, readable from inside an async save. lastSaved only
   // advances when a PATCH RESOLVES, so an edit that is reverted while a save is in flight compared equal to the old
   // lastSaved, scheduled nothing, and the in-flight PATCH then left the server holding the reverted-away text under a
@@ -370,6 +372,8 @@ export default function CoEditor({ projId, coId }: Props) {
         timelineImpactDays: !retainerOpenEnded && timelineImpactDays.trim() !== '' ? timelineImpactDays.trim() : null,
         revisedDeliveryDate: !(retainerOpenEnded && isRetainerRenewal) && revisedDeliveryDate.trim() !== '' ? revisedDeliveryDate.trim() : null,
         scopeImpactNote:    scopeImpactNote.trim() || null,
+        // Acceptance is the default and is stored as "not chosen", so existing change orders and new ones that never touch it read the same.
+        invoiceTiming:      invoiceTiming === 'on_delivery' ? 'on_delivery' : null,
       }
       // Another save is still creating this CO — wait for it, then update that row rather than creating a second.
       if (!savedCoId.current && createInFlight.current) await createInFlight.current.catch(() => {})
@@ -663,6 +667,15 @@ export default function CoEditor({ projId, coId }: Props) {
           )}
         </div>
         )}
+
+        <div className="fgrp">
+          <label className="flbl">When is this invoiced? <span className="fhint">— stated in the change order</span></label>
+          <select className="finp" style={{ maxWidth: 260 }} disabled={isLocked} value={invoiceTiming}
+            onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setInvoiceTiming(e.target.value === 'on_delivery' ? 'on_delivery' : 'on_acceptance')}>
+            <option value="on_acceptance">Once the change order is accepted</option>
+            <option value="on_delivery">Once the work is delivered</option>
+          </select>
+        </div>
 
         {/* Line items */}
         {financialsHidden ? (

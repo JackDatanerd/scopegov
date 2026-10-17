@@ -24,6 +24,8 @@ export interface ParsedCoFields {
   timelineImpactDays?: number | null
   /** YYYY-MM-DD, the new delivery date when the timeline moves. */
   revisedDeliveryDate?: string | null
+  /** When the change order is invoiced (see migration 164); null clears it. */
+  invoiceTiming?: 'on_acceptance' | 'on_delivery' | null
 }
 
 /** A real calendar date in YYYY-MM-DD form (an ISO timestamp's date part is accepted), else null. */
@@ -75,6 +77,13 @@ export function parseCoFields(body: any): { ok: true; fields: ParsedCoFields } |
       if (!d) return { ok: false, error: 'Revised delivery date must be a real date (YYYY-MM-DD)' }
       fields.revisedDeliveryDate = d
     }
+  }
+
+  if (body?.invoiceTiming !== undefined) {
+    const raw = body.invoiceTiming
+    if (raw === null || raw === '') fields.invoiceTiming = null
+    else if (raw === 'on_acceptance' || raw === 'on_delivery') fields.invoiceTiming = raw
+    else return { ok: false, error: 'Invoice timing must be on_acceptance or on_delivery' }
   }
 
   return { ok: true, fields }

@@ -359,6 +359,8 @@ export async function finalizeCoAcceptance(service: any, params: {
     timelineImpactDays: co.timeline_impact_days ?? null, scopeImpactNote: co.scope_impact_note || null,
     // Only part of the fingerprint when set, so every change order accepted before this field existed hashes exactly as it did.
     ...(co.revised_delivery_date ? { revisedDeliveryDate: co.revised_delivery_date } : {}),
+    // Part of what was agreed, so part of the fingerprint when set (older change orders hash exactly as before).
+    ...(co.invoice_timing ? { invoiceTiming: co.invoice_timing } : {}),
     isRetainerRenewal: isRenewal, previousContractValue, ...(isCredit ? { isCredit: true } : {}),
     // CO-1: the term is part of what the client agreed to, so it is part of the fingerprint (renewals only, so every other
     // document's hash recipe - and every hash already stored - is unchanged).
@@ -447,6 +449,7 @@ export async function finalizeCoAcceptance(service: any, params: {
       documentNumber: co.document_number || null,
       timelineImpactDays: co.timeline_impact_days ?? null,
       revisedDeliveryDate: co.revised_delivery_date ?? null,
+      invoiceTiming: co.invoice_timing ?? null,
       scopeImpactNote:    co.scope_impact_note || null,
       sowNumber:          signedSow.document_number || null,
       sowVersion:         signedSow.version ?? null,

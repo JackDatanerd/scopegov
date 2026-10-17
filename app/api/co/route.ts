@@ -253,6 +253,7 @@ export async function POST(request: NextRequest) {
         // ...but a ONE-TIME piece of work on it still has a delivery date; only a monthly-rate change has none.
         revised_delivery_date: isOpenEndedRetainer(project) && isRetainerRenewal === true ? null : (parsedFields.fields.revisedDeliveryDate ?? null),
         scope_impact_note:    parsedFields.fields.scopeImpactNote ?? null,
+        invoice_timing:       parsedFields.fields.invoiceTiming ?? null,
         created_by:   session.id,
       })
       .select('id').single()

@@ -58,7 +58,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       .from('revoked_tokens').select('reason, document_id').eq('token', token).single()
 
     const CO_PDF_COLUMNS = `id,title,note,status,version,is_credit,line_items,subtotal,tax_rate,tax_inclusive,total,
-        timeline_impact_days,revised_delivery_date,scope_impact_note,
+        timeline_impact_days,revised_delivery_date,invoice_timing,scope_impact_note,
         document_number,accepted_by,accepted_by_title,accepted_by_company,accepted_at,client_signature_data,workspace_id,project_id,pdf_path,is_retainer_renewal,renewal_term_months,
         projects(id,name,type,currency,contract_value,retainer_duration_months,clients(name,email,company_name,billing_address,vat_number),
           workspaces(timezone, id,agency_name,brand_colour,logo_storage_path,agency_signature_data, agency_signatory_name, agency_signatory_title,
@@ -202,6 +202,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       revisedContractValue: isRenewalCo ? monthlyRateFromCo(co) : null,
       timelineImpactDays: co.timeline_impact_days ?? null,
       revisedDeliveryDate: co.revised_delivery_date ?? null,
+      invoiceTiming: co.invoice_timing ?? null,
       scopeImpactNote:    co.scope_impact_note || null,
       isWatermarked: !isSigned,
       watermarkText: coWatermarkLabel(co.status) ?? undefined,

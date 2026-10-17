@@ -3,6 +3,7 @@
 // Pure Node.js — no browser, no timeout risk on Vercel Hobby.
 // npm install @react-pdf/renderer
 
+import { toTitleCase } from '@/lib/documents/title-case'
 import React from 'react'
 import {
   Document, Page, View, Text, Image, Link,
@@ -177,6 +178,8 @@ export interface CoPdfData {
   timelineImpactDays?: number | null
   /** New delivery date when the timeline moves (YYYY-MM-DD). */
   revisedDeliveryDate?: string | null
+  /** When this change order is invoiced; null/absent reads "once it is accepted". */
+  invoiceTiming?: 'on_acceptance' | 'on_delivery' | null
   /** The agency's standard invoice payment terms (workspace default), stated on the CO so the client knows when the amount falls due. */
   paymentTermsDays?: number | null
   /** The late fee (percent per month) set by the SOW this CO amends, quoted so the CO and SOW agree. */
@@ -596,7 +599,7 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
               const rowView = (m: NonNullable<SowPdfData['paymentSchedule']>[number], i: number) => (
                 <View key={i} wrap={false} style={s.schedRow}>
                   <View style={{ flex: 1 }}>
-                    <Text style={s.td}>{m.title}</Text>
+                    <Text style={s.td}>{toTitleCase(m.title)}</Text>
                     <Text style={s.tdSub}>{m.trigger}{m.percentage ? ` · ${m.percentage}%` : ''}</Text>
                   </View>
                   <Text style={[s.td, s.mono, { width: 90, textAlign: 'right' }]}>{data.currency} {fm(m.amount)}</Text>
@@ -997,7 +1000,7 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
         {/* When the money falls due: stated only when the agency has standard payment terms and this change order charges something. */}
         {!data.isRetainerRenewal && !data.isCredit && data.total > 0 && (data.paymentTermsDays || 0) > 0 && (
           <Text style={{ fontSize: 9, color: '#555', lineHeight: 1.5, marginTop: 4 }}>
-            Payment: this change order is invoiced separately once it is accepted, and each invoice is due within {data.paymentTermsDays} day{data.paymentTermsDays === 1 ? '' : 's'} of its invoice date.
+            Payment: this change order is invoiced separately once {data.invoiceTiming === 'on_delivery' ? 'the work is delivered' : 'it is accepted'}, and each invoice is due within {data.paymentTermsDays} day{data.paymentTermsDays === 1 ? '' : 's'} of its invoice date.
             {data.lateFeeRate ? ` ${lateFeeReminder(data.lateFeeRate, data.sowNumber)}` : ''}
           </Text>
         )}
@@ -1189,7 +1192,7 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
           <View style={s.lineBox}>
             <View style={s.lineRow}>
               <View>
-                <Text style={s.lineDesc}>{data.title}</Text>
+                <Text style={s.lineDesc}>{toTitleCase(data.title)}</Text>
                 {invoiceLineSubtext(data.title, data.milestoneTrigger) && <Text style={s.lineSub}>{invoiceLineSubtext(data.title, data.milestoneTrigger)}</Text>}
               </View>
               <Text style={s.lineAmt}>{data.currency} {fmtInv(invoiceSingleLineAmount({ amount: data.amount, subtotal: data.subtotal, taxRate: data.taxRate, taxInclusive: data.taxInclusive }))}</Text>

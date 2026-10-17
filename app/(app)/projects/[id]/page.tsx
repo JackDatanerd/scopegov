@@ -1,3 +1,4 @@
+import { sowPaymentTermsDays } from '@/lib/documents/payment-terms'
 import { projectTaxBasis } from '@/lib/documents/tax-basis'
 import { isUuidString } from '@/lib/utils/uuid'
 import { loadProjectActivity } from '@/lib/utils/project-activity'
@@ -376,6 +377,10 @@ export default async function ProjectPage({ params, searchParams }: Props) {
       // The engagement's SOW states the tax basis; invoices start from it rather than from the workspace default.
       const sowBasis = await projectTaxBasis(service, id)
       if (sowBasis) billingDefaults = { ...billingDefaults, taxRate: sowBasis.taxRate, taxInclusive: sowBasis.taxInclusive }
+      // Likewise the payment period: an invoice under a signed SOW falls due when THAT SOW says (sending refuses a later date),
+      // not on whatever the workspace default has become since.
+      const signedTerm = sowPaymentTermsDays(((project.sow_documents || []) as any[]).find(s => s.status === 'signed')?.metadata)
+      if (signedTerm) billingDefaults = { ...billingDefaults, paymentTermsDays: signedTerm }
     }
   }
 

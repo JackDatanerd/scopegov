@@ -12,6 +12,7 @@
 // This file intentionally contains ONLY the send mechanics — no permission
 // checks, no approval-gate logic. Callers are responsible for both.
 
+import { reconcileSowPaymentTerms } from '@/lib/documents/payment-terms'
 import { SignJWT } from 'jose'
 import { nanoid } from 'nanoid'
 import { sendSowEmail } from '@/lib/email/templates'
@@ -176,6 +177,9 @@ export async function sendSowDocument(service: any, params: {
   // Update SOW: draft → awaiting_signature. Note: 'sent' is NOT a status (spec §1.3)
   const { data: sent, error: claimErr } = await (service as any).from('sow_documents').update({
     status:          'awaiting_signature',
+    // The payment period the text states is the one the contract carries (see lib/documents/payment-terms.ts). Written in the
+    // same claim, so it cannot differ from the sections that were validated and sent.
+    metadata:        reconcileSowPaymentTerms(sow.metadata, sow.sections).metadata,
     sent_at:         now,
     token,
     expires_at:      expiresAt.toISOString(),
