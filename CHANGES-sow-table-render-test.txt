@@ -1,0 +1,14 @@
+SOW PDF: render-level regression test for the long-table page break
+===================================================================
+
+No code change. The table fix itself is already in c1c421c (no wrapper View around the heading group; flexShrink 0 on rows).
+I rendered it against a 9-row Deliverables table at 19 start positions down page 1 (0-18 extra lines above it): every row appears once
+and in order at every position, and the table moves whole to the next page when its first group does not fit.
+
+What this adds: tests/sow-table-layout.test.ts guards the STRUCTURE (a fragment with a wrap={false} first child). This renders real
+PDFs at 8 positions and asserts every row is present once and in order, which is the symptom that mattered: a signed SOW whose
+rendered Deliverables table silently lacked its report row. The older render tests only checked the output began with "%PDF".
+Run against the code before c1c421c, it fails at the positions that lost rows.
+
+Needs poppler's pdftotext on the PATH; skipped where it is missing, so it will normally skip on a plain Windows machine.
+Checked on c1c421c: tsc, next lint (0 errors), full suite 362 files / 3656 tests.
