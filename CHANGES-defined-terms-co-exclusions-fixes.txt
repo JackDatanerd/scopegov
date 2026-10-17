@@ -1,0 +1,30 @@
+SOW: no undefined "Services"; change orders: "remains excluded" must be true of the SOW
+========================================================================================
+
+No migration. Built on dfcdc91. Found by comparing regenerated documents against the first set.
+
+1. An undefined capitalised term (lib/documents/defined-terms.ts, app/api/sow/generate/route.ts, lib/ai/sow-content.ts)
+   SOW-0012 wrote "the Services" in Out of Scope, Revision Policy and Confidentiality, but its Parties clause defines only SOW, Provider
+   and Client, so a capitalised term appeared in a contract with no meaning (the first SOW used lower case; the model varies run to run).
+   - Drafting rule: the only defined terms are SOW, Provider and Client; write "the services".
+   - Safety net after generation: unless the drafted text itself defines "Services" (e.g. (the "Services")), "the Services" / "The Services"
+     in every section and table cell becomes "the services" / "The services". "The Services Company" or "Financial Services" are untouched.
+
+2. "Remains excluded" claimed more than the SOW says (lib/documents/co-exclusions.ts, app/api/co/draft/route.ts, app/api/co/[id]/send/route.ts)
+   CO-0011 said negotiating, contracting, managing "and contacting" influencers, creators or affiliate partners "remain excluded". The
+   SOW's exclusion names identifying, negotiating, contracting and managing; it never names contacting. Calling it "remains" tells the
+   client it was always excluded, which is a new term presented as an old one.
+   - Draft prompt: say "remains excluded" only for what the SOW's Out of Scope text names; anything else this change order leaves out is
+     "This change order does not include <activity>".
+   - Send check: activities in a "remain(s) excluded" sentence that the signed SOW's Out of Scope text does not name raise an
+     acknowledgeable warning (matched on the first five letters of the word). No SOW text to compare with: no warning.
+   - findSignedSow takes { withOutOfScope: true } and returns that text, so the send route still goes through the shared lookup.
+
+3. Not changed: the empty third of CO page 1
+   The last line item travels with the Subtotal / Tax / Total (one unsplittable group) on purpose, so a page break can never strand the
+   totals away from the lines they add up. When that group does not fit under a tall line, it moves to the next page whole and leaves
+   a gap. That is the price of the rule, so it stays.
+
+tests/defined-terms-and-co-exclusions.test.ts (16), using the real CO-0011 and CO-0010 wording and SOW-0012's exclusion text.
+Checked: tsc, next lint (0 errors), full suite 363 files / 3672 tests.
+Applies to documents drafted or sent from now on.

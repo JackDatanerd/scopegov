@@ -10,7 +10,7 @@ import { normalizeLateFeeRate } from '@/lib/documents/late-fee'
 import { sowPaymentTermsDays } from '@/lib/documents/payment-terms'
 
 export type SignedSowLookup =
-  | { ok: true; sow: { id: string; document_number: string | null; version?: number | null; lateFeeRate?: number | null; paymentTermsDays?: number | null } | null }
+  | { ok: true; sow: { id: string; document_number: string | null; version?: number | null; lateFeeRate?: number | null; paymentTermsDays?: number | null; outOfScopeHtml?: string | null } | null }
   | { ok: false; error: string }
 
 export const SIGNED_SOW_LOOKUP_FAILED = 'Could not check this project\u2019s signed SOW \u2014 please try again.'
@@ -20,9 +20,9 @@ export const SIGNED_SOW_LOOKUP_FAILED = 'Could not check this project\u2019s sig
  * version so the returned document number is the current one (only the acceptance finalizer prints it); the
  * existence-only callers skip the sort.
  */
-export async function findSignedSow(service: any, projectId: string, opts: { newest?: boolean } = {}): Promise<SignedSowLookup> {
+export async function findSignedSow(service: any, projectId: string, opts: { newest?: boolean; withOutOfScope?: boolean } = {}): Promise<SignedSowLookup> {
   let q = service
-    .from('sow_documents').select('id, document_number, version, metadata')
+    .from('sow_documents').select(opts.withOutOfScope ? 'id, document_number, version, metadata, sections' : 'id, document_number, version, metadata')
     .eq('project_id', projectId).eq('status', 'signed')
   if (opts.newest) q = q.order('version', { ascending: false })
   const { data, error } = await q.limit(1).maybeSingle()
@@ -30,5 +30,7 @@ export async function findSignedSow(service: any, projectId: string, opts: { new
     console.error('signed-SOW lookup failed:', error.message ?? error)
     return { ok: false, error: error.message ?? 'lookup failed' }
   }
-  return { ok: true, sow: data ? { id: data.id, document_number: data.document_number ?? null, version: data.version ?? null, lateFeeRate: normalizeLateFeeRate(data.metadata?.lateFeeRate), paymentTermsDays: sowPaymentTermsDays(data.metadata) } : null }
+  return { ok: true, sow: data ? { id: data.id, document_number: data.document_number ?? null, version: data.version ?? null, lateFeeRate: normalizeLateFeeRate(data.metadata?.lateFeeRate), paymentTermsDays: sowPaymentTermsDays(data.metadata),
+    // Only when asked for: the Out of Scope text, so a change order can check what it says "remains excluded" against it.
+    ...(opts.withOutOfScope ? { outOfScopeHtml: (Array.isArray(data.sections) ? data.sections : []).find((x: any) => x?.id === 'oos')?.content ?? null } : {}) } : null }
 }

@@ -27,6 +27,7 @@ import { parseStatedTax } from '@/lib/documents/tax-basis'
 import { normalizeLateFeeRate } from '@/lib/documents/late-fee'
 import { normalizeLiabilityCap } from '@/lib/documents/liability-cap'
 import { normalizeApprovalSilence } from '@/lib/documents/approval-silence'
+import { servicesIsDefined, lowerUndefinedServices } from '@/lib/documents/defined-terms'
 import { normalizeClientMaterialsTerms, applyClientMaterialsTerms, applySupplyShortfall } from '@/lib/documents/client-materials'
 import { findClientDateConflicts } from '@/lib/sow/date-conflicts'
 import { terminationClauseHtml, disputeClauseHtml, applyPortfolioUse, normalizePortfolioUse } from '@/lib/documents/standard-clauses'
@@ -512,6 +513,14 @@ export async function POST(request: NextRequest) {
     allContent.ip = applyPortfolioUse(allContent.ip || '', portfolioUse, contentInput.language)
     allContent.ip = applyClientMaterialsTerms(allContent.ip, clientMaterialsTerms, contentInput.language)
     allContent.assumptions = applySupplyShortfall(allContent.assumptions || '', clientMaterialsTerms, !!contentInput.retainer, contentInput.language)
+
+    // "the Services" is not a defined term in this SOW (the Parties clause defines SOW, Provider and Client): write it in lower case
+    // unless the text itself defines it.
+    if (!servicesIsDefined([...Object.values(allContent), ...Object.values(tables).flatMap(rows => rows.flatMap(r => Object.values(r as any) as string[]))])) {
+      for (const k of Object.keys(allContent)) allContent[k] = lowerUndefinedServices(allContent[k] || '')
+      for (const id of Object.keys(tables) as SowTableSectionId[])
+        tables[id] = tables[id].map(r => Object.fromEntries(Object.entries(r).map(([k, v]) => [k, typeof v === 'string' ? lowerUndefinedServices(v) : v])) as SowTableRow)
+    }
 
     const parsed: { sections: any[]; metadata: any } = {
       sections: SOW_SECTION_DEFS.map(def => ({

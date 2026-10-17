@@ -13,6 +13,7 @@ import { liveCoSiblingMessage } from '@/lib/documents/co-live-sibling'
 import { canReadProject } from '@/lib/utils/project-access'
 import { deliveryDateWarning, deliveryBeforeStartWarning } from '@/lib/documents/co-delivery'
 import { revisionsUnstatedWarning } from '@/lib/documents/co-definition'
+import { unnamedRemainingExclusions, unnamedExclusionWarning } from '@/lib/documents/co-exclusions'
 import { unstatedExclusions } from '@/lib/documents/co-draft-text'
 import { isTerminalStatus } from '@/lib/utils/project-status'
 import { coGateAmount } from '@/lib/approvals/gate-amount'
@@ -90,7 +91,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // project's signed SOW was somehow withdrawn/reopened after this CO
     // was drafted. Cheaper to catch here than to let the client discover
     // it at finalize-co.ts's own hard block after signing.
-    const sowLookup = await findSignedSow(service, co.project_id)
+    const sowLookup = await findSignedSow(service, co.project_id, { withOutOfScope: true })
     if (!sowLookup.ok) return NextResponse.json({ error: SIGNED_SOW_LOOKUP_FAILED }, { status: 500 })
     if (!sowLookup.sow) {
       return NextResponse.json({
@@ -133,6 +134,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       if (beforeStart) extraWarnings.push(beforeStart)
       const noRevisions = revisionsUnstatedWarning(co)
       if (noRevisions) extraWarnings.push(noRevisions)
+      // "Remains excluded" must be true of the signed SOW: check the activities against its Out of Scope text.
+      const unnamed = unnamedExclusionWarning(unnamedRemainingExclusions(co.scope_impact_note, sowLookup.sow.outOfScopeHtml))
+      if (unnamed) extraWarnings.push(unnamed)
       const unstated = unstatedExclusions(co.scope_impact_note, Array.isArray(co.line_items) ? co.line_items : [])
       if (unstated.length) extraWarnings.push(`A line item says the work does not include ${unstated.join(', ')}, but the Scope impact note does not mention it. State it there so the amended scope is clear, or send it as it is.`)
       const details = await loadSendDetailsWarnings(service, session.workspaceId, project.client_id, 'co', { projectId: project.id, taxRate: co.tax_rate, taxInclusive: co.tax_inclusive }, extraWarnings)

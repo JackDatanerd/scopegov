@@ -882,6 +882,7 @@ export function draftingRulesBlock(input: SowContentInput): string {
   lines.push('- State precisely what each deliverable covers in its own acceptance criteria (for example "a caption for each published post") so that adjacent work is clearly not part of it. Do not add exclusions that are not in the out-of-scope brief.')
   lines.push('- State the payment period once. Never repeat it in a second sentence.')
   lines.push('- Limit what the Client must supply or grant to what the brief names (for example account access and raw materials). Never add other Client obligations such as brand assets, extra systems or extra accounts. The one exception is view-only access to the data a promised report needs, when a rule above asks for it.')
+  lines.push('- The only defined terms are "SOW", "Provider" and "Client". Never capitalise "services" (write "the services", not "the Services") and never invent other capitalised terms.')
   lines.push('- Never write portfolio, publicity, case-study or work-sample usage rights anywhere (including Intellectual Property). If the agency wants one it is added separately; any you write would contradict it.')
   if (!input.language || input.language === 'en')
     lines.push('- Termination and Dispute Resolution are replaced by standard clauses supplied by the platform: write each as ONE short sentence only, with no periods, notice terms or costs.')
