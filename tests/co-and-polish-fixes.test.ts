@@ -84,7 +84,9 @@ describe('wiring and prompts', () => {
 describe('document polish', () => {
   const r = read('lib/pdf/renderer.tsx')
   it('no stacked parentheses on the unchanged retainer line', () => {
-    expect(r).toContain('Monthly retainer, unchanged{exTax}')
+    // The label is the basis only once: either "(incl. N% tax)" or the "(excl. tax)" suffix, never both.
+    expect(r).toContain('Monthly retainer, unchanged{inclusiveRetainerView ?')
+    expect(r).toContain(': exTax}')
     expect(r).not.toContain('Monthly retainer (unchanged)')
   })
   it('a paid invoice does not repeat "Paid in full" in its footer', () => {

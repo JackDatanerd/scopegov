@@ -128,3 +128,18 @@ export async function retainerMonthlyNetForOneTimeCo(
   if (!Number.isFinite(monthly) || monthly <= 0) return null
   return netOfTax(monthly, await projectTaxBasis(service, projectId))
 }
+
+/**
+ * The same monthly retainer as the SOW states it, TAX INCLUDED, for a one-time change order on an open-ended retainer whose
+ * SOW is tax-inclusive. `projects.contract_value` is the fee as it was entered, so when it is larger than the net figure the
+ * fee was entered tax-inclusive and is returned unchanged (grossing the net back up could land a cent off the SOW's own
+ * figure). Null when the fee carries no tax (or there is no net figure), so documents keep their existing wording.
+ */
+export function retainerMonthlyGrossFor(
+  project: { contract_value?: number | string | null } | null | undefined,
+  net: number | null | undefined,
+): number | null {
+  if (net == null || !Number.isFinite(net)) return null
+  const raw = Number(project?.contract_value)
+  return Number.isFinite(raw) && raw > net ? raw : null
+}

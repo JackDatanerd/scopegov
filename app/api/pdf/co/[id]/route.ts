@@ -84,7 +84,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     // happen for a project that has change orders, but not enforced at
     // the DB level) just omits the cross-reference line.
     // One loader for the SOW cross-reference, the before-value, the retainer figure and the billing terms (lib/documents/co-impact.ts).
-    const { sow, contractValueBefore, retainerMonthlyNet, paymentTermsDays: coPaymentTermsDays, lateFeeRate: coLateFeeRate } = await loadCoImpactContext(service, {
+    const { sow, contractValueBefore, retainerMonthlyNet, retainerMonthlyGross, paymentTermsDays: coPaymentTermsDays, lateFeeRate: coLateFeeRate } = await loadCoImpactContext(service, {
       coId: co.id, projectId: co.project_id, project: co.projects, isRenewal: isRenewalCo, isCredit: !!co.is_credit, workspaceDefaultTermsDays: ws?.default_payment_terms_days,
     })
 
@@ -145,6 +145,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       sowVersion:  sow?.version ?? null,
       contractValueBefore,
       retainerMonthlyNet,
+      retainerMonthlyGross,
       // A retainer renewal replaces the monthly rate; it is not "original value + this CO".
       isRetainerRenewal: isRenewalCo,
       renewalTermMonths: isRenewalCo ? renewalTermForDocument(co, co.projects) : null,

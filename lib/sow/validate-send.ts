@@ -12,7 +12,7 @@
 //              acknowledge them; the unattended approval path treats them as
 //              non-blocking.
 
-import { findClientDateConflicts } from '@/lib/sow/date-conflicts'
+import { findClientDateConflicts, findRecurringStartConflicts } from '@/lib/sow/date-conflicts'
 import { uncoveredDeliverablesWarning } from '@/lib/sow/deliverable-coverage'
 import { parseTableAmount, isTableSection, milestoneName } from '@/lib/sow/table-schema'
 import { roundCurrency } from '@/lib/utils/format'
@@ -153,6 +153,8 @@ export function validateSowForSend(input: {
   if (!input.metadata?.approvalSilence?.days && /agreed in writing before work begins/i.test(textOf(byId('revisions')?.content)))
     warnings.push('The Revision Policy leaves the client review period to be agreed in writing before work begins. Set a standard review window in Settings, or edit the Revision Policy to state it, so the SOW is complete.')
   for (const msg of findClientDateConflicts(deliverables?.table, String(byId('assumptions')?.content ?? ''), input.metadata?.clientDates ? [input.metadata.clientDates.access, input.metadata.clientDates.materials] : null))
+    warnings.push(msg)
+  for (const msg of findRecurringStartConflicts(deliverables?.table, byId('timeline')?.table))
     warnings.push(msg)
   // A brief item with no row of its own is a promise the signed table does not state.
   const coverageWarning = uncoveredDeliverablesWarning(input.metadata?.brief?.deliverables, deliverables?.table, input.metadata?.language)

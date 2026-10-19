@@ -4,7 +4,7 @@
 // npm install @react-pdf/renderer
 
 import { displayTableRows } from '@/lib/sow/display-rows'
-import { coImpactNumbers, coPaymentStatement } from '@/lib/documents/co-impact-view'
+import { coImpactNumbers, coPaymentStatement, coAmendmentStatement } from '@/lib/documents/co-impact-view'
 import { toTitleCaseFor } from '@/lib/documents/title-case'
 import React from 'react'
 import {
@@ -168,6 +168,8 @@ export interface CoPdfData {
   contractValueBefore?: number | null
   // One-time change order on an open-ended retainer: the monthly retainer (net of tax), stated instead of a contract value.
   retainerMonthlyNet?: number | null
+  // The same monthly retainer as the tax-inclusive SOW states it (tax included); lets the impact rows stay on the SOW's basis.
+  retainerMonthlyGross?: number | null
   // Retainer renewal: the CO REPLACES the monthly rate rather than adding to a contract value, so the
   // Impact block shows current → new rate instead of "original + this change order".
   isRetainerRenewal?: boolean
@@ -226,7 +228,7 @@ export interface InvoicePdfData {
   sentAt?:      string | null
   paymentInstructions?: string | null
   payments:     Array<{ amount: number; paidAt: string; method: string; referenceNote?: string | null }>
-  contractPosition?: { contractedValue: number; invoicedToDate: number; paidToDate: number; excludesTax?: boolean; unbilledChangeOrders?: number; unbilledChangeOrdersGross?: number; unbilledChangeOrdersRefs?: string[]; openEndedRetainer?: boolean } | null
+  contractPosition?: { contractedValue: number; invoicedToDate: number; paidToDate: number; excludesTax?: boolean; grossBasis?: { invoicedToDate: number; paidToDate: number }; unbilledChangeOrders?: number; unbilledChangeOrdersGross?: number; unbilledChangeOrdersRefs?: string[]; openEndedRetainer?: boolean } | null
   // Cross-references (doc-quality audit round 2) — the underlying
   // sow_id/co_id FKs already existed on `invoices`, just weren't being
   // read into the PDF. Mirrors Meridian sample's "For services rendered
@@ -324,7 +326,7 @@ function PdfFooter({ generatedLabel, generatedOn, scopeGovLabel, pageLabel }: {
   return (
     <View fixed style={{ position: 'absolute', bottom: 20, left: 48, right: 48, flexDirection: 'row', justifyContent: 'space-between', borderTop: '1 solid #E5E1D8', paddingTop: 6, fontSize: 8, color: '#B0B0B0' }}>
       <Text>{scopeGovLabel} <Link src={SCOPEGOV_URL} style={{ color: '#B0B0B0', textDecoration: 'none' }}>ScopeGov</Link></Text>
-      <Text render={({ pageNumber, totalPages }) => `${generatedLabel} ${generatedOn}${totalPages > 1 ? ` · ${pageLabel(pageNumber, totalPages)}` : ''}`} />
+      <Text render={({ pageNumber, totalPages }) => `${generatedLabel} ${generatedOn} · ${pageLabel(pageNumber, totalPages)}`} />
     </View>
   )
 }
@@ -671,7 +673,7 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
         </View>
         </View>
 
-        {/* Footer — fixed strip on every page; the page number is only shown once the document runs past one page. */}
+        {/* Footer — fixed strip on every page; the page number is shown on every document, one page or many, so the three documents read alike. */}
         <PdfFooter generatedLabel={t.generated} generatedOn={fd(new Date().toISOString())} scopeGovLabel={t.scopeGovBy} pageLabel={t.page} />
       </Page>
     </Document>
@@ -777,7 +779,7 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
   // Contract values are always stated NET of tax (tax is never part of what was scoped — see lib/reports/contract-position.ts),
   // so the impact block adds this change order's net subtotal, not its tax-inclusive total. Mixing the two printed a
   // "revised contract value" that was neither the net nor the gross figure.
-  const { taxApplies, netChange, exTax, revisedValue } = coImpactNumbers(data)
+  const { taxApplies, netChange, exTax, revisedValue, inclusiveRetainerView } = coImpactNumbers(data)
   const isRenewalDoc = !!data.isRetainerRenewal
 
   return (
@@ -939,17 +941,19 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
               )}
               {oneTimeOnRetainer && (
                 <View style={(hasScopeImpact || hasTimelineImpact || renewalTerm != null) ? { marginTop: 6, paddingTop: 6, borderTop: '1 solid #F2F0EA' } : undefined}>
+                  {/* A tax-inclusive SOW states its fees tax included: both rows here are on that same basis (the line-item table above
+                      already shows the net subtotal and the tax). Only a tax-exclusive set keeps net rows with the tax-included total. */}
                   <View style={s.impactRow}>
-                    <Text style={{ color: '#909090' }}>Monthly retainer, unchanged{exTax}</Text>
-                    <Text style={s.mono}>{data.currency} {fm(data.retainerMonthlyNet!)}</Text>
+                    <Text style={{ color: '#909090' }}>Monthly retainer, unchanged{inclusiveRetainerView ? ` (incl. ${data.taxRate}% tax)` : exTax}</Text>
+                    <Text style={s.mono}>{data.currency} {fm(inclusiveRetainerView ? data.retainerMonthlyGross! : data.retainerMonthlyNet!)}</Text>
                   </View>
                   <View style={s.impactGrand}>
-                    <Text>One-time fee, billed once{exTax}</Text>
-                    <Text style={{ fontFamily: PDF_FONT.bold, color: c }}>+{data.currency} {fm(netChange)}</Text>
+                    <Text>One-time fee, billed once{inclusiveRetainerView ? ` (incl. ${data.taxRate}% tax)` : exTax}</Text>
+                    <Text style={{ fontFamily: PDF_FONT.bold, color: c }}>+{data.currency} {fm(inclusiveRetainerView ? data.total : netChange)}</Text>
                   </View>
-                  {taxApplies && (
+                  {taxApplies && !inclusiveRetainerView && (
                     <View style={s.impactRow}>
-                      <Text style={{ color: '#909090' }}>Including tax ({data.taxRate}%)</Text>
+                      <Text style={{ color: '#909090' }}>One-time fee, including tax ({data.taxRate}%)</Text>
                       <Text style={s.mono}>{data.currency} {fm(data.total)}</Text>
                     </View>
                   )}
@@ -989,12 +993,16 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
           </View>
         )}
 
+        {/* The statements the client signs up to (what is amended, when it is billed) travel WITH the signature block, so the signature
+            page always carries them and the agreement sentence, never a bare signature block. */}
+        <View wrap={false}>
         {/* The change order amends one agreement and nothing else: say so on the document the client signs. */}
-        {data.sowNumber && (
-          <Text style={{ fontSize: 9, color: '#555', lineHeight: 1.5, marginTop: 4 }}>
-            This change order amends SOW No. {data.sowNumber}. Except as expressly amended here, all terms of that SOW remain unchanged and in full force.
-          </Text>
-        )}
+        {(() => {
+          const amend = coAmendmentStatement(data)
+          return amend.amends
+            ? <Text style={{ fontSize: 9, color: '#555', lineHeight: 1.5, marginTop: 4 }}>{amend.amends}{amend.coverage ? ` ${amend.coverage}` : ''}</Text>
+            : null
+        })()}
         {/* When the money falls due: stated only when the agency has standard payment terms and this change order charges something.
             One wording with the page the client accepts on (lib/documents/co-impact.ts). */}
         {(() => {
@@ -1007,6 +1015,11 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
             missing wrap={false} as the SOW's — could split mid-block
             across a page boundary, stranding the signature lines alone
             on a near-empty trailing page. */}
+        {/* The agreement sentence travels WITH the signature block (as in the SOW): a signature page must never carry no assent text. */}
+        <View wrap={false}>
+        <Text style={{ fontSize: 10, color: '#1A1A1A', lineHeight: 1.5, marginTop: 20 }}>
+          {data.isCredit ? 'By signing below, both parties agree to the terms of this Credit Change Order.' : 'By signing below, both parties agree to the terms of this Change Order.'}
+        </Text>
         <View style={s.sigBlock} wrap={false}>
           <View style={s.sigCol}>
             <Text style={s.sigLabel}>Provider — {data.agencyName}</Text>
@@ -1030,6 +1043,8 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
                 </>
               : <Text style={[s.sigName, { color: '#B0B0B0' }]}>Pending</Text>}
           </View>
+        </View>
+        </View>
         </View>
 
         <PdfFooter generatedLabel="Generated" generatedOn={fd(new Date().toISOString())} scopeGovLabel="Scope governance by" pageLabel={(n, total) => `Page ${n} of ${total}`} />
@@ -1080,6 +1095,9 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
   const invTax = hasTax && !data.taxInclusive ? invTaxAmount : 0
   // Contract position: what is still to be invoiced, and how much of that is an approved change order nobody has billed yet
   // (capped at the remaining figure, so a stale input can never print "of which" more than the whole).
+  // A tax-inclusive invoice on an open-ended retainer states its position tax included (like the rest of the document); every other
+  // case keeps the net figures with their "excl. tax" labels.
+  const cpGross = !!(data.contractPosition?.grossBasis && data.taxInclusive && data.contractPosition.openEndedRetainer) ? data.contractPosition!.grossBasis! : null
   const cpRemaining = data.contractPosition ? Math.max(0, r2(data.contractPosition.contractedValue - data.contractPosition.invoicedToDate)) : 0
   const cpUnbilledCo = data.contractPosition ? Math.min(cpRemaining, r2(data.contractPosition.unbilledChangeOrders || 0)) : 0
 
@@ -1306,12 +1324,12 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
               </View>
             )}
             <View style={s.cpRow}>
-              <Text>Invoiced to date (incl. this invoice{data.contractPosition.excludesTax ? ', excl. tax' : ''})</Text>
-              <Text style={{ fontFamily: PDF_FONT.sans }}>{data.currency} {fmtInv(data.contractPosition.invoicedToDate)}</Text>
+              <Text>Invoiced to date (incl. this invoice{cpGross ? ', incl. tax' : data.contractPosition.excludesTax ? ', excl. tax' : ''})</Text>
+              <Text style={{ fontFamily: PDF_FONT.sans }}>{data.currency} {fmtInv(cpGross ? cpGross.invoicedToDate : data.contractPosition.invoicedToDate)}</Text>
             </View>
             <View style={s.cpRow}>
-              <Text>Paid to date{data.contractPosition.excludesTax ? ' (excl. tax)' : ''}</Text>
-              <Text style={{ fontFamily: PDF_FONT.sans }}>{data.currency} {fmtInv(data.contractPosition.paidToDate)}</Text>
+              <Text>Paid to date{cpGross ? ' (incl. tax)' : data.contractPosition.excludesTax ? ' (excl. tax)' : ''}</Text>
+              <Text style={{ fontFamily: PDF_FONT.sans }}>{data.currency} {fmtInv(cpGross ? cpGross.paidToDate : data.contractPosition.paidToDate)}</Text>
             </View>
             {/* "Remaining to invoice", not "remaining contract value": the figure is what is still to be BILLED (contracted less
                 invoiced), not an amount owed. When part of it is an approved change order nobody has invoiced yet, say so on its own
@@ -1338,10 +1356,10 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
                     // Name the change orders (up to three) so the figure can be checked against a document, e.g. "(CO-0011, excl. tax)".
                     const refs = (data.contractPosition!.unbilledChangeOrdersRefs || []).filter(Boolean)
                     const named = refs.length > 3 ? `${refs.slice(0, 3).join(', ')} +${refs.length - 3} more` : refs.join(', ')
-                    const parts = [named, data.contractPosition!.excludesTax ? 'excl. tax' : ''].filter(Boolean)
+                    const parts = [named, cpGross ? 'incl. tax' : data.contractPosition!.excludesTax ? 'excl. tax' : ''].filter(Boolean)
                     return parts.length ? ` (${parts.join(', ')})` : ''
                   })()}</Text>
-                  <Text style={{ fontFamily: PDF_FONT.sans, color: '#909090', fontSize: 9 }}>{data.currency} {fmtInv(net)}{gross != null ? ` (${data.currency} ${fmtInv(gross)} incl. tax)` : ''}</Text>
+                  <Text style={{ fontFamily: PDF_FONT.sans, color: '#909090', fontSize: 9 }}>{cpGross && gross != null ? `${data.currency} ${fmtInv(gross)}` : `${data.currency} ${fmtInv(net)}${gross != null ? ` (${data.currency} ${fmtInv(gross)} incl. tax)` : ''}`}</Text>
                 </View>
               )
             })()}

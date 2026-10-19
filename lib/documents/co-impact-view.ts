@@ -12,6 +12,9 @@ export interface CoImpactInput {
   contractValueBefore?: number | null
   revisedContractValue?: number | null
   retainerMonthlyNet?: number | null
+  /** The monthly retainer as the (tax-inclusive) SOW states it. */
+  retainerMonthlyGross?: number | null
+  taxInclusive?: boolean | null
   isRetainerRenewal?: boolean | null
 }
 
@@ -28,8 +31,11 @@ export function coImpactNumbers(d: CoImpactInput) {
     : d.contractValueBefore != null ? d.contractValueBefore + netChange : null
   const oneTimeOnRetainer = d.retainerMonthlyNet != null
   const isRenewal = !!d.isRetainerRenewal
+  // A tax-inclusive SOW states its fees tax included, so a one-time change order on its retainer is shown on that same basis
+  // (monthly fee and one-time fee both "incl. tax") instead of flipping to net figures in the middle of a tax-inclusive set.
+  const inclusiveRetainerView = oneTimeOnRetainer && taxApplies && d.taxInclusive === true && d.retainerMonthlyGross != null && d.retainerMonthlyGross > 0
   const delta = revisedValue != null && d.contractValueBefore != null ? (isRenewal ? revisedValue - d.contractValueBefore : netChange) : null
-  return { taxApplies, netChange, exTax, revisedValue, oneTimeOnRetainer, isRenewal, delta }
+  return { taxApplies, netChange, exTax, revisedValue, oneTimeOnRetainer, isRenewal, delta, inclusiveRetainerView }
 }
 
 /**
@@ -49,4 +55,23 @@ export function coPaymentStatement(d: {
     return { payment: `Payment: this change order is invoiced separately once ${when}, and each invoice is due within ${days} day${days === 1 ? '' : 's'} of its invoice date.${late ? ` ${late}` : ''}`, lateOnly: null }
   }
   return { payment: null, lateOnly: charges && late ? late : null }
+}
+
+/**
+ * The sentences that tie a change order to the agreement it amends. One wording for the PDF and the page the client accepts on.
+ * `amends` names the SOW; `coverage` says that what the change order adds is a deliverable under that SOW, so the SOW's
+ * ownership and confidentiality terms reach it even though the SOW's own text predates it. Only a change order that adds paid
+ * work gets `coverage` (not a credit, not a retainer-rate renewal).
+ */
+export function coAmendmentStatement(d: {
+  sowNumber?: string | null; isRetainerRenewal?: boolean | null; isCredit?: boolean | null; total: number
+}): { amends: string | null; coverage: string | null } {
+  if (!d.sowNumber) return { amends: null, coverage: null }
+  const addsWork = !d.isRetainerRenewal && !d.isCredit && d.total > 0
+  return {
+    amends: `This change order amends SOW No. ${d.sowNumber}. Except as expressly amended here, all terms of that SOW remain unchanged and in full force.`,
+    coverage: addsWork
+      ? 'Work added by this change order is a deliverable under that SOW and is covered by its intellectual property and confidentiality provisions.'
+      : null,
+  }
 }

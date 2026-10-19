@@ -31,7 +31,7 @@ interface InvoiceData {
   invoiceNumber: string | null
   poNumber: string | null
   milestoneTrigger: string | null
-  contractPosition: { contractedValue: number; invoicedToDate: number; paidToDate: number; excludesTax?: boolean; unbilledChangeOrders?: number; unbilledChangeOrdersRefs?: string[] } | null
+  contractPosition: { contractedValue: number; invoicedToDate: number; paidToDate: number; excludesTax?: boolean; openEndedRetainer?: boolean; grossBasis?: { invoicedToDate: number; paidToDate: number }; unbilledChangeOrders?: number; unbilledChangeOrdersGross?: number; unbilledChangeOrdersRefs?: string[] } | null
   // FIX (section-12 audit, flagship finding): the API now sends these
   // (see the matching route fix) — added here so the page can render
   // the itemized breakdown and SOW/CO cross-reference the PDF already
@@ -368,43 +368,51 @@ export default function InvoicePortalPage() {
                 "Contract position" block already on the PDF — was never
                 surfaced here, so a client reviewing in-browser had no
                 running picture of contracted value vs. invoiced/paid. */}
-            {invoice.contractPosition && (
-              <div style={{ marginTop: 20 }}>
-                <div className="portal-section-title">Contract position</div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5, color: '#555', padding: '5px 0' }}>
-                  <span>Contracted value{invoice.contractPosition.excludesTax ? ' (excl. tax)' : ''}</span>
-                  <span style={{ fontFamily: 'IBM Plex Mono, monospace' }}>{invoice.currency} {formatAmount(invoice.contractPosition.contractedValue, invoice.currency)}</span>
+            {invoice.contractPosition && (() => {
+              // Mirrors the PDF's block (lib/pdf/renderer.tsx): an open-ended retainer has no contract total, so no "contracted value" or
+              // "remaining"; a tax-inclusive invoice on one states its position tax included, like the rest of the document.
+              const cp = invoice.contractPosition!
+              const gross = cp.grossBasis && invoice.taxInclusive && cp.openEndedRetainer ? cp.grossBasis : null
+              const rowStyle = { display: 'flex', justifyContent: 'space-between', fontSize: 12.5, color: '#555', padding: '5px 0' } as const
+              const mono = { fontFamily: 'IBM Plex Mono, monospace' } as const
+              const money = (v: number) => `${invoice.currency} ${formatAmount(v, invoice.currency)}`
+              const refs = (cp.unbilledChangeOrdersRefs || []).filter(Boolean)
+              const named = refs.length > 3 ? `${refs.slice(0, 3).join(', ')} +${refs.length - 3} more` : refs.join(', ')
+              const remaining = Math.max(0, cp.contractedValue - cp.invoicedToDate)
+              const unbilledCo = cp.openEndedRetainer ? Math.max(0, cp.unbilledChangeOrders || 0) : Math.min(remaining, Math.max(0, cp.unbilledChangeOrders || 0))
+              const unbilledShown = gross && cp.unbilledChangeOrdersGross ? cp.unbilledChangeOrdersGross : unbilledCo
+              return (
+                <div style={{ marginTop: 20 }}>
+                  <div className="portal-section-title">Contract position</div>
+                  {!cp.openEndedRetainer && (
+                    <div style={rowStyle}>
+                      <span>Contracted value{cp.excludesTax ? ' (excl. tax)' : ''}</span>
+                      <span style={mono}>{money(cp.contractedValue)}</span>
+                    </div>
+                  )}
+                  <div style={rowStyle}>
+                    <span>Invoiced to date (incl. this invoice{gross ? ', incl. tax' : cp.excludesTax ? ', excl. tax' : ''})</span>
+                    <span style={mono}>{money(gross ? gross.invoicedToDate : cp.invoicedToDate)}</span>
+                  </div>
+                  <div style={rowStyle}>
+                    <span>Paid to date{gross ? ' (incl. tax)' : cp.excludesTax ? ' (excl. tax)' : ''}</span>
+                    <span style={mono}>{money(gross ? gross.paidToDate : cp.paidToDate)}</span>
+                  </div>
+                  {!cp.openEndedRetainer && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, fontWeight: 600, padding: '8px 0 0', marginTop: 2, borderTop: '1px solid #E5E1D8' }}>
+                      <span>Remaining to invoice{cp.excludesTax ? ' (excl. tax)' : ''}</span>
+                      <span style={{ ...mono, color: accent }}>{money(remaining)}</span>
+                    </div>
+                  )}
+                  {unbilledCo > 0 && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11.5, color: '#909090', padding: cp.openEndedRetainer ? '8px 0 0' : '3px 0 0 12px', ...(cp.openEndedRetainer ? { marginTop: 2, borderTop: '1px solid #E5E1D8' } : {}) }}>
+                      <span>{cp.openEndedRetainer ? 'Approved change orders not yet invoiced' : 'of which approved change orders not yet invoiced'}{(() => { const parts = [named, gross ? 'incl. tax' : ''].filter(Boolean); return parts.length ? ` (${parts.join(', ')})` : '' })()}</span>
+                      <span style={mono}>{money(unbilledShown)}</span>
+                    </div>
+                  )}
                 </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5, color: '#555', padding: '5px 0' }}>
-                  <span>Invoiced to date (incl. this invoice{invoice.contractPosition.excludesTax ? ', excl. tax' : ''})</span>
-                  <span style={{ fontFamily: 'IBM Plex Mono, monospace' }}>{invoice.currency} {formatAmount(invoice.contractPosition.invoicedToDate, invoice.currency)}</span>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5, color: '#555', padding: '5px 0' }}>
-                  <span>Paid to date{invoice.contractPosition.excludesTax ? ' (excl. tax)' : ''}</span>
-                  <span style={{ fontFamily: 'IBM Plex Mono, monospace' }}>{invoice.currency} {formatAmount(invoice.contractPosition.paidToDate, invoice.currency)}</span>
-                </div>
-                {(() => {
-                  const remaining = Math.max(0, invoice.contractPosition.contractedValue - invoice.contractPosition.invoicedToDate)
-                  const unbilledCo = Math.min(remaining, Math.max(0, invoice.contractPosition.unbilledChangeOrders || 0))
-                  return (
-                    <>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, fontWeight: 600, padding: '8px 0 0', marginTop: 2, borderTop: '1px solid #E5E1D8' }}>
-                        <span>Remaining to invoice{invoice.contractPosition.excludesTax ? ' (excl. tax)' : ''}</span>
-                        <span style={{ fontFamily: 'IBM Plex Mono, monospace', color: accent }}>
-                          {invoice.currency} {formatAmount(remaining, invoice.currency)}
-                        </span>
-                      </div>
-                      {unbilledCo > 0 && (
-                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11.5, color: '#909090', padding: '3px 0 0 12px' }}>
-                          <span>of which approved change orders not yet invoiced{(() => { const refs = (invoice.contractPosition.unbilledChangeOrdersRefs || []).filter(Boolean); return refs.length ? ` (${refs.length > 3 ? `${refs.slice(0, 3).join(', ')} +${refs.length - 3} more` : refs.join(', ')})` : '' })()}</span>
-                          <span style={{ fontFamily: 'IBM Plex Mono, monospace' }}>{invoice.currency} {formatAmount(unbilledCo, invoice.currency)}</span>
-                        </div>
-                      )}
-                    </>
-                  )
-                })()}
-              </div>
-            )}
+              )
+            })()}
           </div>
         </div>
 

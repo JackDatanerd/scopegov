@@ -623,7 +623,7 @@ export function ensureChangeOrderClause(oosHtml: string, input: SowContentInput)
 export function liabilityCapSectionHtml(input: SowContentInput): string {
   if (input.language && input.language !== 'en') return ''
   const cap = normalizeLiabilityCap(input.liabilityCap)
-  return cap ? `<p>${escapeHtml(liabilityCapSentence(cap))}</p>` : ''
+  return cap ? `<p>${escapeHtml(liabilityCapSentence(cap, { retainer: !!input.retainer }))}</p>` : ''
 }
 
 /** The fixed client-review paragraph. Empty when none is chosen or the document isn't English. */
@@ -897,6 +897,8 @@ export function draftingRulesBlock(input: SowContentInput): string {
   if (input.retainer) {
     lines.push('- This is a RETAINER. In the Deliverables table, a deliverable that recurs (weekly posting, monthly reporting, ongoing research) shows its cadence in the Target date cell as a short label such as \"Weekly\" or \"Monthly\", never a single calendar date; this overrides the Target date rule above for those rows. A calendar date is used only for one-off setup items (access, onboarding, supply of client materials), and it must be the same deadline the Assumptions state for that item.')
     lines.push('- This is a RETAINER. Each monthly fee covers a full month starting on the start date. The Timeline must say what the first month includes (any onboarding period inside it) and must not describe the first posting period as starting later without saying why it is part of the first monthly fee. A report due a number of days after month end must not also carry a target date that is earlier than that.')
+    lines.push('- This is a RETAINER. The ongoing phase of the Timeline continues the work, it does not restart it: when the Deliverables table says recurring work starts on a date, the Timeline says that work continues from that date (never \"From <the first day of the next month> the Provider posts weekly\" when the table has it starting earlier), so the document states each start date once.')
+    lines.push('- This is a RETAINER. The Acceptance criteria of a recurring deliverable name what the Client receives each period, in what form, and when in the period it arrives relative to the period itself (for example \"delivered after the end of each month, covering that month\"). Do not invent a day count, weekday or deadline the brief does not give.')
   }
   return lines.join('\n')
 }

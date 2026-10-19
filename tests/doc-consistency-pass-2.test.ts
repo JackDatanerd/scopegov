@@ -79,7 +79,7 @@ describe('document layout and cross-references', () => {
   it('keeps the last CO line with its totals and states the tax basis', () => {
     expect(r).toContain('lineItems.slice(-1)')
     expect(r).toContain('Rates and line totals include tax.')
-    expect(r).toContain('Including tax ({data.taxRate}%)')
+    expect(r).toContain('One-time fee, including tax ({data.taxRate}%)')
   })
   it('states the tax basis in the SOW header for retainers too, and names the SOW version a CO amends', () => {
     expect(r).not.toContain('{!data.isRetainer && (data.taxRate || 0) > 0 && (')

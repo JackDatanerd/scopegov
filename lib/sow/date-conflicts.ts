@@ -66,3 +66,47 @@ export function findClientDateConflicts(
   }
   return Array.from(new Set(messages))
 }
+
+// ── Recurring work: one start date ───────────────────────────────────────────────────────────────────────────────────────────────
+// A recurring Provider deliverable states when it starts in the Deliverables table ("Weekly from November 13, 2026"), and the
+// Timeline's ongoing phase can restate it ("From December 1, 2026 the Provider posts weekly"). Read together those say weekly
+// posting starts on two different dates. A sentence that says the work CONTINUES is not a restatement and is left alone.
+
+const CADENCES: Array<{ name: string; row: RegExp; sentence: RegExp }> = [
+  { name: 'weekly', row: /\bweekly\b|\bper week\b|\beach week\b/i, sentence: /\bweekly\b|\bper week\b|\beach week\b|\bevery week\b/i },
+  { name: 'monthly', row: /\bmonthly\b|\bper month\b|\beach month\b/i, sentence: /\bmonthly\b|\bper month\b|\beach month\b|\bevery month\b/i },
+]
+const CONTINUES = /\bcontinu(?:e|es|ed|ing)\b|\bremain(?:s|ing)?\b|\bkeeps?\b|\bresum(?:e|es|ing)\b/i
+
+/** One message per (recurring Provider row, Timeline sentence that restarts the same cadence on a different date). */
+export function findRecurringStartConflicts(
+  deliverableRows: Array<Record<string, string>> | null | undefined,
+  timelineRows: Array<Record<string, string>> | null | undefined,
+): string[] {
+  const rows = Array.isArray(deliverableRows) ? deliverableRows : []
+  const phases = Array.isArray(timelineRows) ? timelineRows : []
+  const messages: string[] = []
+  for (const row of rows) {
+    if (/client/i.test(String(row?.owner ?? ''))) continue
+    const target = String(row?.targetDate ?? '')
+    const fromMatch = /\bfrom\b([^]*)$/i.exec(target)
+    if (!fromMatch) continue
+    const rowDates = datesIn(fromMatch[1])
+    if (rowDates.length !== 1) continue
+    const cadence = CADENCES.find(c => c.row.test(target))
+    if (!cadence) continue
+    for (const ph of phases) {
+      const sentences = strip(String(ph?.description ?? '')).split(/(?<=[.!?])\s+|\n+/).map(x => x.trim()).filter(Boolean)
+      for (const sent of sentences) {
+        if (!cadence.sentence.test(sent) || CONTINUES.test(sent)) continue
+        const fromSent = /\bfrom\b([^]*)$/i.exec(sent)
+        if (!fromSent) continue
+        const sd = datesIn(fromSent[1])
+        if (sd.length !== 1 || sd[0] === rowDates[0]) continue
+        const title = String(row.deliverable ?? '').replace(/\s+/g, ' ').trim()
+        messages.push(`The Deliverables table starts \"${title}\" ${target.trim().replace(/^\w/, c => c.toLowerCase())}, but the Timeline says \"${sent.replace(/\.$/, '')}\". Say that the ${cadence.name} work continues from the date the Deliverables table gives, or give both the same start date.`)
+      }
+    }
+  }
+  return Array.from(new Set(messages))
+}

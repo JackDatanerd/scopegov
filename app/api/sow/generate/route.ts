@@ -29,7 +29,7 @@ import { normalizeLiabilityCap } from '@/lib/documents/liability-cap'
 import { normalizeApprovalSilence } from '@/lib/documents/approval-silence'
 import { servicesIsDefined, lowerUndefinedServices } from '@/lib/documents/defined-terms'
 import { normalizeClientMaterialsTerms, applyClientMaterialsTerms, applySupplyShortfall } from '@/lib/documents/client-materials'
-import { findClientDateConflicts } from '@/lib/sow/date-conflicts'
+import { findClientDateConflicts, findRecurringStartConflicts } from '@/lib/sow/date-conflicts'
 import { terminationClauseHtml, disputeClauseHtml, applyPortfolioUse, normalizePortfolioUse } from '@/lib/documents/standard-clauses'
 import { clientDependencyDates, normalizeClientMaterialsDays } from '@/lib/documents/client-dates'
 import { pickAgencyStandards } from '@/lib/utils/agency-standards'
@@ -418,7 +418,10 @@ export async function POST(request: NextRequest) {
         if (msg.stop_reason === 'max_tokens') throw new Error('the model reply was cut off (max_tokens)')
         aiSections = parseDelimitedSections(raw)
         aiTables = parseTableSections(raw)
-        const conflicts = findClientDateConflicts(aiTables?.deliverables as any, aiSections?.assumptions, contentInput.clientDates ? [contentInput.clientDates.access, contentInput.clientDates.materials] : null)
+        const conflicts = [
+          ...findClientDateConflicts(aiTables?.deliverables as any, aiSections?.assumptions, contentInput.clientDates ? [contentInput.clientDates.access, contentInput.clientDates.materials] : null),
+          ...findRecurringStartConflicts(aiTables?.deliverables as any, aiTables?.timeline as any),
+        ]
         if (conflicts.length && attempt < MAX_ATTEMPTS) {
           conflictingDraft = { sections: aiSections, tables: aiTables }
           fixNote = conflicts.join(' ')

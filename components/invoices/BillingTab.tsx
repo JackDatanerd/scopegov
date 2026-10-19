@@ -15,6 +15,7 @@ import ClientDetailsWarningModal, { type ClientDetailsInfo, type AgencyDetailsIn
 import { isPaymentClaimOpen } from '@/lib/utils/invoice-registry'
 import { amountFieldForNet, buildInvoiceEditPatch, lineTotal, itemizedSubtotal, type EditFormState } from '@/lib/documents/invoice-form'
 import { dateStringInZone, addDaysToDateString } from '@/lib/utils/timezone'
+import { capDueAtPeriodStart } from '@/lib/documents/advance-due'
 
 const METHOD_LABELS: Record<string, string> = {
   bank_transfer: 'Bank transfer', stripe: 'Stripe', check: 'Check', cash: 'Cash', other: 'Other',
@@ -909,7 +910,11 @@ function CreateInvoiceModal({ projectId, projectCurrency, milestones, sows, cos,
           const ms = m.type === 'retainer_monthly' && defaultDue ? '' : (m.due_date ? String(m.due_date).slice(0, 10) : '')
           // A period the signed SOW states governs every invoice under it (sending refuses a later date), so a milestone's own date
           // never pushes the due date past it. Only a workspace default with no SOW term keeps the older "later of the two" rule.
-          setDueDate(billingDefaults?.termFromSow && defaultDue ? defaultDue : ms && defaultDue ? (ms > defaultDue ? ms : defaultDue) : (ms || defaultDue))
+          const chosenDue = billingDefaults?.termFromSow && defaultDue ? defaultDue : ms && defaultDue ? (ms > defaultDue ? ms : defaultDue) : (ms || defaultDue)
+          // A retainer month is billed in advance: its invoice must not fall due after the month it pays for has begun (the row's date is
+          // that month's first day). Only the default is capped; the person can still change it.
+          const periodStart = m.type === 'retainer_monthly' && m.due_date ? String(m.due_date).slice(0, 10) : null
+          setDueDate(capDueAtPeriodStart(chosenDue, periodStart, dateStringInZone(billingDefaults?.timeZone)))
         }
         // payment_milestones.tax_rate is NOT NULL DEFAULT 0 and nothing in the product sets it, so a
         // milestone's 0% means "no tax terms of its own", not "tax-free on purpose": fall back to the

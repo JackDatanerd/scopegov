@@ -1,5 +1,5 @@
 'use client'
-import { coImpactNumbers, coPaymentStatement } from '@/lib/documents/co-impact-view'
+import { coImpactNumbers, coPaymentStatement, coAmendmentStatement } from '@/lib/documents/co-impact-view'
 import { useState, useEffect, useRef } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import SignaturePad, { type SignaturePadHandle } from '@/components/ui/SignaturePad'
@@ -48,6 +48,7 @@ interface CoData {
   invoiceTiming?: 'on_acceptance' | 'on_delivery' | null
   contractValueBefore?: number | null
   retainerMonthlyNet?: number | null
+  retainerMonthlyGross?: number | null
   isRetainerRenewal?: boolean
   sowNumber?: string | null
   paymentTermsDays?: number | null
@@ -383,7 +384,7 @@ export default function CoPortalPage() {
                 {(() => {
                   // The same figures the PDF's Impact Analysis shows (lib/documents/co-impact-view.ts), so the client sees on this
                   // page what the document they are accepting says about the contract value.
-                  const n = coImpactNumbers({ taxRate: co.taxRate, subtotal: co.subtotal, total: co.total, contractValueBefore: co.contractValueBefore, retainerMonthlyNet: co.retainerMonthlyNet, isRetainerRenewal: co.isRetainerRenewal })
+                  const n = coImpactNumbers({ taxRate: co.taxRate, subtotal: co.subtotal, total: co.total, contractValueBefore: co.contractValueBefore, retainerMonthlyNet: co.retainerMonthlyNet, retainerMonthlyGross: co.retainerMonthlyGross, taxInclusive: co.taxInclusive, isRetainerRenewal: co.isRetainerRenewal })
                   const money = (v: number) => `${co.currency} ${formatAmount(Math.abs(v), co.currency)}`
                   const row = (label: string, value: string, strong = false) => (
                     <div key={label} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 13, color: strong ? '#1A1A1A' : '#555', fontWeight: strong ? 600 : 400, padding: '3px 0' }}>
@@ -392,8 +393,10 @@ export default function CoPortalPage() {
                   )
                   let rows: JSX.Element[] = []
                   if (n.oneTimeOnRetainer) {
-                    rows = [row(`Monthly retainer, unchanged${n.exTax}`, money(co.retainerMonthlyNet as number)), row(`One-time fee, billed once${n.exTax}`, `+${money(n.netChange)}`, true)]
-                    if (n.taxApplies) rows.push(row(`Including tax (${co.taxRate}%)`, money(co.total)))
+                    // Same basis as the PDF: a tax-inclusive SOW's fees stay tax included here.
+                    const basis = n.inclusiveRetainerView ? ` (incl. ${co.taxRate}% tax)` : n.exTax
+                    rows = [row(`Monthly retainer, unchanged${basis}`, money((n.inclusiveRetainerView ? co.retainerMonthlyGross : co.retainerMonthlyNet) as number)), row(`One-time fee, billed once${basis}`, `+${money(n.inclusiveRetainerView ? co.total : n.netChange)}`, true)]
+                    if (n.taxApplies && !n.inclusiveRetainerView) rows.push(row(`One-time fee, including tax (${co.taxRate}%)`, money(co.total)))
                   } else if (n.revisedValue != null && co.contractValueBefore != null && n.delta != null) {
                     rows = [
                       row(n.isRenewal ? 'Current monthly rate' : `Original contract value${n.exTax}`, money(co.contractValueBefore)),
@@ -410,10 +413,11 @@ export default function CoPortalPage() {
             {(() => {
               const stmt = coPaymentStatement({ isRetainerRenewal: co.isRetainerRenewal, isCredit: co.isCredit, total: co.total, paymentTermsDays: co.paymentTermsDays, lateFeeRate: co.lateFeeRate, sowNumber: co.sowNumber, invoiceTiming: co.invoiceTiming })
               const text = stmt.payment ?? stmt.lateOnly
-              if (!co.sowNumber && !text) return null
+              const amend = coAmendmentStatement({ sowNumber: co.sowNumber, isRetainerRenewal: co.isRetainerRenewal, isCredit: co.isCredit, total: co.total })
+              if (!amend.amends && !text) return null
               return (
                 <div style={{ marginTop: 18, fontSize: 12, color: '#555', lineHeight: 1.6 }}>
-                  {co.sowNumber && <p style={{ margin: '0 0 6px' }}>This change order amends SOW No. {co.sowNumber}. Except as expressly amended here, all terms of that SOW remain unchanged and in full force.</p>}
+                  {amend.amends && <p style={{ margin: '0 0 6px' }}>{amend.amends}{amend.coverage ? ` ${amend.coverage}` : ''}</p>}
                   {text && <p style={{ margin: 0 }}>{text}</p>}
                 </div>
               )

@@ -34,6 +34,8 @@ export interface ContractPosition {
   paidToDate: number
   /** Cash received expressed NET of tax (each payment scaled by its invoice's subtotal/amount) — the basis `contractedValue` and `invoicedToDate` are on. */
   paidToDateNet?: number
+  /** Σ tax-inclusive totals of the billed invoices: the gross twin of `invoicedToDate`, for documents that state their fees tax included. */
+  invoicedToDateGross?: number
   /** True when any billed invoice carries tax, i.e. gross cash and the net contract figures differ. */
   hasTax?: boolean
   atRiskValue: number
@@ -53,6 +55,8 @@ export interface InvoiceContractPosition {
   invoicedToDate: number
   paidToDate: number
   excludesTax?: boolean
+  /** Open-ended retainer with tax: invoiced and paid on the tax-INCLUDED basis, for a tax-inclusive invoice to show instead of the net figures. */
+  grossBasis?: { invoicedToDate: number; paidToDate: number }
   unbilledChangeOrders?: number
   /** Gross twin of unbilledChangeOrders: the change orders' own totals, tax included. */
   unbilledChangeOrdersGross?: number
@@ -68,6 +72,11 @@ export function toInvoiceContractPosition(position: ContractPosition): InvoiceCo
     ? { contractedValue: position.contractedValue, invoicedToDate: position.invoicedToDate, paidToDate: position.paidToDateNet ?? position.paidToDate, excludesTax: true }
     : { contractedValue: position.contractedValue, invoicedToDate: position.invoicedToDate, paidToDate: position.paidToDate }
   const unbilledGross = Math.round(Math.max(0, position.unbilledChangeOrderGross || 0) * 100) / 100
+  // An open-ended retainer has no contract total to compare against, so its position can be stated on the invoice's own (tax-included)
+  // basis; the net figures stay for fixed contracts, whose contracted value is only known net.
+  if (position.hasTax && position.openEndedRetainer && position.invoicedToDateGross != null) {
+    ;(base as InvoiceContractPosition).grossBasis = { invoicedToDate: Math.round(position.invoicedToDateGross * 100) / 100, paidToDate: Math.round(position.paidToDate * 100) / 100 }
+  }
   const refs = (position.unbilledChangeOrderRefs || []).filter(Boolean)
   const withUnbilled = unbilled > 0 ? { ...base, unbilledChangeOrders: unbilled, ...(unbilledGross > 0 ? { unbilledChangeOrdersGross: unbilledGross } : {}), ...(refs.length ? { unbilledChangeOrdersRefs: refs } : {}) } : base
   return position.openEndedRetainer ? { ...withUnbilled, openEndedRetainer: true } : withUnbilled
@@ -137,6 +146,7 @@ export async function computeContractPositions(
         // Floored at zero like effectiveContractValue (contract-value.ts) — the two are documented as one definition.
         contractedValue: Math.max(0, netOfTax(baseContractValue(project, monthsBilled.get(id)), taxBases.get(id)) + amendmentTotal),
         invoicedToDate:  billed.reduce((s: number, inv: any) => s + (Number(inv.subtotal ?? inv.amount) || 0), 0),
+        invoicedToDateGross: billed.reduce((s: number, inv: any) => s + (Number(inv.amount) || 0), 0),
         paidToDate:      paidEligible.reduce((s: number, inv: any) => s + (Number(inv.amount_paid) || 0), 0),
         paidToDateNet:   paidEligible.reduce((s: number, inv: any) => {
           const gross = Number(inv.amount) || 0, net = Number(inv.subtotal ?? inv.amount) || 0, paid = Number(inv.amount_paid) || 0

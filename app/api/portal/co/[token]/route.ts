@@ -240,6 +240,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         dateLocale: documentDateLocale(null, (ws?.legal_address as any)?.country),
         contractValueBefore: impact.contractValueBefore ?? null,
         retainerMonthlyNet: impact.retainerMonthlyNet ?? null,
+        retainerMonthlyGross: impact.retainerMonthlyGross ?? null,
         isRetainerRenewal: isRenewalCo,
         sowNumber: impact.sow?.document_number ?? null,
         paymentTermsDays: impact.paymentTermsDays ?? null,

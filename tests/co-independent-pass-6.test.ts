@@ -112,7 +112,7 @@ vi.mock('@anthropic-ai/sdk', () => ({
   default: class { messages = { create: async () => { state.calls.push('model'); return state.modelReply } } },
 }))
 vi.mock('@/lib/pdf/renderer', () => ({ renderCoPdf: async (d: any) => { state.captured = d; return Buffer.from('%PDF') } }))
-vi.mock('@/lib/documents/co-contract-value', () => ({ getContractValueBefore: async () => 0, retainerMonthlyNetForOneTimeCo: async () => null }))
+vi.mock('@/lib/documents/co-contract-value', () => ({ getContractValueBefore: async () => 0, retainerMonthlyNetForOneTimeCo: async () => null, retainerMonthlyGrossFor: () => null }))
 vi.mock('@/lib/documents/executed-pdf', () => ({ fetchExecutedPdf: async () => null }))
 
 const project = { id: 'p1', name: 'Site', status: 'Active', currency: 'USD', type: 'project', client_id: 'c1', clients: { name: 'C', email: 'c@c.co', cc_emails: [] }, workspaces: { agency_name: 'A', brand_colour: '#000' } }

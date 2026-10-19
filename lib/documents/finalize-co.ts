@@ -29,7 +29,7 @@ import { isAdjustmentLine } from '@/lib/utils/rescale-line-items'
 import { parseStoredLineItems } from '@/lib/documents/co-totals'
 import { coPdfFilename } from '@/lib/documents/co-pdf-name'
 import { resolveCoSignerTitle } from '@/lib/documents/signer-title'
-import { getContractValueBefore, coNetImpact, retainerMonthlyNetForOneTimeCo } from '@/lib/documents/co-contract-value'
+import { getContractValueBefore, coNetImpact, retainerMonthlyNetForOneTimeCo, retainerMonthlyGrossFor } from '@/lib/documents/co-contract-value'
 import { createHash } from 'node:crypto'
 import { isTerminalStatus } from '@/lib/utils/project-status'
 import { findSignedSow, SIGNED_SOW_LOOKUP_FAILED } from '@/lib/documents/signed-sow'
@@ -402,6 +402,7 @@ export async function finalizeCoAcceptance(service: any, params: {
       ? previousContractValue
       : await getContractValueBefore(service, co.project_id, co.id, project.contract_value != null ? Number(project.contract_value) : null, { project })
     const retainerMonthlyNet = await retainerMonthlyNetForOneTimeCo(service, co.project_id, project, { isRenewal, isCredit: !!co.is_credit })
+    const retainerMonthlyGross = retainerMonthlyGrossFor(project, retainerMonthlyNet)
     // FIX (section-12 trace — bug, CO side): the executed copy never got the workspace timezone, so its
     // "Accepted" and "Generated" dates printed in UTC (a CO accepted 00:00-03:00 EAT showed the previous day)
     // while every later download printed them in the workspace's zone. Looked up here because the callers'
@@ -455,6 +456,7 @@ export async function finalizeCoAcceptance(service: any, params: {
       sowVersion:         signedSow.version ?? null,
       contractValueBefore,
       retainerMonthlyNet,
+      retainerMonthlyGross,
       isRetainerRenewal:  isRenewal,
       revisedContractValue,
       renewalTermMonths:  isRenewal ? renewalTermForDocument(co, project) : null,

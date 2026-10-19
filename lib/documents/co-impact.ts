@@ -3,7 +3,7 @@
 // Loads what a change order's money rows and payment statement are built from, once for every surface (staff PDF, portal PDF,
 // portal page). The numbers and wording themselves live in co-impact-view.ts, which has no server imports.
 
-import { getContractValueBefore, retainerMonthlyNetForOneTimeCo } from '@/lib/documents/co-contract-value'
+import { getContractValueBefore, retainerMonthlyNetForOneTimeCo, retainerMonthlyGrossFor } from '@/lib/documents/co-contract-value'
 import { effectivePaymentTermsDays } from '@/lib/documents/payment-terms'
 import { normalizeLateFeeRate } from '@/lib/documents/late-fee'
 
@@ -24,6 +24,7 @@ export async function loadCoImpactContext(service: any, args: {
     sow,
     contractValueBefore,
     retainerMonthlyNet,
+    retainerMonthlyGross: retainerMonthlyGrossFor(args.project, retainerMonthlyNet),
     paymentTermsDays: effectivePaymentTermsDays(sow?.metadata, args.workspaceDefaultTermsDays),
     lateFeeRate: normalizeLateFeeRate(sow?.metadata?.lateFeeRate),
   }
