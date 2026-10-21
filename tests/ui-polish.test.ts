@@ -65,6 +65,21 @@ describe('modals share one look', () => {
   })
 })
 
+describe('pages stay centred when the sidebar is hidden', () => {
+  const css = read('styles/globals.css')
+  it('.page centres its max-width column instead of hugging the left edge', () => {
+    expect(css).toMatch(/\.page \{[^}]*max-width: 1080px; margin-left: auto; margin-right: auto;/)
+  })
+  it('the project header band and its tab content share one centred column so they line up', () => {
+    expect(css).toContain('.page-col { width: 100%; max-width: 1080px; margin: 0 auto;')
+    const pd = read('components/projects/ProjectDetail.tsx')
+    expect(pd).toContain('<div className="page-col">')
+    expect(pd).toContain('<div className="page-col" style={{ paddingTop: 24, paddingBottom: 24 }}>')
+    expect(pd).toContain("<div className=\"tabbar\" style={{ borderBottom: 'none' }}>")
+    expect(read('components/co/CoEditor.tsx')).toContain("maxWidth: 960, margin: '0 auto'")
+  })
+})
+
 describe('collapsible sidebar', () => {
   const shell = read('components/layout/AppShell.tsx')
   it('is wired into the signed-in layout with a way back when collapsed', () => {

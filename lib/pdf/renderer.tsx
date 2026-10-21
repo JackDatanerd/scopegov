@@ -579,7 +579,7 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
             <View style={{ flexDirection: 'row', borderBottom: '1 solid #E4E0D4', paddingBottom: 3, marginBottom: 3 }}>
               <Text style={{ width: 62, fontSize: 8, color: '#909090' }}>REF</Text>
               <Text style={{ flex: 1, fontSize: 8, color: '#909090' }}>CHANGE ORDER</Text>
-              <Text style={{ width: 70, fontSize: 8, color: '#909090' }}>ACCEPTED</Text>
+              <Text style={{ width: 88, fontSize: 8, color: '#909090' }}>ACCEPTED</Text>
               <Text style={{ width: 92, fontSize: 8, color: '#909090', textAlign: 'right', paddingRight: 12 }}>VALUE (EXCL. TAX)</Text>
               <Text style={{ width: 128, fontSize: 8, color: '#909090' }}>TIMELINE</Text>
             </View>
@@ -587,7 +587,7 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
               <View key={i} style={{ flexDirection: 'row', paddingVertical: 2.5 }}>
                 <Text style={{ width: 62, fontSize: 9 }}>{a.ref}</Text>
                 <Text style={{ flex: 1, fontSize: 9, paddingRight: 6 }}>{a.title}</Text>
-                <Text style={{ width: 70, fontSize: 9 }}>{a.acceptedAt ? fd(a.acceptedAt) : ''}</Text>
+                <Text style={{ width: 88, fontSize: 9 }}>{a.acceptedAt ? fd(a.acceptedAt) : ''}</Text>
                 <Text style={{ width: 92, fontSize: 9, textAlign: 'right', paddingRight: 12, fontFamily: PDF_FONT.sans }}>{a.value >= 0 ? '+' : '-'}{data.currency} {fm(Math.abs(a.value))}</Text>
                 <Text style={{ width: 128, fontSize: 9 }}>{a.timeline}</Text>
               </View>

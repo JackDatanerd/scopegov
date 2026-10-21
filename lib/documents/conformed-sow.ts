@@ -82,24 +82,82 @@ export function conformedDeliverableRows(rows: DeliverableRow[], cos: ConformedC
   return out
 }
 
+const AMENDS_RE = /\b(falls? under|amends?|amending|brings?|brought|into scope|lifts?)\b/i
+// A sentence that says what is NOT covered or what stays excluded must never mark an exclusion as lifted.
+const KEEPS_RE = /\b(does not|do not|not include|not included|excluded|remains?|stays? in place|other than|except)\b/i
+const QUOTED_RE = /["\u201c]([^"\u201d]{3,80})["\u201d]/g
+
 /**
- * Mark each Out of Scope item that a change order brought into scope. A change order names the exclusion it amends by its printed
- * title in its Impact Analysis (for example the "Professional headshots" exclusion), so an item whose title (the words before its
- * first colon) appears in a change order's impact text or added deliverables is annotated. Every other exclusion is left exactly as
- * signed, and the annotation says the exclusion otherwise stays in place.
+ * The exclusion titles a change order says it amends: a title counts only when it is QUOTED in a sentence of the change order's own
+ * Impact Analysis that says the work falls under / amends / brings that exclusion into scope. A sentence that says what is not
+ * covered ("does not include listing photography") or what stays in place can never name one.
+ */
+export function amendedExclusionTitles(scopeNote: string | null | undefined): string[] {
+  const titles: string[] = []
+  for (const sentence of String(scopeNote || '').split(/(?<=[.!?])\s+/)) {
+    if (!AMENDS_RE.test(sentence) || KEEPS_RE.test(sentence)) continue
+    // The change order also quotes the section it is amending ("Out of Scope"); that is a heading, not an exclusion.
+    for (const m of sentence.matchAll(QUOTED_RE)) if (norm(m[1]) !== 'out of scope') titles.push(norm(m[1]))
+  }
+  return titles
+}
+
+/**
+ * Mark each Out of Scope item that a change order brought into scope. An item is marked only when its title (the words before its first
+ * colon) is exactly a title the change order quotes as the exclusion it amends (amendedExclusionTitles). When a change order does not
+ * quote one, nothing is marked: the Amendments table still lists the change order, and an unmarked exclusion is the safe reading.
+ * Every other exclusion is left exactly as signed.
  */
 export function annotateBroughtIntoScope(oosHtml: string, cos: ConformedCo[]): string {
   if (!oosHtml) return oosHtml
-  const candidates = cos.filter(c => !c.isRenewal && (c.scopeNote || c.addedDeliverables.length))
-  if (!candidates.length) return oosHtml
+  const amended = cos.filter(c => !c.isRenewal).map(c => ({ co: c, titles: amendedExclusionTitles(c.scopeNote) })).filter(x => x.titles.length)
+  if (!amended.length) return oosHtml
   return oosHtml.replace(/<(li|p)>([\s\S]*?)<\/\1>/gi, (whole, tag: string, inner: string) => {
-    const text = stripTags(inner)
-    const title = norm(text.split(':')[0] || '')
-    if (title.length < 4 || title.length > 80) return whole
-    const co = candidates.find(c => norm([c.scopeNote || '', ...c.addedDeliverables].join(' ')).includes(title))
-    if (!co) return whole
-    return `<${tag}>${inner} <em>Amended by ${escapeHtml(ref(co))}: brought into scope for the work that change order describes. This exclusion otherwise stays in place.</em></${tag}>`
+    const title = norm(stripTags(inner).split(':')[0] || '')
+    if (!title) return whole
+    const hit = amended.find(x => x.titles.includes(title))
+    if (!hit) return whole
+    return `<${tag}>${inner} <em>Amended by ${escapeHtml(ref(hit.co))}: brought into scope for the work that change order describes. This exclusion otherwise stays in place.</em></${tag}>`
   })
+}
+
+const money = (n: number) => n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100
+const refList = (cos: ConformedCo[]) => cos.map(ref).join(', ')
+
+/**
+ * The signed body keeps stating the ORIGINAL contract value and end date (it must: it is the signed text). So the amended copy adds
+ * one clearly marked note under Project Overview saying what they are now, instead of leaving two conflicting figures unexplained.
+ */
+export function overviewAmendmentNote(cos: ConformedCo[], ctx: { currency: string; revisedNet: number; revisedDate: string | null }): string {
+  const date = ctx.revisedDate ? ` and the delivery date is ${escapeHtml(longDate(ctx.revisedDate))}` : ''
+  return `<p><em>Amended by ${escapeHtml(refList(cos))}: the contract value is now ${escapeHtml(ctx.currency)} ${money(ctx.revisedNet)} (excluding sales tax)${date}. The figures in this section are as originally signed.</em></p>`
+}
+
+/** One note per fee-changing change order under Payment Terms. */
+export function paymentAmendmentNote(cos: ConformedCo[], ctx: { currency: string; taxRate: number | null }): string {
+  return cos.filter(c => !c.isRenewal && c.netImpact !== 0).map(c => {
+    const credit = c.netImpact < 0
+    const net = Math.abs(c.netImpact)
+    const tax = ctx.taxRate ? ` plus ${ctx.taxRate}% sales tax (${escapeHtml(ctx.currency)} ${money(round2(net * ctx.taxRate / 100))})` : ''
+    return `<p><em>Amended by ${escapeHtml(ref(c))}: ${credit ? 'a credit of' : 'an additional fee of'} ${escapeHtml(ctx.currency)} ${money(net)}${tax}, invoiced separately under that change order. The fee and schedule above are as originally signed.</em></p>`
+  }).join('')
+}
+
+/** A Payment Schedule row for each fee-changing change order, so the schedule and the revised contract value agree. */
+export function conformedPaymentScheduleRows(rows: Array<Record<string, unknown>>, cos: ConformedCo[], ctx: { currency: string; taxRate: number | null }): Array<Record<string, unknown>> {
+  const out = (rows || []).map(r => ({ ...r }))
+  for (const c of cos) {
+    if (c.isRenewal || c.netImpact === 0) continue
+    const net = Math.abs(c.netImpact)
+    const tax = ctx.taxRate ? ` · + ${ctx.taxRate}% tax (${ctx.currency} ${money(round2(net * ctx.taxRate / 100))})` : ''
+    out.push({
+      milestone: `${ref(c)}: ${c.title}`,
+      amount: `${c.netImpact < 0 ? '-' : ''}${ctx.currency} ${money(net)}`,
+      trigger: `Invoiced separately under the change order${tax}`,
+    })
+  }
+  return out
 }
 
 /** Plain-English one-liner for the amendment table's timeline column. */

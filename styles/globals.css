@@ -147,7 +147,9 @@ p, h1, h2, h3, h4, h5 { margin: 0; }
 .sb-signout:hover { color: var(--text-2); }
 
 /* ── PAGE LAYOUT ─────────────────────────────────────────────── */
-.page { padding: 36px 44px; max-width: 1080px; }
+.page { padding: 36px 44px; max-width: 1080px; margin-left: auto; margin-right: auto; } /* centred: with the sidebar hidden the page no longer hugs the left edge */
+/* A centred content column for pages that have a full-width header band (project detail): header and body share it so they line up. */
+.page-col { width: 100%; max-width: 1080px; margin: 0 auto; padding-left: 40px; padding-right: 40px; }
 .page-wide { padding: 0; }
 .page-hd { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 28px; }
 .page-title { font-family: 'Cormorant Garamond', Georgia, serif; font-size: 28px; font-weight: 400; color: var(--text); letter-spacing: -0.02em; line-height: 1.1; margin-bottom: 4px; }

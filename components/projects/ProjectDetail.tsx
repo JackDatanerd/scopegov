@@ -316,7 +316,8 @@ export default function ProjectDetail({
   return (
     <div>
       {/* Header */}
-      <div style={{ padding: '24px 40px 0', borderBottom: '1px solid var(--border)', background: 'var(--surface)' }}>
+      <div style={{ padding: '24px 0 0', borderBottom: '1px solid var(--border)', background: 'var(--surface)' }}>
+        <div className="page-col">
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 12 }}>
           <Link href="/projects" style={{ fontSize: 12, color: 'var(--text-3)' }}>Projects</Link>
           <i className="ti ti-chevron-right" style={{ fontSize: 10, color: 'var(--text-4)' }} />
@@ -472,7 +473,8 @@ export default function ProjectDetail({
           )
         })()}
 
-        <div className="tabbar">
+        {/* The band below draws the full-width rule; the tab strip keeps no border of its own so the line is not doubled. */}
+        <div className="tabbar" style={{ borderBottom: 'none' }}>
           {TABS.map(t => (
             <button key={t.key} className={`tabi${tab === t.key ? ' act' : ''}`} onClick={() => selectTab(t.key)}>
               <i className={`ti ${t.icon}`} style={{ fontSize: 12, marginRight: 5 }} />
@@ -482,10 +484,11 @@ export default function ProjectDetail({
             </button>
           ))}
         </div>
+        </div>
       </div>
 
       {/* Tab content */}
-      <div style={{ padding: '24px 40px', maxWidth: 1080 }}>
+      <div className="page-col" style={{ paddingTop: 24, paddingBottom: 24 }}>
         {tab === 'overview' && <OverviewTab project={project} milestones={milestones} amendments={amendments} permissions={permissions} currency={currency} router={router} baseValue={baseValue} />}
         {tab === 'sow'      && <SowTab project={project} sows={project.sow_documents || []} amendments={amendments} permissions={permissions} router={router} pendingApprovals={pendingApprovals} />}
         {tab === 'guardian' && <GuardianTab project={project} flags={project.guardian_flags || []} exceptions={project.exceptions_log || []} permissions={permissions} router={router} team={team} />}

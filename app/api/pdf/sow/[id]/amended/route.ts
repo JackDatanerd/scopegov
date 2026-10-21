@@ -17,7 +17,8 @@ import { canReadProject } from '@/lib/utils/project-access'
 import { hydrateSections } from '@/lib/sow/sections'
 import { netOfTax } from '@/lib/documents/tax-basis'
 import {
-  annotateBroughtIntoScope, conformedDeliverableRows, latestRevisedDate, longDate, revisedContractValue, timelineText,
+  annotateBroughtIntoScope, conformedDeliverableRows, conformedPaymentScheduleRows, latestRevisedDate, longDate,
+  overviewAmendmentNote, paymentAmendmentNote, revisedContractValue, timelineText,
   type ConformedCo,
 } from '@/lib/documents/conformed-sow'
 
@@ -95,13 +96,18 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
     const revisedNet = revisedContractValue(originalNet, cos)
     const revisedGross = taxRate ? round2(revisedNet * (1 + taxRate / 100)) : null
 
+    const latest = latestRevisedDate(cos)
+    const currency = sow.projects?.currency || 'USD'
     const sections = hydrateSections(sow.sections || [], sow.metadata).map((sec: any) => {
       if (sec.id === 'deliverables' && Array.isArray(sec.table)) return { ...sec, table: conformedDeliverableRows(sec.table, cos) }
       if (sec.id === 'oos') return { ...sec, content: annotateBroughtIntoScope(String(sec.content || ''), cos) }
+      // The signed body still states the original value, dates and fee. Say, in each place that does, what they are now.
+      if (sec.id === 'overview') return { ...sec, content: `${sec.content || ''}${overviewAmendmentNote(cos, { currency, revisedNet, revisedDate: latest })}` }
+      if (sec.id === 'payment') return { ...sec, content: `${sec.content || ''}${paymentAmendmentNote(cos, { currency, taxRate })}` }
+      if (sec.id === 'payment_schedule' && Array.isArray(sec.table) && sec.table.length) return { ...sec, table: conformedPaymentScheduleRows(sec.table, cos, { currency, taxRate }) }
       return sec
     })
 
-    const latest = latestRevisedDate(cos)
     const pdf = await renderSowPdf({
       timeZone: ws?.timezone,
       agencyName:    ws?.agency_name || session.agencyName,
@@ -119,7 +125,7 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
       contractValue: revisedNet,
       isRetainer: false,
       retainerMonths: null,
-      currency:      sow.projects?.currency || 'USD',
+      currency,
       sections,
       language:      sow.metadata?.language || 'en',
       msaReference:  sow.metadata?.msaReference || null,
