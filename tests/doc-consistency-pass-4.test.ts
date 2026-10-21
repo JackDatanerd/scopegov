@@ -124,7 +124,9 @@ describe('client dates are set by the platform', () => {
 
 describe('review window is stated once', () => {
   it('both prompt branches say so', () => {
-    expect(approvalSilencePromptBlock({ approvalSilence: { mode: null, days: 3 } } as any)).toContain('do not repeat it in the Roles table, Assumptions or Timeline')
+    // English: the app prints the window itself, so the model must not. Other languages: the model states it once.
+    expect(approvalSilencePromptBlock({ approvalSilence: { mode: null, days: 3 } } as any)).toContain('Do NOT state a review, feedback or approval window anywhere yourself')
+    expect(approvalSilencePromptBlock({ approvalSilence: { mode: null, days: 3 }, language: 'fr' } as any)).toContain('do not repeat it in the Roles table, Assumptions or Timeline')
     expect(approvalSilencePromptBlock({ approvalSilence: null } as any)).toContain('Say it once, in the Revision Policy only')
   })
 })

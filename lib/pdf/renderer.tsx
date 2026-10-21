@@ -77,6 +77,15 @@ export interface SowPdfData {
   // Word stamped across a watermarked page (see lib/pdf/sow-watermark.ts). Defaults to DRAFT.
   watermarkText?: string
   documentNumber?: string | null
+  // Set only for the AMENDED COPY of a signed SOW (lib/documents/conformed-sow.ts): a read-only reference view of the signed SOW as
+  // amended by its accepted change orders. The signed SOW itself is never re-rendered or edited.
+  amended?: {
+    originalValue: number
+    /** Total payable including tax at the revised value, when the SOW states tax on top. */
+    revisedGross?: number | null
+    revisedDeliveryDate?: string | null
+    amendments: Array<{ ref: string; title: string; acceptedAt: string | null; value: number; timeline: string }>
+  } | null
   // Optional one-line cross-reference to a governing Master Service
   // Agreement, e.g. "Issued under the Master Service Agreement dated
   // March 3, 2026." Sourced from sow_documents.metadata.msaReference —
@@ -509,8 +518,9 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
         {/* Header */}
         <View style={s.header}>
           <View>
-            <Text style={s.h1}>{t.sow}</Text>
+            <Text style={s.h1}>{data.amended ? `${t.sow} — Amended` : t.sow}</Text>
             <Text style={s.meta}>{data.documentNumber ? `${data.documentNumber} · ` : ''}{t.version} {data.version} · {data.projectName}</Text>
+            {data.amended && <Text style={[s.meta, { marginTop: 2 }]}>Amended by {data.amended.amendments.map(a => a.ref).join(', ')} · reference copy</Text>}
             {data.msaReference && <Text style={[s.meta, { marginTop: 2 }]}>{data.msaReference}</Text>}
             {data.signedAt && <Text style={[s.meta, { color: c, marginTop: 2 }]}>{t.signed} {fd(data.signedAt)}</Text>}
           </View>
@@ -519,7 +529,8 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
               ? <Image src={logo} style={s.logo} />
               : <Text style={s.agencyText}>{data.agencyName}</Text>}
             <Text style={s.value}>{data.currency} {fm(data.contractValue)}{data.isRetainer ? ` / ${t.perMonth}` : ''}</Text>
-            <Text style={s.valueLabel}>{data.isRetainer ? t.monthlyRetainer : t.contractValue}</Text>
+            {data.amended ? <Text style={s.valueLabel}>Revised contract value</Text> : <Text style={s.valueLabel}>{data.isRetainer ? t.monthlyRetainer : t.contractValue}</Text>}
+            {data.amended && <Text style={[s.valueLabel, { marginTop: 2 }]}>Original {data.currency} {fm(data.amended.originalValue)}</Text>}
             {(data.taxRate || 0) > 0 && (
               <Text style={[s.valueLabel, { marginTop: 2 }]}>{data.taxInclusive ? t.inclTax(data.taxRate as number) : t.exclTax(data.taxRate as number)}</Text>
             )}
@@ -554,6 +565,51 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
             {data.clientVatNumber && <Text style={s.partyTax}>{t.vat} {data.clientVatNumber}</Text>}
           </View>
         </View>
+
+        {data.amended && (
+          <View wrap={false} style={{ marginBottom: 14 }}>
+            <View style={{ backgroundColor: '#F7F5F0', border: '1 solid #E4E0D4', borderRadius: 4, padding: 10, marginBottom: 10 }}>
+              <Text style={{ fontFamily: PDF_FONT.bold, fontSize: 9, marginBottom: 3 }}>Reference copy of the signed Statement of Work, as amended</Text>
+              <Text style={{ fontSize: 8.5, color: '#555555', lineHeight: 1.45 }}>
+                This copy restates the signed Statement of Work together with the change orders accepted since. It is provided for convenience and does not change
+                any term. The signed Statement of Work and each signed change order remain the binding documents; where this copy differs from them, they prevail.
+              </Text>
+            </View>
+            <Text style={[s.secTitle, { marginBottom: 6 }]}>Amendments</Text>
+            <View style={{ flexDirection: 'row', borderBottom: '1 solid #E4E0D4', paddingBottom: 3, marginBottom: 3 }}>
+              <Text style={{ width: 62, fontSize: 8, color: '#909090' }}>REF</Text>
+              <Text style={{ flex: 1, fontSize: 8, color: '#909090' }}>CHANGE ORDER</Text>
+              <Text style={{ width: 70, fontSize: 8, color: '#909090' }}>ACCEPTED</Text>
+              <Text style={{ width: 92, fontSize: 8, color: '#909090', textAlign: 'right', paddingRight: 12 }}>VALUE (EXCL. TAX)</Text>
+              <Text style={{ width: 128, fontSize: 8, color: '#909090' }}>TIMELINE</Text>
+            </View>
+            {data.amended.amendments.map((a, i) => (
+              <View key={i} style={{ flexDirection: 'row', paddingVertical: 2.5 }}>
+                <Text style={{ width: 62, fontSize: 9 }}>{a.ref}</Text>
+                <Text style={{ flex: 1, fontSize: 9, paddingRight: 6 }}>{a.title}</Text>
+                <Text style={{ width: 70, fontSize: 9 }}>{a.acceptedAt ? fd(a.acceptedAt) : ''}</Text>
+                <Text style={{ width: 92, fontSize: 9, textAlign: 'right', paddingRight: 12, fontFamily: PDF_FONT.sans }}>{a.value >= 0 ? '+' : '-'}{data.currency} {fm(Math.abs(a.value))}</Text>
+                <Text style={{ width: 128, fontSize: 9 }}>{a.timeline}</Text>
+              </View>
+            ))}
+            <View style={{ flexDirection: 'row', borderTop: '1 solid #1A1A1A', marginTop: 4, paddingTop: 4 }}>
+              <Text style={{ flex: 1, fontFamily: PDF_FONT.bold, fontSize: 9 }}>Revised contract value (excl. tax)</Text>
+              <Text style={{ fontFamily: PDF_FONT.bold, fontSize: 9 }}>{data.currency} {fm(data.contractValue)}</Text>
+            </View>
+            {data.amended.revisedGross != null && (
+              <View style={{ flexDirection: 'row', paddingTop: 2 }}>
+                <Text style={{ flex: 1, fontSize: 9, color: '#555555' }}>Total payable including {data.taxRate}% tax</Text>
+                <Text style={{ fontSize: 9, color: '#555555' }}>{data.currency} {fm(data.amended.revisedGross)}</Text>
+              </View>
+            )}
+            {data.amended.revisedDeliveryDate && (
+              <View style={{ flexDirection: 'row', paddingTop: 2 }}>
+                <Text style={{ flex: 1, fontSize: 9, color: '#555555' }}>Revised delivery date</Text>
+                <Text style={{ fontSize: 9, color: '#555555' }}>{data.amended.revisedDeliveryDate}</Text>
+              </View>
+            )}
+          </View>
+        )}
 
         {/* The Parties section's own text (the "entered into between…" preamble, or any special
             party terms the agency wrote). The boxed block above is generated from data; the
@@ -642,6 +698,8 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
             page-break units, so when the block did not fit under the clause it moved to the next page ALONE and the
             clause stayed behind — a signature page carrying no agreement text. They are now one unsplittable group
             whenever the clause itself fits on a page. */}
+        {/* The amended copy is a reference view, not a signing document: no signature block. */}
+        {!data.amended && (
         <View wrap={sigClauseSection && !fitsOnOnePage(sigClauseSection.content) ? undefined : false}>
         {sigClauseSection
           ? <View style={{ marginTop: 20 }} wrap={fitsOnOnePage(sigClauseSection.content) ? false : undefined}><RichText html={sigClauseSection.content} style={s.body} /></View>
@@ -672,6 +730,7 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
           </View>
         </View>
         </View>
+        )}
 
         {/* Footer — fixed strip on every page; the page number is shown on every document, one page or many, so the three documents read alike. */}
         <PdfFooter generatedLabel={t.generated} generatedOn={fd(new Date().toISOString())} scopeGovLabel={t.scopeGovBy} pageLabel={t.page} />
@@ -1324,11 +1383,11 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
               </View>
             )}
             <View style={s.cpRow}>
-              <Text>Invoiced to date (incl. this invoice{cpGross ? ', incl. tax' : data.contractPosition.excludesTax ? ', excl. tax' : ''})</Text>
+              <Text>Invoiced on the contract to date (incl. this invoice{cpGross ? ', incl. tax' : data.contractPosition.excludesTax ? ', excl. tax' : ''})</Text>
               <Text style={{ fontFamily: PDF_FONT.sans }}>{data.currency} {fmtInv(cpGross ? cpGross.invoicedToDate : data.contractPosition.invoicedToDate)}</Text>
             </View>
             <View style={s.cpRow}>
-              <Text>Paid to date{cpGross ? ' (incl. tax)' : data.contractPosition.excludesTax ? ' (excl. tax)' : ''}</Text>
+              <Text>Paid on the contract to date{cpGross ? ' (incl. tax)' : data.contractPosition.excludesTax ? ' (excl. tax)' : ''}</Text>
               <Text style={{ fontFamily: PDF_FONT.sans }}>{data.currency} {fmtInv(cpGross ? cpGross.paidToDate : data.contractPosition.paidToDate)}</Text>
             </View>
             {/* "Remaining to invoice", not "remaining contract value": the figure is what is still to be BILLED (contracted less

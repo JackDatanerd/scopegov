@@ -98,6 +98,7 @@ export async function POST(request: NextRequest) {
     const { data: project, error: projectErr } = await (service as any)
       .from('projects')
       .select(`id, name, type, status, contract_value, currency, workspace_id, retainer_duration_months,
+        clients(name, company_name),
         project_scope_snapshot(deliverables, out_of_scope)`)
       .eq('id', projectId).eq('workspace_id', session.workspaceId).is('deleted_at', null).single()
 
@@ -150,11 +151,20 @@ Flag description (agency's summary, not the client's own words): ${flag.descript
     // user got a generic 500 for a request that looked fine (with the rate-limit slot already spent).
     const requestText = truncateText(stripUnstorableText(askText), 3000)
 
+    // Who the Client is. A client is often a business represented by a named person, so "the Client" cannot be photographed,
+    // interviewed or briefed: the draft needs to know whether the Client is a person or a company to word any work about people.
+    const clientRow = Array.isArray(project.clients) ? project.clients[0] : project.clients
+    const clientPerson  = typeof clientRow?.name === 'string' ? clientRow.name.trim() : ''
+    const clientCompany = typeof clientRow?.company_name === 'string' ? clientRow.company_name.trim() : ''
+    const clientContextLine = clientCompany && clientPerson && clientCompany.toLowerCase() !== clientPerson.toLowerCase()
+      ? `Client: ${clientCompany} (a business), represented by ${clientPerson}\n`
+      : clientPerson || clientCompany ? `Client: ${clientCompany || clientPerson}\n` : ''
+
     const prompt = `You are drafting a change order (extra billable work outside the original scope) for a client project.
 
 Project (an internal label: never print it as the name of the Client's brand, business or product): ${project.name} (${project.type})
 ${project.type === 'retainer' ? `Billing: monthly retainer — the original value below is the MONTHLY fee.\n` : ''}Original contract value: ${project.currency} ${project.contract_value}
-Already in scope (do NOT re-bill these): ${inScope}
+${clientContextLine}Already in scope (do NOT re-bill these): ${inScope}
 Already excluded from scope: ${outOfScope}
 ${flagContext}
 The agency describes the extra work the client is asking for:
@@ -185,7 +195,10 @@ Rules:
 - Draft line items only for work the Client's request names or plainly requires. Do not add extra deliverables (a brief, report, audit, strategy) that the request did not mention.
 - The project name is an internal label. Never use it as the name of the Client's brand, business or product; say "the Client's brand" instead.
 - note is the REASON for the change. Open with the Client's request (who asked for the work and, in one sentence, what for), then one sentence on what the Provider will do and who bears any third-party cost. Do not list the line items again.
-- scopeImpact should name the specific exclusion or SOW section this work falls under, quoting it by its printed title (for example the "Out of Scope" section), not just restate the note. Work listed in the Out of Scope section falls UNDER that section, because it is excluded; never write that it "falls outside" the Out of Scope section.`
+- scopeImpact should name the specific exclusion or SOW section this work falls under, quoting it by its printed title (for example the "Out of Scope" section), not just restate the note. Work listed in the Out of Scope section falls UNDER that section, because it is excluded; never write that it "falls outside" the Out of Scope section.
+- Work about people (photography, filming, interviews, training, workshops): say how many people and whose work it is for, and word it so it reads correctly for this Client. If the Client is a business, never write \"photograph the Client\" or \"the Client only\"; write \"one individual nominated by the Client\" (or the named representative above if the request names that person). Use the person's name only if the request or the Client line above gives it.
+- Never write \"lasting up to N session(s)\". Write a session as \"one session of up to N hours\" (or \"a single session\" when no length is stated) at a single location unless the request says otherwise.
+- If the work needs something from the Client (attendance on a date, access, a booked venue, supplied materials), say so in scopeImpact in one sentence and state that the Client schedules it with the Provider. Do not invent a date.`
 
     // createWithTool: some models (e.g. a newer ANTHROPIC_MODEL) reject a forced tool_choice with a 400 — it retries
     // once with tool_choice 'auto' instead of failing every draft (see lib/ai/tool-call.ts).

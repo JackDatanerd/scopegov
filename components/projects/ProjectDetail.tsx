@@ -15,6 +15,7 @@ import FlagCollaboration from './FlagCollaboration'
 import ProjectDiscussion from './ProjectDiscussion'
 import EditProjectModal from './EditProjectModal'
 import { liveChangeOrders } from '@/lib/utils/attention'
+import { coNetImpact } from '@/lib/documents/co-contract-value'
 import {
   formatCurrency, formatDate, formatRelative,
   projectStatusLabel, sowStatusLabel, coStatusLabel, flagStatusLabel,
@@ -192,7 +193,9 @@ export default function ProjectDetail({
   // expired CO is still an unresolved decision, just not live exposure.)
   const liveCos       = liveChangeOrders(project.change_orders)
   const openCos       = liveCos.filter((co: any) => ['awaiting_response','countered','stalled','awaiting_countersignature'].includes(co.status))
-  const atRiskAmt     = openCos.reduce((s: number, co: any) => s + (co.total || 0), 0)
+  // Net of tax, like the original and effective values beside it. This summed each pending CO's tax-INCLUSIVE total, so a 700.00 change order
+  // showed as 757.75 "at risk" next to a net 4,000.00 contract.
+  const atRiskAmt     = openCos.reduce((s: number, co: any) => s + coNetImpact(co), 0)
   const baseValue     = baseContractValueProp ?? 0
   // FIX (re-audit, Guardian ghost-feature finding): this badge only ever
   // counted status === 'open', so a borderline_review flag — which needs a
@@ -1090,6 +1093,12 @@ function SowTab({ project, sows, amendments, permissions, router, pendingApprova
                   {currentSow.signed_at && permissions.viewFinancials && (
                     <a href={`/api/pdf/sow/${currentSow.id}`} target="_blank" className="btn btn-ghost btn-sm">
                       <i className="ti ti-download" style={{ fontSize: 12 }} /> Download PDF
+                    </a>
+                  )}
+                  {/* The signed SOW never changes; this is a separate, read-only reference copy showing it as amended by accepted change orders. */}
+                  {currentSow.status === 'signed' && currentSow.signed_at && permissions.viewFinancials && amendments.length > 0 && project.type !== 'retainer' && (
+                    <a href={`/api/pdf/sow/${currentSow.id}/amended`} target="_blank" className="btn btn-ghost btn-sm" title="Reference copy of the signed SOW as amended by its accepted change orders. The signed SOW itself is unchanged.">
+                      <i className="ti ti-file-diff" style={{ fontSize: 12 }} /> Amended copy
                     </a>
                   )}
                 </div>

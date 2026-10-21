@@ -55,9 +55,15 @@ describe('drafting prompt', () => {
   it('always forbids the model from writing a silence rule', () => {
     expect(approvalSilencePromptBlock(input(null))).toContain('Never state what happens when the Client does not respond')
   })
-  it('pins any review window the model writes to the chosen day count', () => {
-    expect(approvalSilencePromptBlock(input({ mode: 'deemed_approved', days: 2 }))).toContain('exactly 2 business days')
-    expect(approvalSilencePromptBlock(input({ mode: null, days: 4 }))).toContain('exactly 4 business days')
+  it('English: the app states the window itself, so the model is told not to state one', () => {
+    const p = approvalSilencePromptBlock(input({ mode: 'deemed_approved', days: 2 }))
+    expect(p).toContain('Do NOT state a review, feedback or approval window anywhere yourself')
+    expect(p).not.toContain('exactly')
+    expect(approvalSilencePromptBlock(input({ mode: null, days: 4 }))).toContain('Do NOT state a review, feedback or approval window')
+  })
+  it('other languages (no app paragraph is appended) pin any window the model writes to the chosen day count', () => {
+    expect(approvalSilencePromptBlock(input({ mode: 'deemed_approved', days: 2 }, 'fr'))).toContain('exactly 2 business days')
+    expect(approvalSilencePromptBlock(input({ mode: null, days: 4 }, 'es'))).toContain('exactly 4 business days')
     expect(approvalSilencePromptBlock(input({ mode: 'work_waits', days: null }))).not.toContain('exactly')
   })
   it('with no window set, the model must not invent one or leave an undefined "agreed" window', () => {
@@ -99,3 +105,40 @@ describe('other hints', () => {
     expect(read('components/projects/EditProjectModal.tsx')).toContain('printed on the SOW, change orders and invoices your client receives')
   })
 })
+
+describe('the review window is never printed twice (regression: SOW-0014 section 9)', () => {
+  const rule = { mode: 'deemed_approved', days: 5 }
+  const modelText = '<p>The fees include 2 revision rounds across the deliverables.</p>'
+    + '<p>The Client will provide feedback or approval within 5 business days of each review request.</p>'
+    + '<p>Any work beyond the included 2 revision rounds requires a written change order signed by both parties before it begins.</p>'
+
+  it('drops the model\'s own statement of the same window and keeps everything else', () => {
+    const out = ensureApprovalSilenceStated(modelText, input(rule))
+    expect(out.match(/5 business days/g)).toHaveLength(1)
+    expect(out).toContain('Client review.')
+    expect(out).toContain('within 5 business days of the Provider submitting it for review')
+    expect(out).toContain('The fees include 2 revision rounds')
+    expect(out).toContain('requires a written change order')
+    expect(out).not.toContain('feedback or approval within 5 business days of each review request')
+  })
+  it('removes only the matching sentence of a mixed paragraph', () => {
+    const mixed = '<p>Two rounds are included. The Client gives feedback within 5 business days of each request. Further rounds are billed separately.</p>'
+    const out = ensureApprovalSilenceStated(mixed, input(rule))
+    expect(out).toContain('Two rounds are included. Further rounds are billed separately.')
+    expect(out.match(/5 business days/g)).toHaveLength(1)
+  })
+  it('leaves a different number of days, and sentences not about review, untouched', () => {
+    const other = '<p>Invoices are due within 5 business days. Deliverables are reviewed within 3 business days.</p>'
+    expect(ensureApprovalSilenceStated(other, input(rule)).startsWith(other)).toBe(true)
+  })
+  it('does nothing when no rule is chosen, and is idempotent', () => {
+    expect(ensureApprovalSilenceStated(modelText, input(null))).toBe(modelText)
+    const once = ensureApprovalSilenceStated(modelText, input(rule))
+    expect(ensureApprovalSilenceStated(once, input(rule))).toBe(once)
+  })
+  it('a window-only rule (no consequence) is deduplicated the same way', () => {
+    const out = ensureApprovalSilenceStated(modelText, input({ mode: null, days: 5 }))
+    expect(out.match(/5 business days/g)).toHaveLength(1)
+  })
+})
+

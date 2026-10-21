@@ -632,18 +632,46 @@ export function approvalSilenceHtml(input: SowContentInput): string {
   return input.approvalSilence ? `<p><strong>${APPROVAL_SILENCE_LEAD}</strong> ${escapeHtml(approvalSilenceSentence(input.approvalSilence))}</p>` : ''
 }
 
+/**
+ * Remove sentences that merely restate the review window the app is about to state itself.
+ *
+ * The app owns the client-review paragraph ("Client review. The Client will approve or request changes to each deliverable within N
+ * business days ..."). The prompt used to ask the model to state the window "once, in the Revision Policy" while the app then appended
+ * its own paragraph stating it again, so a SOW that chose a review window printed it twice ("The Client will provide feedback or approval
+ * within 5 business days of each review request." followed by the app's paragraph). Only sentences that carry THIS window and are about
+ * review / feedback / approval are dropped; a sentence about anything else (or another number of days) is never touched.
+ */
+export function stripRedundantReviewWindow(html: string, days: number | null | undefined): string {
+  if (!html || !days) return html
+  const windowRe = new RegExp(`\\b${days}\\s+(?:business|working)\\s+days?\\b`, 'i')
+  const aboutReviewRe = /\b(review|feedback|approv\w*|sign[- ]?off|respond\w*|request(?:ed|s)?\s+changes?)\b/i
+  return html.replace(/<p>([\s\S]*?)<\/p>/gi, (whole, inner: string) => {
+    // Only plain paragraphs (an optional bold lead). Anything with other markup is left exactly as written.
+    const body = inner.replace(/^\s*<strong>[\s\S]*?<\/strong>\s*/i, '')
+    if (/<[^>]+>/.test(body)) return whole
+    const lead = inner.slice(0, inner.length - body.length)
+    const sentences = body.split(/(?<=[.!?])\s+(?=[A-Z\u201c"])/)
+    const kept = sentences.filter(sn => !(windowRe.test(sn) && aboutReviewRe.test(sn)))
+    if (kept.length === sentences.length) return whole
+    if (!kept.length) return ''
+    return `<p>${lead}${kept.join(' ')}</p>`
+  })
+}
+
 /** Append the chosen rule to the Revision Policy unless that exact sentence is already there. */
 export function ensureApprovalSilenceStated(revisionsHtml: string, input: SowContentInput): string {
   const clause = approvalSilenceHtml(input)
   if (!clause) return revisionsHtml
   if (norm(revisionsHtml).includes(norm(escapeHtml(approvalSilenceSentence(input.approvalSilence!))))) return revisionsHtml
-  return `${revisionsHtml}${clause}`
+  // The appended paragraph states the review window itself, so the model's own statement of the same window is dropped.
+  return `${stripRedundantReviewWindow(revisionsHtml, input.approvalSilence?.days)}${clause}`
 }
 
 /** Prompt lines: the model never writes what silence means; a chosen review window is stated exactly, and none is invented. */
 export function approvalSilencePromptBlock(input: SowContentInput): string {
   const base = '- Never state what happens when the Client does not respond to a review or approval request (no "deemed approved", "tacit approval" or "work pauses" wording). If the agency wants a rule it is added separately; any you write would contradict it.'
   const days = input.approvalSilence?.days
+  if (days && (!input.language || input.language === 'en')) return `${base}\n- The app adds the Client review paragraph (the ${days} business day review window and what it means) to the Revision Policy itself. Do NOT state a review, feedback or approval window anywhere yourself: not in the Revision Policy, the Roles table, Assumptions or Timeline.`
   if (days) return `${base}\n- Any Client review or approval window you state anywhere must be exactly ${days} business day${days === 1 ? '' : 's'}. It is stated once, in the Revision Policy: do not repeat it in the Roles table, Assumptions or Timeline.`
   return `${base}\n- No standard review window is set. When you mention how long the Client has to review or give feedback, say it is agreed in writing before work begins; never invent a number of days, and never refer to a window "agreed between the parties" without saying how it is agreed. Do not make one section depend on another for this (for example Assumptions must not say feedback is given "within the process described in the Revision Policy"). Say it once, in the Revision Policy only: do not repeat it in the Roles table or in Assumptions.`
 }
@@ -1043,6 +1071,7 @@ Rules:
 - If a deliverable is a website or app, state in Assumptions who is responsible for hosting, domain registration and going live; do not assume the Provider does unless the brief says so.
 - If the out-of-scope brief excludes something only "beyond" a basic level (for example "training beyond basic content updates"), the included basic level must itself appear as a deliverable row or an Assumptions item, naming the system it concerns. Never mention such an activity in Timeline or elsewhere unless it is listed that way.
 - The Revision Policy must say that work beyond the included revision rounds, or outside the listed deliverables, requires a written change order signed by both parties before it begins.
+- State the basis of the revision rounds once, plainly: the included rounds are SHARED across all the deliverables together (the default) unless the brief says they apply to each deliverable. Then define a "revision round" to match: shared rounds are "a single consolidated set of feedback from the Client, which may cover any of the deliverables"; per-deliverable rounds are "on that deliverable". Never mix the two (for example "rounds across the deliverables" followed by a round defined as feedback "on a deliverable").
 - Out of scope section must list every item from the out-of-scope brief as explicit exclusions. Be specific.
 - Revision policy must reference exactly ${input.revisionRounds} revision round(s).
 - Deliverables table rows must cover every item in the deliverables brief above — one row per deliverable, not grouped.
