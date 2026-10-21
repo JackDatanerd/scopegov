@@ -21,7 +21,7 @@ import {
   projectStatusLabel, sowStatusLabel, coStatusLabel, flagStatusLabel,
   PROJECT_TYPE_ICONS, PROJECT_TYPE_LABELS,
 } from '@/lib/utils/format'
-import { useDialogs } from '@/components/ui/Dialogs'
+import { useDialogs, Modal, ModalFooter } from '@/components/ui/Dialogs'
 
 const TABS = [
   { key: 'overview',   label: 'Overview',      icon: 'ti-layout-dashboard' },
@@ -552,26 +552,18 @@ function ScopeAdjustModal({ projectId, deliverable, field = 'deliverables', onCl
   }
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h2 className="modal-title">Adjust {noun}</h2>
-        <p style={{ fontSize: 13, color: 'var(--text-3)', marginBottom: 16 }}>
-          Corrects the scope snapshot directly — for fixing a typo or wording issue, not for adding/removing scope. Real scope changes still go through a change order.
-        </p>
-        <label className="form-label">{isExcluded ? 'Excluded item' : 'Deliverable'}</label>
-        <input className="form-input" value={newValue} onChange={(e) => setNewValue(e.target.value)} style={{ marginBottom: 12 }} />
-        <label className="form-label">Reason for adjustment</label>
-        <textarea className="form-input" rows={2} value={reason} onChange={(e) => setReason(e.target.value)}
-          placeholder="e.g. Fixing a typo from the original SOW draft" />
-        {error && <p style={{ fontSize: 12, color: 'var(--red)', marginTop: 8 }}>{error}</p>}
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
-          <button className="btn btn-ghost btn-sm" onClick={onClose} disabled={busy}>Cancel</button>
-          <button className="btn btn-primary btn-sm" onClick={submit} disabled={busy}>
-            {busy ? <span className="spin" /> : 'Save adjustment'}
-          </button>
-        </div>
-      </div>
-    </div>
+    <Modal
+      title={<>Adjust {noun}</>}
+      subtitle={<>Corrects the scope snapshot directly — for fixing a typo or wording issue, not for adding/removing scope. Real scope changes still go through a change order.</>} size="sm" onClose={onClose} busy={busy}
+      footer={<ModalFooter onCancel={onClose} onConfirm={submit} cancelLabel="Cancel" confirmLabel="Save adjustment" busy={busy} />}
+    >
+      <label className="flbl">{isExcluded ? 'Excluded item' : 'Deliverable'}</label>
+      <input className="finp" value={newValue} onChange={(e) => setNewValue(e.target.value)} style={{ marginBottom: 12 }} />
+      <label className="flbl">Reason for adjustment</label>
+      <textarea className="finp" rows={2} value={reason} onChange={(e) => setReason(e.target.value)}
+        placeholder="e.g. Fixing a typo from the original SOW draft" />
+      {error && <p className="dlg-error" role="alert">{error}</p>}
+    </Modal>
   )
 }
 
@@ -2316,30 +2308,22 @@ function ExceptionModal({ flag, onClose, onSubmit, valueHint }: any) {
   }
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h2 className="modal-title">Grant exception</h2>
-        <p style={{ fontSize: 13, color: 'var(--text-3)', marginBottom: 16 }}>
-          Record what&rsquo;s being given away for free and why — this is the audit trail for scope granted without a change order.
-        </p>
-        <label className="form-label">What&rsquo;s being granted</label>
-        <textarea className="form-input" rows={2} value={grantedWhat} onChange={(e) => setGrantedWhat(e.target.value)}
-          style={{ marginBottom: 12 }} />
-        <label className="form-label">Estimated value <span className="fhint">— optional, {valueHint || 'defaults to $0'}</span></label>
-        <input type="number" min="0" step="0.01" className="form-input" value={estimatedValue}
-          onChange={(e) => setEstimatedValue(e.target.value)} placeholder="0.00" style={{ marginBottom: 12 }} />
-        <label className="form-label">Reason</label>
-        <textarea className="form-input" rows={3} value={exceptionReason} onChange={(e) => setExceptionReason(e.target.value)}
-          placeholder="e.g. Client relationship — one-time goodwill, not worth a CO for $200…" />
-        {error && <p style={{ fontSize: 12, color: 'var(--red)', marginTop: 8 }}>{error}</p>}
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
-          <button className="btn btn-ghost btn-sm" onClick={onClose} disabled={busy}>Cancel</button>
-          <button className="btn btn-primary btn-sm" onClick={submit} disabled={busy || !exceptionReason.trim()}>
-            {busy ? <span className="spin" /> : 'Grant exception'}
-          </button>
-        </div>
-      </div>
-    </div>
+    <Modal
+      title="Grant exception"
+      subtitle={<>Record what&rsquo;s being given away for free and why — this is the audit trail for scope granted without a change order.</>} size="sm" onClose={onClose} busy={busy}
+      footer={<ModalFooter onCancel={onClose} onConfirm={submit} cancelLabel="Cancel" confirmLabel="Grant exception" busy={busy} disabled={!exceptionReason.trim()} />}
+    >
+      <label className="flbl">What&rsquo;s being granted</label>
+      <textarea className="finp" rows={2} value={grantedWhat} onChange={(e) => setGrantedWhat(e.target.value)}
+        style={{ marginBottom: 12 }} />
+      <label className="flbl">Estimated value <span className="fhint">— optional, {valueHint || 'defaults to $0'}</span></label>
+      <input type="number" min="0" step="0.01" className="finp" value={estimatedValue}
+        onChange={(e) => setEstimatedValue(e.target.value)} placeholder="0.00" style={{ marginBottom: 12 }} />
+      <label className="flbl">Reason</label>
+      <textarea className="finp" rows={3} value={exceptionReason} onChange={(e) => setExceptionReason(e.target.value)}
+        placeholder="e.g. Client relationship — one-time goodwill, not worth a CO for $200…" />
+      {error && <p className="dlg-error" role="alert">{error}</p>}
+    </Modal>
   )
 }
 
@@ -2362,32 +2346,24 @@ function EscalateFlagModal({ flag, team, onClose, onSubmit }: any) {
   }
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h2 className="modal-title">Escalate scope flag</h2>
-        <p style={{ fontSize: 13, color: 'var(--text-3)', marginBottom: 16 }}>
-          Flag &ldquo;{flag.sow_reference}&rdquo; for someone to step in. This doesn&rsquo;t change its status — it&rsquo;s just a heads-up.
-        </p>
-        <label className="form-label">Escalate to</label>
-        <select className="form-input" value={escalateTo} onChange={(e) => setEscalateTo(e.target.value)} style={{ marginBottom: 12 }}>
-          <option value="">Myself</option>
-          {(team || []).map((t: any) => {
-            const u = t.workspace_members?.users
-            return u ? <option key={t.workspace_members.id} value={t.workspace_members.id}>{u.name}</option> : null
-          })}
-        </select>
-        <label className="form-label">Why is this being escalated?</label>
-        <textarea className="form-input" rows={3} value={note} onChange={(e) => setNote(e.target.value)}
-          placeholder="e.g. Client is pushing back hard on this being out of scope…" />
-        {error && <p style={{ fontSize: 12, color: 'var(--red)', marginTop: 8 }}>{error}</p>}
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
-          <button className="btn btn-ghost btn-sm" onClick={onClose} disabled={busy}>Cancel</button>
-          <button className="btn btn-primary btn-sm" onClick={submit} disabled={busy}>
-            {busy ? <span className="spin" /> : 'Escalate'}
-          </button>
-        </div>
-      </div>
-    </div>
+    <Modal
+      title="Escalate scope flag"
+      subtitle={<>Flag &ldquo;{flag.sow_reference}&rdquo; for someone to step in. This doesn&rsquo;t change its status — it&rsquo;s just a heads-up.</>} size="sm" onClose={onClose} busy={busy}
+      footer={<ModalFooter onCancel={onClose} onConfirm={submit} cancelLabel="Cancel" confirmLabel="Escalate" busy={busy} />}
+    >
+      <label className="flbl">Escalate to</label>
+      <select className="finp" value={escalateTo} onChange={(e) => setEscalateTo(e.target.value)} style={{ marginBottom: 12 }}>
+        <option value="">Myself</option>
+        {(team || []).map((t: any) => {
+          const u = t.workspace_members?.users
+          return u ? <option key={t.workspace_members.id} value={t.workspace_members.id}>{u.name}</option> : null
+        })}
+      </select>
+      <label className="flbl">Why is this being escalated?</label>
+      <textarea className="finp" rows={3} value={note} onChange={(e) => setNote(e.target.value)}
+        placeholder="e.g. Client is pushing back hard on this being out of scope…" />
+      {error && <p className="dlg-error" role="alert">{error}</p>}
+    </Modal>
   )
 }
 
@@ -2408,24 +2384,16 @@ function CloseFlagModal({ onClose, onSubmit }: any) {
   }
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h2 className="modal-title">Close flag</h2>
-        <p style={{ fontSize: 13, color: 'var(--text-3)', marginBottom: 16 }}>
-          Closes this flag without resolving it or drafting a change order.
-        </p>
-        <label className="form-label">Reason <span className="fhint">— optional</span></label>
-        <textarea className="form-input" rows={3} value={reason} onChange={(e) => setReason(e.target.value)}
-          placeholder="e.g. Superseded by a broader CO covering this and other items…" />
-        {error && <p style={{ fontSize: 12, color: 'var(--red)', marginTop: 8 }}>{error}</p>}
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
-          <button className="btn btn-ghost btn-sm" onClick={onClose} disabled={busy}>Cancel</button>
-          <button className="btn btn-primary btn-sm" onClick={submit} disabled={busy}>
-            {busy ? <span className="spin" /> : 'Close flag'}
-          </button>
-        </div>
-      </div>
-    </div>
+    <Modal
+      title="Close flag"
+      subtitle={<>Closes this flag without resolving it or drafting a change order.</>} size="sm" onClose={onClose} busy={busy}
+      footer={<ModalFooter onCancel={onClose} onConfirm={submit} cancelLabel="Cancel" confirmLabel="Close flag" busy={busy} />}
+    >
+      <label className="flbl">Reason <span className="fhint">— optional</span></label>
+      <textarea className="finp" rows={3} value={reason} onChange={(e) => setReason(e.target.value)}
+        placeholder="e.g. Superseded by a broader CO covering this and other items…" />
+      {error && <p className="dlg-error" role="alert">{error}</p>}
+    </Modal>
   )
 }
 
@@ -2496,32 +2464,24 @@ function EscalateCoModal({ co, team, onClose, onDone }: any) {
   }
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h2 className="modal-title">Escalate change order</h2>
-        <p style={{ fontSize: 13, color: 'var(--text-3)', marginBottom: 16 }}>
-          Flag &ldquo;{co.title}&rdquo; for someone to step in. This doesn&rsquo;t change its status — it&rsquo;s just a heads-up.
-        </p>
-        <label className="form-label">Escalate to</label>
-        <select className="form-input" value={escalateTo} onChange={(e) => setEscalateTo(e.target.value)} style={{ marginBottom: 12 }}>
-          <option value="">Myself</option>
-          {(team || []).map((t: any) => {
-            const u = t.workspace_members?.users
-            return u ? <option key={t.workspace_members.id} value={t.workspace_members.id}>{u.name}</option> : null
-          })}
-        </select>
-        <label className="form-label">Why is this being escalated?</label>
-        <textarea className="form-input" rows={3} value={note} onChange={(e) => setNote(e.target.value)}
-          placeholder="e.g. Client has gone quiet for 2 weeks despite two reminders…" />
-        {error && <p style={{ fontSize: 12, color: 'var(--red)', marginTop: 8 }}>{error}</p>}
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
-          <button className="btn btn-ghost btn-sm" onClick={onClose} disabled={busy}>Cancel</button>
-          <button className="btn btn-primary btn-sm" onClick={submit} disabled={busy}>
-            {busy ? <span className="spin" /> : 'Escalate'}
-          </button>
-        </div>
-      </div>
-    </div>
+    <Modal
+      title="Escalate change order"
+      subtitle={<>Flag &ldquo;{co.title}&rdquo; for someone to step in. This doesn&rsquo;t change its status — it&rsquo;s just a heads-up.</>} size="sm" onClose={onClose} busy={busy}
+      footer={<ModalFooter onCancel={onClose} onConfirm={submit} cancelLabel="Cancel" confirmLabel="Escalate" busy={busy} />}
+    >
+      <label className="flbl">Escalate to</label>
+      <select className="finp" value={escalateTo} onChange={(e) => setEscalateTo(e.target.value)} style={{ marginBottom: 12 }}>
+        <option value="">Myself</option>
+        {(team || []).map((t: any) => {
+          const u = t.workspace_members?.users
+          return u ? <option key={t.workspace_members.id} value={t.workspace_members.id}>{u.name}</option> : null
+        })}
+      </select>
+      <label className="flbl">Why is this being escalated?</label>
+      <textarea className="finp" rows={3} value={note} onChange={(e) => setNote(e.target.value)}
+        placeholder="e.g. Client has gone quiet for 2 weeks despite two reminders…" />
+      {error && <p className="dlg-error" role="alert">{error}</p>}
+    </Modal>
   )
 }
 

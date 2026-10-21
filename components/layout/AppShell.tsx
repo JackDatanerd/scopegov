@@ -56,7 +56,13 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === '\\') { e.preventDefault(); toggle() }
-      else if (e.key === 'Escape' && window.matchMedia(MOBILE_QUERY).matches) setCollapsedState(true)
+      else if (e.key === 'Escape') {
+        // Older modals (.modal-bg + .modal) have no key handling of their own: Esc presses their backdrop, which runs the same close
+        // logic a click would. Shared dialogs (.dlg-layer) handle Esc themselves and stop it before it gets here.
+        const legacy = document.querySelector<HTMLElement>('.modal-bg')
+        if (legacy && !document.querySelector('.dlg-layer')) legacy.click()
+        else if (window.matchMedia(MOBILE_QUERY).matches) setCollapsedState(true)
+      }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)

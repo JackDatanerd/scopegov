@@ -24,7 +24,7 @@ describe('no native browser dialogs ("scopegov.app says")', () => {
     for (const f of files) {
       const src = read(f)
       if (/await dialogs\./.test(src)) {
-        expect(src, f).toContain("import { useDialogs } from '@/components/ui/Dialogs'")
+        expect(src, f).toMatch(/import \{ useDialogs[^}]*\} from '@\/components\/ui\/Dialogs'/)
         expect(src, f).toContain('const dialogs = useDialogs()')
       }
     }
@@ -46,6 +46,22 @@ describe('every class a modal uses has CSS', () => {
   })
   it('dialog styles exist', () => {
     for (const sel of ['.dlg-layer', '.dlg-backdrop', '.dlg-head', '.dlg-body', '.dlg-foot', '.dlg-icon-danger']) expect(css, sel).toContain(sel)
+  })
+})
+
+describe('modals share one look', () => {
+  it('the five ProjectDetail modals that used undefined classes now use the shared shell', () => {
+    const pd = read('components/projects/ProjectDetail.tsx')
+    expect(pd).not.toContain('modal-overlay')
+    expect(pd).not.toContain('className="form-label"')
+    expect(pd).toContain('<ModalFooter onCancel={onClose} onConfirm={submit}')
+    expect(read('components/projects/EditProjectModal.tsx')).toContain('<Modal')
+  })
+  it('older modals get the same panel, motion and phone layout, and Esc closes them', () => {
+    const css = read('styles/globals.css')
+    expect(css).toContain('@keyframes modal-pop')
+    expect(css).toContain('border-radius: 10px; box-shadow: 0 18px 50px')
+    expect(read('components/layout/AppShell.tsx')).toContain("document.querySelector<HTMLElement>('.modal-bg')")
   })
 })
 
