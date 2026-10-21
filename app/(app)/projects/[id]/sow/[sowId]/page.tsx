@@ -4,8 +4,10 @@ import { useParams, useRouter } from 'next/navigation'
 import SowEditor from '@/components/sow/SowEditor'
 import ClientDetailsWarningModal, { type ClientDetailsInfo, type AgencyDetailsInfo } from '@/components/documents/ClientDetailsWarningModal'
 import { sowStatusLabel, sowStatusColour, formatDate } from '@/lib/utils/format'
+import { useDialogs } from '@/components/ui/Dialogs'
 
 export default function SowEditorPage() {
+  const dialogs = useDialogs()
   const params  = useParams()
   const router  = useRouter()
   const sowId   = params.sowId as string
@@ -80,18 +82,18 @@ export default function SowEditorPage() {
       }
       if (res.status === 409 && json.needsAcknowledgement) {
         const list: string[] = Array.isArray(json.warnings) && json.warnings.length ? json.warnings : [json.error]
-        if (!confirm(`${list.join('\n\n')}\n\nSend it anyway?`)) return
+        if (!(await dialogs.confirm({ title: 'Send anyway?', message: 'These are worth a second look before it goes to the client.', items: list, tone: 'warning', confirmLabel: 'Send anyway', cancelLabel: 'Go back and fix' }))) return
         ;({ res, json } = await post(true))
       }
       if (!res.ok) throw new Error(json.error || 'Failed to send')
       if (json.pendingApproval) {
         // Not sent yet: it is waiting on an approval chain, so the document is NOT locked.
-        alert(json.message || 'Sent for approval — the client will be notified once it clears.')
+        await dialogs.alert(json.message || 'Sent for approval — the client will be notified once it clears.')
         router.push(`/projects/${projId}?tab=sow`)
         return
       }
       if (json.emailSent === false) {
-        alert(`The SOW is marked as sent, but the email to the client could not be delivered (${json.emailError || 'provider error'}).\n\nOpen the project's SOW tab and use "Copy signing link" to send it to them yourself.`)
+        await dialogs.alert(`The SOW is marked as sent, but the email to the client could not be delivered (${json.emailError || 'provider error'}).\n\nOpen the project's SOW tab and use "Copy signing link" to send it to them yourself.`)
       }
       setIsLocked(true) // immediate — no reload (carry-forward §3.3)
       router.push(`/projects/${projId}?tab=sow`)
@@ -189,7 +191,7 @@ export default function SowEditorPage() {
             <button
               className="btn btn-ghost btn-sm"
               onClick={async () => {
-                if (!confirm('Withdraw this SOW? The client link will be deactivated.')) return
+                if (!(await dialogs.confirm('Withdraw this SOW? The client link will be deactivated.'))) return
                 setError('')
                 try {
                   const res = await fetch(`/api/sow/${sowId}/withdraw`, { method: 'POST' })

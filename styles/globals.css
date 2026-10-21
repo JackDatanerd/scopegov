@@ -47,6 +47,29 @@ p, h1, h2, h3, h4, h5 { margin: 0; }
 .app { display: flex; height: 100vh; overflow: hidden; }
 .app-main { flex: 1; overflow-y: auto; background: var(--bg); }
 
+/* Collapsible sidebar (components/layout/AppShell.tsx). Collapsed: the sidebar slides away and the page gets the full width. */
+.sb { transition: margin-left .18s ease, visibility 0s linear 0s; }
+.app[data-sidebar="collapsed"] .sb { margin-left: -240px; visibility: hidden; transition: margin-left .18s ease, visibility 0s linear .18s; }
+.app-main { min-width: 0; --sticky-top: 20px; }
+.app[data-sidebar="collapsed"] .app-main { --sticky-top: 52px; } /* clear the reopen bar */
+.sb-toggle {
+  width: 28px; height: 28px; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center;
+  background: none; border: 1px solid transparent; border-radius: var(--radius-sm); color: var(--text-3); cursor: pointer; font-size: 16px;
+}
+.sb-toggle:hover { background: var(--surface-2); color: var(--text); }
+.sb-toggle:focus-visible { outline: 2px solid var(--green); outline-offset: 1px; }
+.sb-reopen-bar {
+  position: sticky; top: 0; z-index: 20; height: 40px; display: flex; align-items: center; gap: 8px; padding: 0 12px;
+  background: var(--bg); border-bottom: 1px solid var(--border);
+}
+.sb-reopen-name { font-family: 'Cormorant Garamond', Georgia, serif; font-size: 16px; font-weight: 600; color: var(--text-2); }
+.sb-backdrop { display: none; }
+@media (max-width: 768px) {
+  /* Phones: the sidebar is an overlay, not a 240px column that squeezes the page. */
+  .sb { position: fixed; left: 0; top: 0; z-index: 900; box-shadow: var(--shadow-md); margin-left: 0; }
+  .app[data-sidebar="expanded"] .sb-backdrop { display: block; position: fixed; inset: 0; z-index: 899; background: rgba(26,26,26,.4); }
+}
+
 /* ── SIDEBAR ─────────────────────────────────────────────────── */
 .sb {
   width: 240px; min-width: 240px;
@@ -206,19 +229,21 @@ p, h1, h2, h3, h4, h5 { margin: 0; }
 .btn-icon:disabled:hover { background: transparent; color: var(--text-3); }
 
 /* ── FORM ────────────────────────────────────────────────────── */
-.flbl { display: block; font-size: 11px; font-weight: 600; letter-spacing: .02em; color: var(--text-2); margin-bottom: 5px; }
+/* .form-label / .form-input / .modal-overlay are aliases: six modals were written with those names, which had no CSS at all, so their
+   labels ran inline with unstyled inputs. The canonical names are .flbl / .finp / .modal-bg. */
+.flbl, .form-label { display: block; font-size: 11px; font-weight: 600; letter-spacing: .02em; color: var(--text-2); margin-bottom: 5px; }
 .fhint { font-weight: 400; color: var(--text-3); }
-.finp {
-  width: 100%; padding: 8px 11px;
+.finp, .form-input {
+  width: 100%; padding: 8px 11px; box-sizing: border-box;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   font-size: 13px; font-family: inherit;
   background: var(--surface); color: var(--text);
   outline: none; transition: border-color .12s, box-shadow .12s;
 }
-.finp:focus { border-color: var(--green); box-shadow: 0 0 0 3px rgba(26,92,58,.08); }
-.finp::placeholder { color: var(--text-4); }
-.finp:disabled { background: var(--surface-2); color: var(--text-3); cursor: not-allowed; }
+.finp:focus, .form-input:focus { border-color: var(--green); box-shadow: 0 0 0 3px rgba(26,92,58,.08); }
+.finp::placeholder, .form-input::placeholder { color: var(--text-4); }
+.finp:disabled, .form-input:disabled { background: var(--surface-2); color: var(--text-3); cursor: not-allowed; }
 .finp.err { border-color: var(--red); }
 .fgrp { margin-bottom: 14px; }
 .ferr { font-size: 11px; color: var(--red); margin-top: 4px; }
@@ -291,7 +316,7 @@ p, h1, h2, h3, h4, h5 { margin: 0; }
 .search-inp { padding-left: 32px !important; }
 
 /* ── MODAL ───────────────────────────────────────────────────── */
-.modal-bg { position: fixed; inset: 0; z-index: 998; background: rgba(26,26,26,.4); backdrop-filter: blur(3px); }
+.modal-bg, .modal-overlay { position: fixed; inset: 0; z-index: 998; background: rgba(26,26,26,.4); backdrop-filter: blur(3px); }
 .modal {
   position: fixed; left: 50%; top: 50%; transform: translate(-50%,-50%);
   z-index: 999; width: 100%; max-width: 480px;
@@ -314,6 +339,41 @@ p, h1, h2, h3, h4, h5 { margin: 0; }
 .modal-title { font-family: 'Cormorant Garamond', Georgia, serif; font-size: 22px; font-weight: 400; margin-bottom: 4px; letter-spacing: -0.01em; }
 .modal-sub { font-size: 12px; color: var(--text-3); margin-bottom: 22px; }
 .modal-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--border); }
+
+/* ── DIALOGS (components/ui/Dialogs.tsx) ─────────────────────────
+   One shell for every dialog: <Modal> and the promise-based confirm / alert / prompt. Replaces the native "scopegov.app says" boxes. */
+.dlg-layer { position: fixed; inset: 0; z-index: 998; display: flex; align-items: center; justify-content: center; padding: 24px; }
+.dlg-layer.dlg-top { z-index: 1100; }
+.dlg-backdrop { position: absolute; inset: 0; background: rgba(26,26,26,.42); backdrop-filter: blur(3px); animation: dlg-fade .14s ease-out; }
+.dlg {
+  position: relative; width: 100%; max-height: calc(100vh - 48px); display: flex; flex-direction: column;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 18px 50px rgba(0,0,0,.22), 0 0 0 1px rgba(0,0,0,.04);
+  animation: dlg-pop .16s cubic-bezier(.2,.8,.3,1);
+}
+.dlg-sm { max-width: 440px; } .dlg-md { max-width: 540px; } .dlg-lg { max-width: 680px; } .dlg-xl { max-width: 860px; }
+.dlg-head { display: flex; align-items: flex-start; gap: 12px; padding: 22px 24px 4px; }
+.dlg-head-text { flex: 1; min-width: 0; }
+.dlg-title { font-family: 'Cormorant Garamond', Georgia, serif; font-size: 22px; font-weight: 500; line-height: 1.25; letter-spacing: -0.01em; color: var(--text); margin: 0; overflow-wrap: anywhere; }
+.dlg-sub { font-size: 12.5px; line-height: 1.5; color: var(--text-3); margin: 4px 0 0; }
+.dlg-x { background: none; border: none; color: var(--text-3); cursor: pointer; width: 28px; height: 28px; border-radius: var(--radius-sm); font-size: 16px; margin: -4px -8px 0 0; }
+.dlg-x:hover { background: var(--surface-2); color: var(--text); }
+.dlg-icon { width: 34px; height: 34px; border-radius: 50%; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; font-size: 18px; margin-top: 1px; }
+.dlg-icon-default, .dlg-icon-info { background: var(--blue-lt); color: var(--blue); }
+.dlg-icon-danger { background: var(--red-lt); color: var(--red); }
+.dlg-icon-warning { background: var(--amber-lt); color: var(--amber); }
+.dlg-icon-success { background: var(--green-lt); color: var(--green); }
+.dlg-body { padding: 10px 24px 6px; overflow-y: auto; font-size: 13.5px; line-height: 1.6; color: var(--text-2); }
+.dlg-body:empty { display: none; }
+.dlg-p { margin: 0 0 10px; overflow-wrap: anywhere; }
+.dlg-list { margin: 0 0 10px; padding-left: 18px; } .dlg-list li { margin-bottom: 6px; }
+.dlg-copy { display: flex; gap: 8px; align-items: center; margin-top: 4px; }
+.dlg-error { font-size: 12px; color: var(--red); margin: 6px 0 0; }
+.dlg-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 14px 24px 20px; margin-top: 8px; }
+.dlg-body + .dlg-foot { border-top: 1px solid var(--border); margin-top: 14px; padding-top: 14px; }
+@keyframes dlg-fade { from { opacity: 0 } to { opacity: 1 } }
+@keyframes dlg-pop { from { opacity: 0; transform: translateY(6px) scale(.985) } to { opacity: 1; transform: none } }
+@media (prefers-reduced-motion: reduce) { .dlg, .dlg-backdrop { animation: none; } }
+@media (max-width: 480px) { .dlg-layer { padding: 12px; align-items: flex-end; } .dlg { max-height: calc(100vh - 24px); } .dlg-head, .dlg-body, .dlg-foot { padding-left: 18px; padding-right: 18px; } }
 
 /* ── AUTH PAGES ──────────────────────────────────────────────── */
 .auth-root {

@@ -1,0 +1,81 @@
+import { describe, it, expect } from 'vitest'
+import { readFileSync, readdirSync, statSync } from 'fs'
+import { join } from 'path'
+
+const root = process.cwd()
+const read = (p: string) => readFileSync(join(root, p), 'utf8')
+function walk(dir: string, out: string[] = []): string[] {
+  for (const f of readdirSync(join(root, dir))) {
+    const rel = join(dir, f)
+    if (statSync(join(root, rel)).isDirectory()) walk(rel, out)
+    else if (/\.tsx?$/.test(f)) out.push(rel)
+  }
+  return out
+}
+
+describe('no native browser dialogs ("scopegov.app says")', () => {
+  const files = [...walk('app'), ...walk('components')].filter(f => !f.endsWith('components/ui/Dialogs.tsx'))
+  it('no component calls window.alert / confirm / prompt', () => {
+    const offenders = files.filter(f => /(^|[^.\w])(window\.)?(alert|confirm|prompt)\(/m.test(
+      read(f).split('\n').filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n')))
+    expect(offenders).toEqual([])
+  })
+  it('every file that uses dialogs gets them from the hook, and the provider is mounted at the root', () => {
+    for (const f of files) {
+      const src = read(f)
+      if (/await dialogs\./.test(src)) {
+        expect(src, f).toContain("import { useDialogs } from '@/components/ui/Dialogs'")
+        expect(src, f).toContain('const dialogs = useDialogs()')
+      }
+    }
+    expect(read('app/layout.tsx')).toContain('<DialogProvider>{children}</DialogProvider>')
+  })
+  it('the native fallback exists only for a missing provider', () => {
+    const d = read('components/ui/Dialogs.tsx')
+    expect(d).toContain('useContext(DialogContext) ?? nativeFallback')
+  })
+  it('a destructive confirm focuses Cancel, not the destructive button', () => {
+    expect(read('components/ui/Dialogs.tsx')).toContain("initialFocusRef={tone === 'danger' ? cancelRef : undefined}")
+  })
+})
+
+describe('every class a modal uses has CSS', () => {
+  const css = read('styles/globals.css')
+  it('the names six modals were written with are defined', () => {
+    for (const sel of ['.form-label', '.form-input', '.modal-overlay']) expect(css, sel).toContain(sel)
+  })
+  it('dialog styles exist', () => {
+    for (const sel of ['.dlg-layer', '.dlg-backdrop', '.dlg-head', '.dlg-body', '.dlg-foot', '.dlg-icon-danger']) expect(css, sel).toContain(sel)
+  })
+})
+
+describe('collapsible sidebar', () => {
+  const shell = read('components/layout/AppShell.tsx')
+  it('is wired into the signed-in layout with a way back when collapsed', () => {
+    const layout = read('app/(app)/layout.tsx')
+    expect(layout).toContain('<AppShell>')
+    expect(layout).toContain('<SidebarReopenBar />')
+    expect(read('components/layout/Sidebar.tsx')).toContain('<SidebarCollapseButton />')
+  })
+  it('remembers the choice, tolerates blocked storage, and keeps a collapsed sidebar out of the tab order', () => {
+    expect(shell).toContain("const STORAGE_KEY = 'sg.sidebar'")
+    expect(shell).toMatch(/catch \{ return null \}/)
+    expect(shell).toContain("toggleAttribute('inert', collapsed)")
+  })
+  it('has a keyboard shortcut and starts closed on a phone', () => {
+    expect(shell).toContain("e.key === '\\\\'")
+    expect(shell).toContain("(max-width: 768px)")
+  })
+  it('collapsed state hides the sidebar and sticky panels clear the reopen bar', () => {
+    const css = read('styles/globals.css')
+    expect(css).toContain('.app[data-sidebar="collapsed"] .sb { margin-left: -240px; visibility: hidden;')
+    expect(css).toContain('--sticky-top: 52px')
+    expect(read('components/co/CoEditor.tsx')).toContain("top: 'var(--sticky-top, 20px)'")
+  })
+})
+
+describe('warnings read cleanly', () => {
+  it('the date-conflict message never ends a quoted sentence with ."', () => {
+    expect(read('lib/sow/date-conflicts.ts')).toContain("sent.trim().replace(/[.\\s]+$/, '')")
+  })
+})

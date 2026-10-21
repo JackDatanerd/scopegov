@@ -11,6 +11,7 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import type { SessionUser } from '@/lib/supabase/types'
 import { initials, avatarColour, formatDate, ALL_PERMISSIONS, PLAN_LIMITS } from '@/lib/utils/format'
 import { roleHolderCounts } from '@/lib/utils/role-holders'
+import { useDialogs } from '@/components/ui/Dialogs'
 
 // FIX (deep audit, section 6 — feature gap): mirrors the exact allowlist
 // api/team/roles POST enforces server-side. Kept as one shared constant
@@ -61,6 +62,7 @@ interface Props {
 }
 
 export default function TeamClient({ members, pendingInvites, expiredInvites = [], deactivatedMembers = [], roles, session, canInvite, canManageRoles, workspaceId, overSeatLimit, seatLimit, assignableRoleIds, roleHolderCounts: roleHolderCountsByRole }: Props) {
+  const dialogs = useDialogs()
   const router  = useRouter()
   const searchParams = useSearchParams()
   // FIX (deep audit, section 5 re-pass): Settings computed a `manageRoles`
@@ -219,7 +221,7 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
 
   async function handleDeactivate(memberId: string, memberName: string) {
     if (busyId) return
-    if (!confirm(`Deactivate ${memberName}? They will lose workspace access immediately. Their project assignments are kept aside and restored if you reactivate them.`)) return
+    if (!(await dialogs.confirm(`Deactivate ${memberName}? They will lose workspace access immediately. Their project assignments are kept aside and restored if you reactivate them.`))) return
     setError(''); setNotice(''); setBusyId(memberId)
     try {
       const res = await fetch(`/api/team/${memberId}`, { method: 'DELETE' })
@@ -236,7 +238,7 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
   // api/team/[id]/reset-mfa/route.ts's own comment for the full case.
   async function handleResetMfa(memberId: string, memberName: string) {
     if (busyId) return
-    if (!confirm(`Reset two-factor authentication for ${memberName}? They'll need to set it up again the next time their role requires it.`)) return
+    if (!(await dialogs.confirm(`Reset two-factor authentication for ${memberName}? They'll need to set it up again the next time their role requires it.`))) return
     setError(''); setNotice(''); setBusyId(memberId)
     try {
       const res = await fetchWithStepUp(`/api/team/${memberId}/reset-mfa`, { method: 'POST' })
@@ -305,7 +307,7 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
 
   async function handleRevokeInvite(memberId: string) {
     if (busyId) return
-    if (!confirm('Revoke this invitation? The link will stop working.')) return
+    if (!(await dialogs.confirm('Revoke this invitation? The link will stop working.'))) return
     setError(''); setBusyId(memberId)
     try {
       const res = await fetch(`/api/team/${memberId}`, { method: 'DELETE' })
@@ -319,7 +321,7 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
 
   async function handleReactivate(memberId: string, memberName: string) {
     if (busyId) return
-    if (!confirm(`Reactivate ${memberName}? They will regain their role and the projects they were assigned to.`)) return
+    if (!(await dialogs.confirm(`Reactivate ${memberName}? They will regain their role and the projects they were assigned to.`))) return
     setError(''); setNotice(''); setBusyId(memberId)
     try {
       const res = await fetch(`/api/team/${memberId}`, {
@@ -429,7 +431,7 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
   // than two separate calls); this is the UI action for it.
   async function handleSetDefaultRole(roleId: string, roleName: string) {
     if (busyId) return
-    if (!confirm(`Make "${roleName}" the default role? New members and invites with no role selected will get this role's permissions.`)) return
+    if (!(await dialogs.confirm(`Make "${roleName}" the default role? New members and invites with no role selected will get this role's permissions.`))) return
     setError(''); setNotice(''); setBusyId(roleId)
     try {
       const res = await fetch(`/api/team/roles/${roleId}`, {
@@ -448,7 +450,7 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
   // FIX (deep audit, section 6): roles could be created but never deleted.
   async function handleDeleteRole(roleId: string, roleName: string) {
     if (busyId) return
-    if (!confirm(`Delete the "${roleName}" role? This can't be undone.`)) return
+    if (!(await dialogs.confirm(`Delete the "${roleName}" role? This can't be undone.`))) return
     setError(''); setNotice(''); setBusyId(roleId)
     try {
       const res = await fetch(`/api/team/roles/${roleId}`, { method: 'DELETE' })

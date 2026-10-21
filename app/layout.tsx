@@ -16,6 +16,7 @@ import '@fontsource/ibm-plex-mono/400.css'
 import '@fontsource/ibm-plex-mono/500.css'
 import '@tabler/icons-webfont/dist/tabler-icons.min.css'
 import '@/styles/globals.css'
+import { DialogProvider } from '@/components/ui/Dialogs'
 
 export const metadata: Metadata = {
   metadataBase: new URL('https://www.scopegov.app'),
@@ -66,7 +67,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             by the Billing tab (components/settings/SettingsClient.tsx), so public client
             portals and every other page stop blocking on a third-party script. */}
       </head>
-      <body>{children}</body>
+      <body><DialogProvider>{children}</DialogProvider></body>
     </html>
   )
 }

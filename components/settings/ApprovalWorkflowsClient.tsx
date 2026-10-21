@@ -9,6 +9,7 @@ import { formatCurrency } from '@/lib/utils/format'
 // currency picker). A CAD/AUD workspace could never configure a value-
 // threshold workflow that actually matches its own documents' currency.
 import { CURRENCIES } from '@/lib/constants/workspace-options'
+import { useDialogs } from '@/components/ui/Dialogs'
 
 interface Role { id: string; name: string; canApprove: boolean }
 interface Member { id: string; name: string; email: string; roleId: string | null; canApprove: boolean }
@@ -64,6 +65,7 @@ function newStep(): StepDraft {
 export default function ApprovalWorkflowsClient({ initialWorkflows, roles, members, workspaceCurrency, projectCurrencies = [], workspaceId }: {
   initialWorkflows: Workflow[]; roles: Role[]; members: Member[]; workspaceCurrency?: string; projectCurrencies?: string[]; workspaceId?: string
 }) {
+  const dialogs = useDialogs()
   const router = useRouter()
   const [workflows, setWorkflows] = useState<Workflow[]>(initialWorkflows)
   // router.refresh() re-renders the server page with fresh data but keeps this
@@ -92,7 +94,7 @@ export default function ApprovalWorkflowsClient({ initialWorkflows, roles, membe
   }
 
   async function remove(w: Workflow) {
-    if (!confirm(`Remove "${w.name}"? If it has approval history it will be deactivated instead of deleted.`)) return
+    if (!(await dialogs.confirm(`Remove "${w.name}"? If it has approval history it will be deactivated instead of deleted.`))) return
     setBusyId(w.id); setError('')
     try {
       const res = await fetch(`/api/approval-workflows/${w.id}`, { method: 'DELETE' })

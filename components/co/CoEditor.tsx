@@ -9,6 +9,7 @@ import { withCurrentRateLine, withoutCurrentRateLine } from '@/lib/documents/co-
 import { roundCurrency } from '@/lib/utils/format'
 import ClientDetailsWarningModal, { type ClientDetailsInfo, type AgencyDetailsInfo } from '@/components/documents/ClientDetailsWarningModal'
 import { MAX_UPLOAD_BYTES, MAX_UPLOAD_LABEL } from '@/lib/utils/upload-limits'
+import { useDialogs } from '@/components/ui/Dialogs'
 
 // `kind: 'adjustment'` marks a system-written negotiation line ("Negotiated discount…") from an accepted
 // counter-offer: it may be negative, and its quantity is fixed at 1.
@@ -20,6 +21,7 @@ interface Props {
 }
 
 export default function CoEditor({ projId, coId }: Props) {
+  const dialogs = useDialogs()
   const router = useRouter()
 
   const [loading,      setLoading]      = useState(!!coId)
@@ -459,9 +461,9 @@ export default function CoEditor({ projId, coId }: Props) {
         return
       }
       if (!res.ok) throw new Error(json.error || 'Send failed')
-      if (json.pendingApproval) alert(json.message || 'Sent for approval — this change order will go to the client once it is signed off.')
+      if (json.pendingApproval) await dialogs.alert(json.message || 'Sent for approval — this change order will go to the client once it is signed off.')
       else if (json.emailSent === false)
-        alert(`The change order is marked as sent, but the email to the client could not be delivered (${json.emailError || 'provider error'}).\n\nOpen the project's Change orders tab and use "Copy link" to send it to them yourself.`)
+        await dialogs.alert(`The change order is marked as sent, but the email to the client could not be delivered (${json.emailError || 'provider error'}).\n\nOpen the project's Change orders tab and use "Copy link" to send it to them yourself.`)
       router.push(`/projects/${projId}?tab=co`)
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Send failed')
@@ -482,7 +484,7 @@ export default function CoEditor({ projId, coId }: Props) {
     if (!aiText.trim()) { setAiError('Describe what the client is asking for first.'); return }
     // The draft REPLACES the title, note and every line item. Priced rows were silently reset to 0.
     const hasWork = title.trim() || note.trim() || scopeImpactNote.trim() || timelineImpactDays.trim() || lineItems.some(l => l.description.trim() || l.rate > 0)
-    if (hasWork && !confirm('AI drafting will replace your current title, notes, impact analysis and line items (rates reset to 0). Continue?')) return
+    if (hasWork && !(await dialogs.confirm('AI drafting will replace your current title, notes, impact analysis and line items (rates reset to 0). Continue?'))) return
     setAiDrafting(true); setAiError('')
     try {
       const res  = await fetch('/api/co/draft', {
@@ -870,7 +872,7 @@ export default function CoEditor({ projId, coId }: Props) {
 
       {/* ── Right: summary card ── */}
       <div style={{ paddingTop: 50 }}>
-        <div className="surface surface-p" style={{ position: 'sticky', top: 20 }}>
+        <div className="surface surface-p" style={{ position: 'sticky', top: 'var(--sticky-top, 20px)' }}>
           <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--text-3)', marginBottom: 12 }}>
             Summary
           </div>

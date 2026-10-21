@@ -32,6 +32,7 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { normalizeSearchText } from '@/lib/search/query'
+import { useDialogs } from '@/components/ui/Dialogs'
 
 interface Other { id: string; name: string; email: string | null; status: string | null }
 
@@ -43,6 +44,7 @@ export default function ClientDangerZone({
   clientId: string; clientName: string; visibleProjectCount: number; totalProjectCount: number
   canMerge: boolean; canDelete: boolean; canSeeAllProjects?: boolean
 }) {
+  const dialogs = useDialogs()
   const router = useRouter()
   const [merging, setMerging] = useState(false)
   const [targetId, setTargetId] = useState('')
@@ -83,9 +85,9 @@ export default function ClientDangerZone({
   async function doMerge() {
     const target = (others || []).find(o => o.id === targetId)
     if (!target) return
-    if (!window.confirm(
+    if (!(await dialogs.confirm(
       `Merge “${clientName}” into “${target.name}”?\n\nAll of ${clientName}'s projects, and as many of its contacts and CC addresses as fit under ${target.name}'s limits, move to ${target.name}; ${clientName} is then removed. ${target.name}'s own details always win — ${clientName}'s billing address, VAT number, phone, timezone, payment terms, company and notes are only copied across where ${target.name} has none. ${target.status === 'archived' ? `${target.name} is archived — it will be reactivated if any of these projects are still in progress. ` : ''}This can't be undone.`,
-    )) return
+    ))) return
     setBusy('merge'); setError('')
     try {
       const res = await fetch(`/api/clients/${clientId}/merge`, {
@@ -118,7 +120,7 @@ export default function ClientDangerZone({
       if (json.notes_truncated === true) {
         warnings.push(`${target.name}'s notes were too long to hold all of ${clientName}'s notes, so the end of them was cut off.`)
       }
-      if (warnings.length > 0) window.alert(`Merged. ${warnings.join(' ')}`)
+      if (warnings.length > 0) await dialogs.alert(`Merged. ${warnings.join(' ')}`)
       router.push(`/clients/${targetId}`)
       router.refresh()
     } catch (e) {
@@ -128,7 +130,7 @@ export default function ClientDangerZone({
   }
 
   async function doDelete() {
-    if (!window.confirm(`Delete “${clientName}” permanently? This can't be undone.`)) return
+    if (!(await dialogs.confirm(`Delete “${clientName}” permanently? This can't be undone.`))) return
     setBusy('delete'); setError('')
     try {
       const res = await fetch(`/api/clients/${clientId}`, { method: 'DELETE' })

@@ -61,7 +61,7 @@ export function findClientDateConflicts(
       if (!sd.length || sd.includes(rowDates[0])) continue
       if (![...keywords(sent)].some(w => kw.has(w))) continue
       const title = String(row.deliverable ?? '').replace(/\s+/g, ' ').trim()
-      messages.push(`The Deliverables table gives "${title}" one Client date (${String(row.targetDate).trim()}), but Assumptions give a different date for related work: "${sent.replace(/\.$/, '')}". Give each client-supplied item its own row and one date, the same in both places.`)
+      messages.push(`The Deliverables table gives "${title}" one Client date (${String(row.targetDate).trim()}), but Assumptions give a different date for related work: "${sent.trim().replace(/[.\s]+$/, '')}". Give each client-supplied item its own row and one date, the same in both places.`)
     }
   }
   return Array.from(new Set(messages))

@@ -4,10 +4,12 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { notificationHref, timeAgo, announceNotificationsChanged, notificationsChangedSource, NOTIFICATIONS_CHANGED_EVENT, type AppNotification } from '@/lib/utils/notification-links'
+import { useDialogs } from '@/components/ui/Dialogs'
 
 type Filter = 'all' | 'unread'
 
 export default function NotificationsClient() {
+  const dialogs = useDialogs()
   const router = useRouter()
   const [items, setItems] = useState<AppNotification[]>([])
   const [filter, setFilter] = useState<Filter>('all')
@@ -118,7 +120,7 @@ export default function NotificationsClient() {
   }
 
   async function clearRead() {
-    if (!confirm('Delete all notifications you have already read? This cannot be undone.')) return
+    if (!(await dialogs.confirm('Delete all notifications you have already read? This cannot be undone.'))) return
     setError('')
     try { await call('DELETE', { allRead: true }); await reload(filter) }
     catch (e: unknown) { setError(e instanceof Error ? e.message : 'Could not clear notifications') }

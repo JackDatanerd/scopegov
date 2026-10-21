@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import type { SessionUser } from '@/lib/supabase/types'
 import { formatCurrencyExact, formatRelative } from '@/lib/utils/format'
+import { useDialogs } from '@/components/ui/Dialogs'
 
 interface Step {
   id: string
@@ -138,6 +139,7 @@ const TYPE_OPTIONS: Array<{ value: string; label: string }> = [
 export default function ApprovalsClient({ session, canViewAll, canManageWorkflows, canApprove }: {
   session: SessionUser; canViewAll: boolean; canManageWorkflows: boolean; canApprove: boolean
 }) {
+  const dialogs = useDialogs()
   const searchParams = useSearchParams()
   const highlight = searchParams.get('highlight')
 
@@ -232,7 +234,7 @@ export default function ApprovalsClient({ session, canViewAll, canManageWorkflow
       if (!res.ok) throw new Error(json.error || (action === 'retry-send' ? 'Retry failed' : 'Could not cancel'))
       // FIX (section-11 pass 1, B3): the banner's Retry send used to drop this — the retry worked but the
       // client email bounced, and the banner simply vanished. Same alert the detail modal raises.
-      if (action === 'retry-send' && json.deliveryWarning) alert(json.deliveryWarning)
+      if (action === 'retry-send' && json.deliveryWarning) await dialogs.alert(json.deliveryWarning)
       await Promise.all([load(tab), loadNeedsRetry(), loadMineCount()])
       window.dispatchEvent(new Event('scopegov:approvals-changed'))
     } catch (err) {
@@ -320,8 +322,8 @@ export default function ApprovalsClient({ session, canViewAll, canManageWorkflow
                 <div style={{ display: 'flex', gap: 8 }}>
                   {/* FIX (section-11 audit, pass 2): a send-failed request could be retried
                       but never abandoned — and the document stayed edit-locked meanwhile. */}
-                  <button className="btn btn-ghost btn-sm" onClick={() => {
-                    if (confirm(cancelConfirmMessage(r.document_type, true))) post(r.id, 'cancel')
+                  <button className="btn btn-ghost btn-sm" onClick={async () => {
+                    if (await dialogs.confirm(cancelConfirmMessage(r.document_type, true))) post(r.id, 'cancel')
                   }} disabled={busyId === r.id}>
                     Cancel request
                   </button>
@@ -436,6 +438,7 @@ function ApprovalDetailModal({ request, session, canManageWorkflows, onClose, on
   onClose: () => void
   onDone: () => void
 }) {
+  const dialogs = useDialogs()
   const [acting, setActing]   = useState<'approve' | 'reject' | 'cancel' | 'retry-send' | 'reassign' | null>(null)
   const [note, setNote]       = useState('')
   const [showReject, setShowReject] = useState(false)
@@ -473,9 +476,9 @@ function ApprovalDetailModal({ request, session, canManageWorkflows, onClose, on
       // FEATURE (section-11 audit, pass 1 — G2): the final approval runs the send inside this request. If it
       // failed, the approver used to see the modal simply close and reasonably assume the document went out.
       if (action === 'approve' && json.status === 'approved' && json.autoSent === false)
-        alert(`Approved — but it could not be sent automatically${json.sendFailedReason ? ` (${json.sendFailedReason})` : ''}. The requester has been notified and can retry from Approvals; no re-approval is needed.`)
-      else if (action === 'approve' && json.deliveryWarning) alert(json.deliveryWarning)
-      if (action === 'retry-send' && json.deliveryWarning) alert(json.deliveryWarning)
+        await dialogs.alert(`Approved — but it could not be sent automatically${json.sendFailedReason ? ` (${json.sendFailedReason})` : ''}. The requester has been notified and can retry from Approvals; no re-approval is needed.`)
+      else if (action === 'approve' && json.deliveryWarning) await dialogs.alert(json.deliveryWarning)
+      if (action === 'retry-send' && json.deliveryWarning) await dialogs.alert(json.deliveryWarning)
       onDone()
     } catch (err) {
       setError(err instanceof Error ? err.message : `Failed to ${action}`)
@@ -684,8 +687,8 @@ function ApprovalDetailModal({ request, session, canManageWorkflows, onClose, on
               // all. Every other cancel entry point in the app (the send-failed banner above,
               // BillingTab's void/delete) confirms first. Confirm unconditionally now, with
               // wording that matches whichever state this actually is.
-              <button className="btn btn-ghost" onClick={() => {
-                if (confirm(cancelConfirmMessage(request.document_type, sendFailed))) act('cancel')
+              <button className="btn btn-ghost" onClick={async () => {
+                if (await dialogs.confirm(cancelConfirmMessage(request.document_type, sendFailed))) act('cancel')
               }} disabled={!!acting}>
                 {acting === 'cancel' ? <span className="spin" /> : 'Cancel request'}
               </button>

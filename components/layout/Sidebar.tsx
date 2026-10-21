@@ -7,6 +7,8 @@ import type { SessionUser } from '@/lib/supabase/types'
 import { PLAN_LABELS, initials, avatarColour } from '@/lib/utils/format'
 import { trialBarPercent } from '@/lib/billing/plans'
 import NotificationBell from './NotificationBell'
+import { SidebarCollapseButton } from './AppShell'
+import { useDialogs } from '@/components/ui/Dialogs'
 
 const NAV_ITEMS = [
   { href: '/dashboard', icon: 'ti-layout-dashboard', label: 'Dashboard' },
@@ -41,6 +43,7 @@ type WorkspaceOption = {
 }
 
 export default function Sidebar({ session }: { session: SessionUser }) {
+  const dialogs = useDialogs()
   const pathname = usePathname()
   const router   = useRouter()
   const supabase = createClient()
@@ -229,14 +232,14 @@ export default function Sidebar({ session }: { session: SessionUser }) {
       // nothing at all — the spinner cleared and the menu just sat there. Say so, and drop the
       // stale entry's ambiguity by telling them to reload.
       const json = await res.json().catch(() => ({}))
-      alert(json.error || 'Could not switch to that workspace. Reload the page and try again.')
+      await dialogs.alert(json.error || 'Could not switch to that workspace. Reload the page and try again.')
     } catch {
-      alert('Could not reach the server to switch workspaces. Check your connection and try again.')
+      await dialogs.alert('Could not reach the server to switch workspaces. Check your connection and try again.')
     } finally { setSwitching(false) }
   }
 
   async function restoreWorkspace(workspaceId: string, name: string) {
-    if (!confirm(`Restore "${name}"? It'll come back exactly as it was when it was deleted.`)) return
+    if (!(await dialogs.confirm(`Restore "${name}"? It'll come back exactly as it was when it was deleted.`))) return
     setRestoringId(workspaceId)
     try {
       const res  = await fetch('/api/workspace/restore', {
@@ -244,18 +247,18 @@ export default function Sidebar({ session }: { session: SessionUser }) {
         body: JSON.stringify({ workspaceId }),
       })
       const json = await res.json().catch(() => ({}))
-      if (!res.ok) { alert(json.error || 'Could not restore that workspace.'); return }
+      if (!res.ok) { await dialogs.alert(json.error || 'Could not restore that workspace.'); return }
       // Full reload, same reasoning as switchWorkspace above — every
       // server component reading session data off active_workspace_id
       // needs to see the newly-restored workspace.
       window.location.href = '/dashboard'
     } catch {
-      alert('Could not reach the server to restore that workspace. Check your connection and try again.')
+      await dialogs.alert('Could not reach the server to restore that workspace. Check your connection and try again.')
     } finally { setRestoringId(null) }
   }
 
   async function leaveWorkspace(workspaceId: string, name: string) {
-    if (!confirm(`Leave "${name}"? You'll need a new invite to rejoin.`)) return
+    if (!(await dialogs.confirm(`Leave "${name}"? You'll need a new invite to rejoin.`))) return
     setLeavingId(workspaceId)
     try {
       const res  = await fetch('/api/workspace/leave', {
@@ -264,10 +267,10 @@ export default function Sidebar({ session }: { session: SessionUser }) {
       })
       // .catch: a gateway error page (502/504) isn't JSON and made this throw with no feedback.
       const json = await res.json().catch(() => ({}))
-      if (!res.ok) { alert(json.error || 'Could not leave that workspace.'); return }
+      if (!res.ok) { await dialogs.alert(json.error || 'Could not leave that workspace.'); return }
       setWorkspaces(prev => prev.filter(w => w.id !== workspaceId))
     } catch {
-      alert('Could not reach the server to leave that workspace. Check your connection and try again.')
+      await dialogs.alert('Could not reach the server to leave that workspace. Check your connection and try again.')
     } finally { setLeavingId(null) }
   }
 
@@ -290,7 +293,10 @@ export default function Sidebar({ session }: { session: SessionUser }) {
             )}
             <span className="sb-name">ScopeGov</span>
           </div>
-          <NotificationBell />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+            <NotificationBell />
+            <SidebarCollapseButton />
+          </div>
         </div>
         <button
           onClick={openSwitcher}

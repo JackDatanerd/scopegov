@@ -8,6 +8,7 @@
 'use client'
 import { useState, useEffect, useRef } from 'react'
 import { formatRelative } from '@/lib/utils/format'
+import { useDialogs } from '@/components/ui/Dialogs'
 
 interface Comment {
   id: string; body: string; createdAt: string
@@ -41,6 +42,7 @@ const NETWORK_ERROR = 'Could not reach the server. Check your connection and try
 export default function FlagCollaboration({
   entityType, entityId, canWrite,
 }: { entityType: 'flag' | 'exception'; entityId: string; canWrite: boolean }) {
+  const dialogs = useDialogs()
   const [open, setOpen] = useState(false)
   const [loaded, setLoaded] = useState(false)
   const [loadFailed, setLoadFailed] = useState(false)
@@ -126,7 +128,7 @@ export default function FlagCollaboration({
   // GRANT_EXCEPTIONS), enforced again server-side.
   const [deletingId, setDeletingId] = useState<string | null>(null)
   async function deleteAttachment(id: string) {
-    if (!confirm('Remove this attachment? This cannot be undone.')) return
+    if (!(await dialogs.confirm('Remove this attachment? This cannot be undone.'))) return
     setDeletingId(id); setError('')
     try {
       const res = await fetch(`${base}/attachments/${id}`, { method: 'DELETE' })

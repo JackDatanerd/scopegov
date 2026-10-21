@@ -21,6 +21,7 @@ import {
   projectStatusLabel, sowStatusLabel, coStatusLabel, flagStatusLabel,
   PROJECT_TYPE_ICONS, PROJECT_TYPE_LABELS,
 } from '@/lib/utils/format'
+import { useDialogs } from '@/components/ui/Dialogs'
 
 const TABS = [
   { key: 'overview',   label: 'Overview',      icon: 'ti-layout-dashboard' },
@@ -112,6 +113,7 @@ export default function ProjectDetail({
   effectiveContractValue: effectiveContractValueProp, baseContractValue: baseContractValueProp, amendmentImpact: amendmentImpactProp, initialTab, permissions, pendingApprovals = {}, session,
   defaultPaymentInstructions = '', billingDefaults,
 }: Props) {
+  const dialogs = useDialogs()
   const router = useRouter()
   // FIX (Projects & Dashboard independent pass 6 — B3): `initialTab` is the raw ?tab= value. The urlTab effect below only
   // accepts known keys, but this seed did not, so /projects/<id>?tab=foo (a hand-edited or stale link) left no tab active and
@@ -161,7 +163,7 @@ export default function ProjectDetail({
     && !(project.sow_documents || []).some((s: any) => s.status === 'signed')
 
   async function handleDelete() {
-    if (!confirm(`Delete "${project.name}"? This can't be undone.`)) return
+    if (!(await dialogs.confirm(`Delete "${project.name}"? This can't be undone.`))) return
     setDeleting(true); setError('')
     try {
       const res = await fetch(`/api/projects/${project.id}`, { method: 'DELETE' })
@@ -232,7 +234,7 @@ export default function ProjectDetail({
   }
 
   async function handleArchive() {
-    if (!confirm(`Archive "${project.name}"? It'll be hidden from active project views but stays fully accessible from a direct link.`)) return
+    if (!(await dialogs.confirm(`Archive "${project.name}"? It'll be hidden from active project views but stays fully accessible from a direct link.`))) return
     setArchiving(true); setError('')
     try {
       const res = await fetch(`/api/projects/${project.id}/archive`, { method: 'POST' })
@@ -266,7 +268,7 @@ export default function ProjectDetail({
     const msg = next === 'Stalled'
       ? `Pause "${project.name}"? Forwarded client emails are not checked by Guardian while it's paused (you can still check content by hand from the Guardian tab), and the project shows as paused.`
       : `Resume "${project.name}"? Guardian starts checking forwarded client emails again — anything received while paused is not back-checked.`
-    if (!confirm(msg)) return
+    if (!(await dialogs.confirm(msg))) return
     setPausing(true); setError('')
     try {
       const res = await fetch(`/api/projects/${project.id}`, {
@@ -281,7 +283,7 @@ export default function ProjectDetail({
   }
 
   async function handleReopen() {
-    if (!confirm(`Reopen "${project.name}"? It returns to Active and Guardian monitoring restarts. Flags that were auto-closed at completion stay closed.`)) return
+    if (!(await dialogs.confirm(`Reopen "${project.name}"? It returns to Active and Guardian monitoring restarts. Flags that were auto-closed at completion stay closed.`))) return
     setReopening(true); setError('')
     try {
       const res = await fetch(`/api/projects/${project.id}/reopen`, { method: 'POST' })
@@ -298,7 +300,7 @@ export default function ProjectDetail({
     // FIX (Projects & Dashboard deep audit — bug): every other lifecycle action in this
     // header (Delete, Archive, Pause/Resume, Reopen) confirms before firing; this one
     // fired the POST straight from the click. Mirrors handleArchive/handleReopen's shape.
-    if (!confirm(`Unarchive "${project.name}"? It returns to Complete and reappears in active project views.`)) return
+    if (!(await dialogs.confirm(`Unarchive "${project.name}"? It returns to Complete and reappears in active project views.`))) return
     setUnarchiving(true); setError('')
     try {
       const res = await fetch(`/api/projects/${project.id}/unarchive`, { method: 'POST' })
@@ -801,6 +803,7 @@ function MilestonePill({ status }: { status: string }) {
 
 // ── SOW TAB ───────────────────────────────────────────────────
 function SowTab({ project, sows, amendments, permissions, router, pendingApprovals }: any) {
+  const dialogs = useDialogs()
   const [sending, setSending] = useState(false)
   const [error,   setError]   = useState('')
   const [sentForApproval, setSentForApproval] = useState(false)
@@ -818,7 +821,7 @@ function SowTab({ project, sows, amendments, permissions, router, pendingApprova
       const json = await res.json().catch(() => ({} as any))
       if (!res.ok) throw new Error(json.error || 'Retry failed')
       // Approved and sent, but the mail provider rejected the client email.
-      if (json.deliveryWarning) alert(json.deliveryWarning)
+      if (json.deliveryWarning) await dialogs.alert(json.deliveryWarning)
       // FIX (section-11 audit, pass 1 — B3): a successful retry clears the request's send-failed flag, so the
       // sidebar badge's red "needs a retry" count has to drop now — it only refetches on navigation or this event.
       window.dispatchEvent(new Event('scopegov:approvals-changed'))
@@ -832,7 +835,7 @@ function SowTab({ project, sows, amendments, permissions, router, pendingApprova
   // CO or invoice a SOW has no delete/void route to get out. Cancelling the request
   // makes it an ordinary editable draft again (sending it afterwards needs a new approval).
   async function handleCancelApproval(approvalRequestId: string) {
-    if (!confirm('Cancel this approved request? The SOW goes back to being an editable draft, and sending it again will need a fresh approval.')) return
+    if (!(await dialogs.confirm('Cancel this approved request? The SOW goes back to being an editable draft, and sending it again will need a fresh approval.'))) return
     setRetrying(true); setError('')
     try {
       const res  = await fetch(`/api/approvals/${approvalRequestId}/cancel`, { method: 'POST' })
@@ -878,7 +881,7 @@ function SowTab({ project, sows, amendments, permissions, router, pendingApprova
       // Soft warnings (e.g. Payment Terms text doesn't state the contract value) need a human "yes".
       if (res.status === 409 && json.needsAcknowledgement) {
         const list: string[] = Array.isArray(json.warnings) && json.warnings.length ? json.warnings : [json.error]
-        if (!confirm(`${list.join('\n\n')}\n\nSend it anyway?`)) return
+        if (!(await dialogs.confirm({ title: 'Send anyway?', message: 'These are worth a second look before it goes to the client.', items: list, tone: 'warning', confirmLabel: 'Send anyway', cancelLabel: 'Go back and fix' }))) return
         ;({ res, json } = await post(true))
       }
       if (!res.ok) throw new Error(json.error || 'Failed to send')
@@ -900,7 +903,7 @@ function SowTab({ project, sows, amendments, permissions, router, pendingApprova
       const json = await res.json().catch(() => ({} as any))
       if (!res.ok) throw new Error(json.error || 'Could not get the signing link')
       try { await navigator.clipboard.writeText(json.portalUrl); setNotice('Signing link copied to your clipboard.') }
-      catch { window.prompt('Copy this signing link:', json.portalUrl) }
+      catch { await dialogs.alert({ title: 'Copy the signing link', message: 'Your browser blocked automatic copying. Copy the link below.', tone: 'info', copyValue: json.portalUrl }) }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Could not get the signing link')
     }
@@ -915,14 +918,14 @@ function SowTab({ project, sows, amendments, permissions, router, pendingApprova
   // top of it) and the version-history list only ever offered View/PDF.
   const [withdrawingId, setWithdrawingId] = useState<string | null>(null)
   async function handleWithdraw(sowId: string = currentSow.id) {
-    if (!confirm('Withdraw this SOW? The client link will be deactivated.')) return
+    if (!(await dialogs.confirm('Withdraw this SOW? The client link will be deactivated.'))) return
     setError(''); setWithdrawingId(sowId)
     try {
       const res  = await fetch(`/api/sow/${sowId}/withdraw`, { method: 'POST' })
       const json = await res.json().catch(() => ({}))
       if (!res.ok) { setError(json.error || 'Failed to withdraw'); return }
       if (json.clientNotified === false)
-        alert('The SOW is withdrawn, but the notification email to the client was not sent (the address may be rejected, or your own email is not verified yet). You may want to let them know directly.')
+        await dialogs.alert('The SOW is withdrawn, but the notification email to the client was not sent (the address may be rejected, or your own email is not verified yet). You may want to let them know directly.')
       router.refresh()
     } catch {
       setError('Failed to withdraw')
@@ -2526,6 +2529,7 @@ function EscalateCoModal({ co, team, onClose, onDone }: any) {
 const ESCALATE_BLOCKED_STATUSES = ['draft', 'accepted', 'closed', 'withdrawn', 'exception_granted', 'expired']
 
 function CoCard({ co, currency, permissions, projectId, pendingApproval, team }: any) {
+  const dialogs = useDialogs()
   const router = useRouter()
   const [acting, setActing] = useState(false)
   const [reminded, setReminded] = useState(false)
@@ -2558,7 +2562,7 @@ function CoCard({ co, currency, permissions, projectId, pendingApproval, team }:
       const res  = await fetch(`/api/approvals/${approvalRequestId}/retry-send`, { method: 'POST' })
       const json = await res.json().catch(() => ({}))
       if (!res.ok) { setActionError(json?.error || 'Retry failed'); return }
-      if (json?.deliveryWarning) alert(json.deliveryWarning)
+      if (json?.deliveryWarning) await dialogs.alert(json.deliveryWarning)
       // FIX (section-11 audit, pass 1 — B3): see SowTab.handleRetrySend.
       window.dispatchEvent(new Event('scopegov:approvals-changed'))
       router.refresh()
@@ -2571,9 +2575,9 @@ function CoCard({ co, currency, permissions, projectId, pendingApproval, team }:
     // FIX (section-11 audit, B6): a counter-offer approval leaves the CO in 'countered', not 'draft' — the
     // "back to an editable draft" wording was wrong for it.
     const isCounter = co.status === 'countered'
-    if (!confirm(isCounter
+    if (!(await dialogs.confirm(isCounter
       ? 'Cancel this approved request? The counter-offer stays open for you to accept or counter back, and accepting it will need a fresh approval.'
-      : 'Cancel this approved request? The document goes back to being an editable draft, and sending it again will need a fresh approval.')) return
+      : 'Cancel this approved request? The document goes back to being an editable draft, and sending it again will need a fresh approval.'))) return
     setRetrying(true); setActionError('')
     try {
       const res  = await fetch(`/api/approvals/${approvalRequestId}/cancel`, { method: 'POST' })
@@ -2592,7 +2596,7 @@ function CoCard({ co, currency, permissions, projectId, pendingApproval, team }:
       const json = await res.json().catch(() => ({}))
       if (!res.ok) { setActionError(json?.error || 'That action failed. Please try again.'); return }
       if (json?.pendingApproval) {
-        alert(action === 'accept-counter'
+        await dialogs.alert(action === 'accept-counter'
           ? 'Sent for approval — the client will be asked to countersign the negotiated amount once it\u2019s signed off.'
           : 'Sent for approval — this CO will go to the client automatically once it\u2019s signed off.')
       }
@@ -2638,7 +2642,7 @@ function CoCard({ co, currency, permissions, projectId, pendingApproval, team }:
       const json = await res.json().catch(() => ({}))
       if (!res.ok) { setActionError(json?.error || 'Could not get the response link.'); return }
       try { await navigator.clipboard.writeText(json.portalUrl); setActionNotice('Response link copied to your clipboard.') }
-      catch { window.prompt('Copy this response link:', json.portalUrl) }
+      catch { await dialogs.alert({ title: 'Copy the response link', message: 'Your browser blocked automatic copying. Copy the link below.', tone: 'info', copyValue: json.portalUrl }) }
     } catch { setActionError('Could not get the response link.') }
   }
 
@@ -2656,10 +2660,10 @@ function CoCard({ co, currency, permissions, projectId, pendingApproval, team }:
       // handler and silently dropped it. When superseding a 'countered' CO, a failed
       // "your offer was superseded" email to the client vanished with zero indication.
       if (json?.clientNotified === false)
-        alert('A new draft was created, but the client could not be notified that their previous offer was superseded — you may want to let them know directly.')
+        await dialogs.alert('A new draft was created, but the client could not be notified that their previous offer was superseded — you may want to let them know directly.')
       // CO-2: the scope flag this change order came from is now tied to another change order, so the revision does not carry it.
       if (json?.flagDetached)
-        alert('A new draft was created, but the scope flag this change order came from has since been used for another change order, so the draft is not linked to it.')
+        await dialogs.alert('A new draft was created, but the scope flag this change order came from has since been used for another change order, so the draft is not linked to it.')
       router.push(`/projects/${projectId}/co/${json.coId}`)
     } catch {
       setActionError('Could not create a revision.')
@@ -2975,6 +2979,7 @@ function ActivityTab({ projectId, initial, initialHasMore }: { projectId: string
 // ── TEAM TAB ──────────────────────────────────────────────────
 // C14: "Add member" button now loads available members and opens a modal.
 function TeamTab({ project, team, permissions }: any) {
+  const dialogs = useDialogs()
   const router = useRouter()
   const [adding,       setAdding]       = useState(false)
   const [available,    setAvailable]    = useState<any[]>([])
@@ -3029,7 +3034,7 @@ function TeamTab({ project, team, permissions }: any) {
   // completely silently — the spinner just stopped with no indication
   // anything went wrong, unlike addMember which already surfaces its errors.
   async function removeMember(memberId: string, name: string) {
-    if (!confirm(`Remove ${name} from this project?`)) return
+    if (!(await dialogs.confirm(`Remove ${name} from this project?`))) return
     setRemovingId(memberId); setRemoveError('')
     try {
       const res = await fetch(`/api/projects/${project.id}/members`, {

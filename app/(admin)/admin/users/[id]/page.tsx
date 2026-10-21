@@ -5,6 +5,7 @@ import { useParams, useRouter } from 'next/navigation'
 import styles from '@/styles/admin.module.css'
 import { fetchWithStepUp } from '@/lib/client/step-up'
 import AdminHistory, { type HistoryRow } from '../../AdminHistory'
+import { useDialogs } from '@/components/ui/Dialogs'
 
 interface Detail {
   user: {
@@ -26,6 +27,7 @@ interface Detail {
 type Msg = { kind: 'ok' | 'warn' | 'error'; text: string }
 
 export default function AdminUserDetailPage() {
+  const dialogs = useDialogs()
   const { id } = useParams<{ id: string }>()
   const router = useRouter()
   const [data, setData] = useState<Detail | null>(null)
@@ -72,7 +74,7 @@ export default function AdminUserDetailPage() {
     if (!data) return
     const { user } = data
     if (!user.suspended_by_admin) {
-      if (!confirm(`${user.email} was not suspended from this panel — they deleted the account themselves (or it was suspended before suspensions were tracked).\n\nRestoring brings back their login but NOT their workspace memberships.\n\nRestore anyway?`)) return
+      if (!(await dialogs.confirm(`${user.email} was not suspended from this panel — they deleted the account themselves (or it was suspended before suspensions were tracked).\n\nRestoring brings back their login but NOT their workspace memberships.\n\nRestore anyway?`))) return
       await runAction('restore', { confirmSelfDeleted: true })
     } else {
       await runAction('restore')
@@ -194,8 +196,8 @@ export default function AdminUserDetailPage() {
                 />
                 <button
                   className="btn btn-danger btn-sm" disabled={busy}
-                  onClick={() => {
-                    if (confirm(`Suspend ${user.email}? They will be signed out and unable to sign in.`)) {
+                  onClick={async () => {
+                    if (await dialogs.confirm(`Suspend ${user.email}? They will be signed out and unable to sign in.`)) {
                       runAction('suspend', { reason })
                     }
                   }}

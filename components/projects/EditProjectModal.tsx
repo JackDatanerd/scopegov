@@ -27,6 +27,7 @@
 // same PROJECT_TYPES list app/(app)/projects/new/page.tsx's picker uses, and
 // the same `hasAnySow` gate as client/currency above it.
 
+import { Modal, ModalFooter } from '@/components/ui/Dialogs'
 import { useState, useEffect } from 'react'
 import { CURRENCIES } from '@/lib/constants/workspace-options'
 import { PROJECT_TYPE_LABELS } from '@/lib/utils/format'
@@ -164,17 +165,14 @@ export default function EditProjectModal({
   }
 
   return (
-    <div className="modal-overlay" onClick={busy ? undefined : onClose}>
-      <div className="modal" style={{ maxWidth: 520 }} onClick={(e) => e.stopPropagation()}>
-        <h2 className="modal-title">Edit project</h2>
-        <p style={{ fontSize: 12.5, color: 'var(--text-3)', marginBottom: 14 }}>
-          Changes are recorded in the activity log.
-        </p>
+    <Modal
+      title="Edit project" subtitle="Changes are recorded in the activity log." size="md" onClose={onClose} busy={busy}
+      footer={<ModalFooter onCancel={onClose} onConfirm={save} confirmLabel="Save changes" busy={busy} />}
+    >
+        <label className="flbl">Project name <span style={{ fontWeight: 400, color: 'var(--text-3)' }}>— printed on the SOW, change orders and invoices your client receives</span></label>
+        <input className="finp" value={name} maxLength={200} onChange={e => setName(e.target.value)} style={{ marginBottom: 12 }} />
 
-        <label className="form-label">Project name <span style={{ fontWeight: 400, color: 'var(--text-3)' }}>— printed on the SOW, change orders and invoices your client receives</span></label>
-        <input className="form-input" value={name} maxLength={200} onChange={e => setName(e.target.value)} style={{ marginBottom: 12 }} />
-
-        <label className="form-label">Project type</label>
+        <label className="flbl">Project type</label>
         {hasAnySow ? (
           <p style={{ fontSize: 12.5, marginBottom: 12 }}>
             {PROJECT_TYPE_LABELS[project.type] || project.type}
@@ -183,7 +181,7 @@ export default function EditProjectModal({
             </span>
           </p>
         ) : (
-          <select className="form-input" value={type} style={{ marginBottom: 12 }}
+          <select className="finp" value={type} style={{ marginBottom: 12 }}
             onChange={e => {
               const next = e.target.value as ProjectType
               // switching INTO a retainer keeps what the project was ("Marketing" -> a Marketing retainer); the server does the same
@@ -197,11 +195,11 @@ export default function EditProjectModal({
 
         {type === 'retainer' && (
           <>
-            <label className="form-label">Kind of work <span style={{ fontWeight: 400, color: 'var(--text-3)' }}>— optional; your saved standard terms for it apply to the SOW</span></label>
+            <label className="flbl">Kind of work <span style={{ fontWeight: 400, color: 'var(--text-3)' }}>— optional; your saved standard terms for it apply to the SOW</span></label>
             {hasAnySow ? (
               <p style={{ fontSize: 12.5, marginBottom: 12 }}>{project.work_type ? (PROJECT_TYPE_LABELS[project.work_type] || project.work_type) : 'Not specified'}</p>
             ) : (
-              <select className="form-input" value={workType} style={{ marginBottom: 12 }} onChange={e => setWorkType(e.target.value)}>
+              <select className="finp" value={workType} style={{ marginBottom: 12 }} onChange={e => setWorkType(e.target.value)}>
                 <option value="">Not specified</option>
                 {PROJECT_TYPES.filter(t => t !== 'retainer').map(t => <option key={t} value={t}>{PROJECT_TYPE_LABELS[t] || t}</option>)}
               </select>
@@ -209,7 +207,7 @@ export default function EditProjectModal({
           </>
         )}
 
-        <label className="form-label">Client</label>
+        <label className="flbl">Client</label>
         {hasAnySow ? (
           <p style={{ fontSize: 12.5, marginBottom: 12 }}>
             {project.clients?.name}
@@ -219,7 +217,7 @@ export default function EditProjectModal({
           </p>
         ) : (
           <div style={{ marginBottom: 12 }}>
-            <input className="form-input" placeholder="Search existing clients…" value={clientSearch}
+            <input className="finp" placeholder="Search existing clients…" value={clientSearch}
               onChange={e => setClientSearch(e.target.value)} />
             {clientSearch && (
               <div className="surface" style={{ marginTop: 4, maxHeight: 160, overflowY: 'auto', position: 'relative', zIndex: 10 }}>
@@ -265,14 +263,14 @@ export default function EditProjectModal({
           </div>
         )}
 
-        <label className="form-label">Subtitle (optional)</label>
-        <input className="form-input" value={disc} maxLength={300} onChange={e => setDisc(e.target.value)} style={{ marginBottom: 12 }} />
+        <label className="flbl">Subtitle (optional)</label>
+        <input className="finp" value={disc} maxLength={300} onChange={e => setDisc(e.target.value)} style={{ marginBottom: 12 }} />
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 110px', gap: 10, marginBottom: 12 }}>
           {canViewFinancials ? (
             <div>
-              <label className="form-label">{type === 'retainer' ? 'Monthly retainer amount' : 'Contract value'}</label>
-              <input className="form-input" inputMode="decimal" value={contractValue} disabled={valueLocked}
+              <label className="flbl">{type === 'retainer' ? 'Monthly retainer amount' : 'Contract value'}</label>
+              <input className="finp" inputMode="decimal" value={contractValue} disabled={valueLocked}
                 onChange={e => setContractValue(e.target.value)} />
               {type === 'retainer' && (
                 <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 4 }}>
@@ -282,8 +280,8 @@ export default function EditProjectModal({
             </div>
           ) : <div />}
           <div>
-            <label className="form-label">Currency</label>
-            <select className="form-input" value={currency} disabled={hasAnySow} onChange={e => setCurrency(e.target.value)}>
+            <label className="flbl">Currency</label>
+            <select className="finp" value={currency} disabled={hasAnySow} onChange={e => setCurrency(e.target.value)}>
               {Array.from(new Set([currency, ...CURRENCIES])).map(c => <option key={c} value={c}>{c}</option>)}
             </select>
           </div>
@@ -299,23 +297,23 @@ export default function EditProjectModal({
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 12 }}>
           <div>
-            <label className="form-label">Start date</label>
-            <input type="date" className="form-input" value={startDate} onChange={e => setStartDate(e.target.value)} />
+            <label className="flbl">Start date</label>
+            <input type="date" className="finp" value={startDate} onChange={e => setStartDate(e.target.value)} />
           </div>
           <div>
-            <label className="form-label">Internal reference</label>
-            <input className="form-input" value={internalRef} maxLength={100} onChange={e => setInternalRef(e.target.value)} placeholder="PO / job number" />
+            <label className="flbl">Internal reference</label>
+            <input className="finp" value={internalRef} maxLength={100} onChange={e => setInternalRef(e.target.value)} placeholder="PO / job number" />
           </div>
         </div>
 
         {type === 'retainer' && canViewFinancials && (
           <div style={{ marginBottom: 12 }}>
-            <label className="form-label">Retainer duration (months)</label>
+            <label className="flbl">Retainer duration (months)</label>
             {/* FIX (Projects & Dashboard deep audit, flagship finding): disabled
                 by the same valueLocked rule as the monthly amount above — total
                 value = amount × months, so this field must be locked exactly
                 when the amount is, not left freely editable once a SOW exists. */}
-            <input className="form-input" inputMode="numeric" value={retainerMonths} style={{ maxWidth: 140 }} disabled={valueLocked}
+            <input className="finp" inputMode="numeric" value={retainerMonths} style={{ maxWidth: 140 }} disabled={valueLocked}
               onChange={e => setRetainerMonths(e.target.value.replace(/[^0-9]/g, ''))} placeholder="e.g. 12" />
             {/* The lock reason itself is already shown once, above, right under the amount field
                 (line ~243) — repeating the same sentence here would just be noise. */}
@@ -327,14 +325,7 @@ export default function EditProjectModal({
           </div>
         )}
 
-        {error && <p style={{ fontSize: 12, color: 'var(--red)', marginTop: 4 }}>{error}</p>}
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
-          <button className="btn btn-ghost btn-sm" onClick={onClose} disabled={busy}>Cancel</button>
-          <button className="btn btn-primary btn-sm" onClick={save} disabled={busy}>
-            {busy ? <span className="spin" /> : 'Save changes'}
-          </button>
-        </div>
-      </div>
-    </div>
+        {error && <p className="dlg-error" role="alert">{error}</p>}
+    </Modal>
   )
 }

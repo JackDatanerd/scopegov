@@ -15,6 +15,7 @@ import { listRuntimeTimezones, detectBrowserTimezone } from '@/lib/utils/timezon
 import { fetchWithStepUp } from '@/lib/client/step-up'
 // FIX (fresh independent audit, section 4 — feature gap): see the brand-colour hint on step 1.
 import { isLowContrastForWhiteText } from '@/lib/utils/colour-contrast'
+import { useDialogs } from '@/components/ui/Dialogs'
 
 // FIX (Onboarding independent pass 7 — B1/B2): middleware.ts keeps /api/workspace/* reachable for a
 // forced-MFA account only WHILE onboarding is unfinished (`isOnboardingApi && !onboarding_complete`).
@@ -50,6 +51,7 @@ export default function OnboardingPage() {
 }
 
 function OnboardingWizard() {
+  const dialogs = useDialogs()
   const router       = useRouter()
   const searchParams = useSearchParams()
   const supabase     = createClient()
@@ -679,9 +681,9 @@ function OnboardingWizard() {
 
   async function discardWorkspace() {
     if (!workspaceId) return
-    if (typeof window !== 'undefined' && !window.confirm(
+    if (typeof window !== 'undefined' && !(await dialogs.confirm(
       'Discard this workspace? Everything entered so far will be deleted. You can restore it for 30 days from the \u201CRecently deleted\u201D list.'
-    )) return
+    ))) return
     setLoading(true); setError('')
     try {
       // FIX (fresh independent audit, Workspace lifecycle + Onboarding):
@@ -1241,9 +1243,9 @@ function OnboardingWizard() {
   // already has.
   async function leaveWaitingWorkspace() {
     if (!waitingFor?.workspaceId) return
-    if (typeof window !== 'undefined' && !window.confirm(
+    if (typeof window !== 'undefined' && !(await dialogs.confirm(
       `Leave "${waitingFor.agencyName}"? You'll need a new invite to rejoin.`
-    )) return
+    ))) return
     setLeavingWait(true); setError('')
     try {
       const res  = await fetch('/api/workspace/leave', {

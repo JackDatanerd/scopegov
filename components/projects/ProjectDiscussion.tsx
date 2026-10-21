@@ -9,6 +9,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { formatRelative } from '@/lib/utils/format'
 import { splitBodySegments, tokensToDisplay, displayToTokens, uniqueMentionLabel } from '@/lib/utils/project-messages'
+import { useDialogs } from '@/components/ui/Dialogs'
 
 interface Message {
   id: string
@@ -97,6 +98,7 @@ export default function ProjectDiscussion({
   // Lapsed workspace: the server refuses writes, so don't offer them.
   readOnly?: boolean
 }) {
+  const dialogs = useDialogs()
   const [messages, setMessages] = useState<Message[]>([])
   const [loaded, setLoaded] = useState(false)
   // Projects & Dashboard deep audit: the feed used to load the oldest 200
@@ -319,7 +321,7 @@ export default function ProjectDiscussion({
   }
 
   async function removeMessage(id: string) {
-    if (!confirm('Delete this message? This can\'t be undone.')) return
+    if (!(await dialogs.confirm('Delete this message? This can\'t be undone.'))) return
     try {
       const res = await fetch(`${base}/${id}`, { method: 'DELETE' })
       if (!res.ok) { const j = await res.json().catch(() => ({})); setError(j.error || 'Could not delete that message.'); return }

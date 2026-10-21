@@ -16,6 +16,7 @@ import { isPaymentClaimOpen } from '@/lib/utils/invoice-registry'
 import { amountFieldForNet, buildInvoiceEditPatch, lineTotal, itemizedSubtotal, type EditFormState } from '@/lib/documents/invoice-form'
 import { dateStringInZone, addDaysToDateString } from '@/lib/utils/timezone'
 import { capDueAtPeriodStart } from '@/lib/documents/advance-due'
+import { useDialogs } from '@/components/ui/Dialogs'
 
 const METHOD_LABELS: Record<string, string> = {
   bank_transfer: 'Bank transfer', stripe: 'Stripe', check: 'Check', cash: 'Cash', other: 'Other',
@@ -42,6 +43,7 @@ interface Props {
 }
 
 export default function BillingTab({ project, milestones, invoices, reconciliation, permissions, currency, router, defaultPaymentInstructions = '', billingDefaults, pendingApprovals = {} }: Props) {
+  const dialogs = useDialogs()
   const [creating, setCreating]   = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [payingId, setPayingId]   = useState<string | null>(null)
@@ -184,7 +186,7 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
     // FIX (section-12 audit, pass 2): one click used to number the invoice, attach a PDF
     // and email the client with no confirmation — a mis-click on a permanent, legally
     // numbered document. SOW sends already ask first.
-    if (!alreadyAcknowledged && !confirm('Send this invoice to the client now? It will be given its permanent invoice number and emailed with a PDF, and it can no longer be edited afterwards.')) return
+    if (!alreadyAcknowledged && !(await dialogs.confirm('Send this invoice to the client now? It will be given its permanent invoice number and emailed with a PDF, and it can no longer be edited afterwards.'))) return
     setBusyId(id); setError('')
     try {
       const res = await fetch(`/api/invoices/${id}/send`, {
@@ -197,12 +199,12 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
         return
       }
       if (!res.ok) throw new Error(j.error || 'Failed to send invoice')
-      if (j.pendingApproval) alert('This invoice needs sign-off before it goes to the client — it has been sent for approval.')
+      if (j.pendingApproval) await dialogs.alert('This invoice needs sign-off before it goes to the client — it has been sent for approval.')
       // FIX (Notifications & email fix round): a rejected email used to be
       // reported as a normal send. The invoice is issued either way; say so
       // when the client was NOT emailed, like the SOW and CO screens do.
       if (j.emailSent === false)
-        alert(`The invoice is marked as sent, but the email to the client could not be delivered (${j.emailError || 'provider error'}).\n\nCheck the client's email address, then use Remind to try again.`)
+        await dialogs.alert(`The invoice is marked as sent, but the email to the client could not be delivered (${j.emailError || 'provider error'}).\n\nCheck the client's email address, then use Remind to try again.`)
       await refresh()
     } catch (err: unknown) { setError(err instanceof Error ? err.message : 'Failed to send invoice') }
     finally { setBusyId(null) }
@@ -217,14 +219,14 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
       if (res.status === 409) {
         const j = await res.clone().json().catch(() => ({}))
         if (j.code === 'disputed' || j.code === 'payment_claimed') {
-          if (!confirm(`${j.error}\n\nSend the reminder anyway?`)) return
+          if (!(await dialogs.confirm({ title: 'Send the reminder anyway?', message: j.error, tone: 'warning', confirmLabel: 'Send anyway' }))) return
           res = await fetch(`/api/invoices/${id}/remind`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ force: true }),
           })
         }
       }
       if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.error || 'Failed to send reminder') }
-      alert('Reminder sent.')
+      await dialogs.alert('Reminder sent.')
     } catch (err: unknown) { setError(err instanceof Error ? err.message : 'Failed to send reminder') }
     finally { setBusyId(null) }
   }
@@ -238,7 +240,7 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
       const res = await fetch(`/api/approvals/${approvalId}/retry-send`, { method: 'POST' })
       const j = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(j.error || 'Retry failed')
-      if (j.deliveryWarning) alert(j.deliveryWarning)
+      if (j.deliveryWarning) await dialogs.alert(j.deliveryWarning)
       // FIX (section-11 audit, pass 1 — B3): clears the sidebar badge's "needs a retry" count immediately.
       window.dispatchEvent(new Event('scopegov:approvals-changed'))
       await refresh()
@@ -249,10 +251,14 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
   // passed since submission — so the date alone can be changed here (the server allows only that)
   // and the send retried, without throwing the approval away.
   async function changeDueDateThenRetry(approvalId: string, invoiceId: string, current: string | null) {
-    const entered = window.prompt('New due date (YYYY-MM-DD). The approval stays in place — the send is retried right after.', current ? String(current).slice(0, 10) : '')
+    const entered = await dialogs.prompt({
+      title: 'Set a new due date',
+      message: 'The approval stays in place — the send is retried right after.',
+      label: 'Due date', inputType: 'date', defaultValue: current ? String(current).slice(0, 10) : '', confirmLabel: 'Save and send',
+      validate: v => /^\d{4}-\d{2}-\d{2}$/.test(v) ? null : 'Enter a valid date.',
+    })
     if (entered === null) return
     const dueDate = entered.trim()
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(dueDate)) { setError('Enter the date as YYYY-MM-DD.'); return }
     setBusyId(invoiceId); setError('')
     try {
       const res = await fetch(`/api/invoices/${invoiceId}`, {
@@ -263,14 +269,14 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
       const retry = await fetch(`/api/approvals/${approvalId}/retry-send`, { method: 'POST' })
       const rj = await retry.json().catch(() => ({}))
       if (!retry.ok) throw new Error(rj.error || 'Due date updated, but the retry failed')
-      if (rj.deliveryWarning) alert(rj.deliveryWarning)
+      if (rj.deliveryWarning) await dialogs.alert(rj.deliveryWarning)
       window.dispatchEvent(new Event('scopegov:approvals-changed'))
       await refresh()
     } catch (err: unknown) { setError(err instanceof Error ? err.message : 'Could not change the due date') }
     finally { setBusyId(null) }
   }
   async function cancelApprovalFor(approvalId: string, invoiceId: string) {
-    if (!confirm('Cancel this approved request? The invoice goes back to being an editable draft, and sending it again will need a fresh approval.')) return
+    if (!(await dialogs.confirm('Cancel this approved request? The invoice goes back to being an editable draft, and sending it again will need a fresh approval.'))) return
     setBusyId(invoiceId); setError('')
     try {
       const res = await fetch(`/api/approvals/${approvalId}/cancel`, { method: 'POST' })
@@ -283,7 +289,10 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
   }
 
   async function resolveDispute(id: string) {
-    const note = window.prompt('Reply to the client (optional). They will be emailed this and shown it on the invoice page.')
+    const note = await dialogs.prompt({
+      title: 'Reply to the client', message: 'Optional. They will be emailed this and shown it on the invoice page.',
+      multiline: true, required: false, placeholder: 'Add a note for the client', confirmLabel: 'Resolve dispute',
+    })
     if (note === null) return // cancelled
     setBusyId(id); setError('')
     try {
@@ -296,14 +305,14 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
       // check (see the route) instead of always being true whenever the code
       // reached the send call — say so when it's false, same as Send/Void above.
       if (json.emailed === false)
-        alert('The dispute is marked resolved, but the notification email to the client could not be delivered. You may want to let them know directly.')
+        await dialogs.alert('The dispute is marked resolved, but the notification email to the client could not be delivered. You may want to let them know directly.')
       await refresh()
     } catch (err: unknown) { setError(err instanceof Error ? err.message : 'Failed to resolve the dispute') }
     finally { setBusyId(null) }
   }
 
   async function deleteInvoice(id: string) {
-    if (!confirm('Delete this draft invoice? This cannot be undone.')) return
+    if (!(await dialogs.confirm('Delete this draft invoice? This cannot be undone.'))) return
     setBusyId(id); setError('')
     try {
       const res = await fetch(`/api/invoices/${id}`, { method: 'DELETE' })
@@ -516,8 +525,8 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
                       {inv.token && permissions.sendInvoices && (
                         <button className="btn btn-ghost btn-sm" onClick={async () => {
                           const link = `${process.env.NEXT_PUBLIC_PORTAL_URL || window.location.origin}/portal/invoice/${inv.token}`
-                          try { await navigator.clipboard.writeText(link); alert('Client link copied.') }
-                          catch { window.prompt('Copy the client link:', link) }
+                          try { await navigator.clipboard.writeText(link); await dialogs.alert('Client link copied.') }
+                          catch { await dialogs.alert({ title: 'Copy the client link', message: 'Your browser blocked automatic copying. Copy the link below.', tone: 'info', copyValue: link }) }
                         }}>
                           <i className="ti ti-link" style={{ fontSize: 11 }} /> Copy link
                         </button>
@@ -605,6 +614,7 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
 // undo a mis-entered one. Was previously only reachable via a raw DELETE
 // to /api/invoices/[id]/payments/[paymentId] — no button existed anywhere.
 function PaymentsPanel({ invoice, currency, onChanged }: any) {
+  const dialogs = useDialogs()
   const [payments, setPayments] = useState<any[] | null>(null)
   const [loading, setLoading]   = useState(true)
   const [removingId, setRemovingId] = useState<string | null>(null)
@@ -657,7 +667,7 @@ function PaymentsPanel({ invoice, currency, onChanged }: any) {
   }, [invoice.id, reloadKey])
 
   async function remove(paymentId: string) {
-    if (!confirm('Remove this payment? The invoice balance will update immediately.')) return
+    if (!(await dialogs.confirm('Remove this payment? The invoice balance will update immediately.'))) return
     setRemovingId(paymentId); setError('')
     try {
       const res = await fetch(`/api/invoices/${invoice.id}/payments/${paymentId}`, { method: 'DELETE' })
@@ -750,6 +760,7 @@ function dueDateFromTerms(days: number | null | undefined, timeZone?: string | n
 }
 
 function CreateInvoiceModal({ projectId, projectCurrency, milestones, sows, cos, defaultPaymentInstructions, billingDefaults, onClose, onCreated }: any) {
+  const dialogs = useDialogs()
   const [source, setSource] = useState<{ type: 'milestone' | 'sow' | 'co' | ''; id: string }>({ type: '', id: '' })
   const [title, setTitle]   = useState('')
   const [amount, setAmount] = useState('')
@@ -1013,7 +1024,7 @@ function CreateInvoiceModal({ projectId, projectCurrency, milestones, sows, cos,
       // FIX (section-12 audit, pass 2 — feature gap): the project-level over-invoicing check.
       if (res.status === 409 && json.code === 'over_contract') {
         setSubmitting(false)
-        if (confirm(`${json.error}\n\nCreate this invoice anyway?`)) { await submitWith(true) }
+        if (await dialogs.confirm({ title: 'Create this invoice anyway?', message: json.error, tone: 'warning', confirmLabel: 'Create anyway' })) { await submitWith(true) }
         return
       }
       if (!res.ok) throw new Error(json.error || 'Failed to create invoice')
@@ -1244,6 +1255,7 @@ function CreateInvoiceModal({ projectId, projectCurrency, milestones, sows, cos,
 function EditInvoiceModal({ invoiceId, projectCurrency, onClose, onSaved }: {
   invoiceId: string; projectCurrency: string; onClose: () => void; onSaved: () => void
 }) {
+  const dialogs = useDialogs()
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
 
@@ -1386,7 +1398,7 @@ function EditInvoiceModal({ invoiceId, projectCurrency, onClose, onSaved }: {
       // route's comment) — handle it here the same way CreateInvoiceModal does.
       if (res.status === 409 && json.code === 'over_contract') {
         setSubmitting(false)
-        if (confirm(`${json.error}\n\nSave this change anyway?`)) { await submitWith(true) }
+        if (await dialogs.confirm({ title: 'Save this change anyway?', message: json.error, tone: 'warning', confirmLabel: 'Save anyway' })) { await submitWith(true) }
         return
       }
       if (!res.ok) throw new Error(json.error || 'Failed to save changes')
@@ -1617,6 +1629,7 @@ function RecordPaymentModal({ invoice, timeZone, onClose, onRecorded }: any) {
 
 // ── VOID INVOICE ──────────────────────────────────────────────
 function VoidInvoiceModal({ invoice, onClose, onVoided }: any) {
+  const dialogs = useDialogs()
   const [reason, setReason] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
@@ -1642,7 +1655,7 @@ function VoidInvoiceModal({ invoice, onClose, onVoided }: any) {
       // succeeds either way; this just stops it from silently implying the
       // client was told when they weren't.
       if (json.clientNotified === false)
-        alert('The invoice is now void, but the notification email to the client could not be delivered. You may want to let them know directly.')
+        await dialogs.alert('The invoice is now void, but the notification email to the client could not be delivered. You may want to let them know directly.')
       onVoided()
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to void invoice')

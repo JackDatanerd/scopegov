@@ -5,6 +5,7 @@ import { useParams, useRouter } from 'next/navigation'
 import styles from '@/styles/admin.module.css'
 import { fetchWithStepUp } from '@/lib/client/step-up'
 import AdminHistory, { type HistoryRow } from '../../AdminHistory'
+import { useDialogs } from '@/components/ui/Dialogs'
 
 interface Detail {
   workspace: {
@@ -39,6 +40,7 @@ type Msg = { kind: 'ok' | 'warn' | 'error'; text: string }
 const PLANS = ['trial', 'solo', 'starter', 'pro', 'agency']
 
 export default function AdminWorkspaceDetailPage() {
+  const dialogs = useDialogs()
   const { id } = useParams<{ id: string }>()
   const router = useRouter()
   const [data, setData] = useState<Detail | null>(null)
@@ -103,7 +105,7 @@ export default function AdminWorkspaceDetailPage() {
     const { workspace } = data
     const label = workspace.agency_name || workspace.name
     if (!workspace.suspended_by_admin) {
-      if (!confirm(`${label} was deleted by its owner, not suspended from this panel.\n\nRestoring reactivates its members and re-enables any subscription the deletion cancelled.\n\nRestore anyway?`)) return
+      if (!(await dialogs.confirm(`${label} was deleted by its owner, not suspended from this panel.\n\nRestoring reactivates its members and re-enables any subscription the deletion cancelled.\n\nRestore anyway?`))) return
       await runAction('restore', { confirmSelfDeleted: true })
     } else {
       await runAction('restore')
@@ -323,8 +325,8 @@ export default function AdminWorkspaceDetailPage() {
                 />
                 <button
                   className="btn btn-danger btn-sm" disabled={busy}
-                  onClick={() => {
-                    if (confirm(`Suspend ${workspace.agency_name || workspace.name}? Members will lose access immediately.`)) {
+                  onClick={async () => {
+                    if (await dialogs.confirm(`Suspend ${workspace.agency_name || workspace.name}? Members will lose access immediately.`)) {
                       runAction('suspend', { reason: suspendReason }).then(ok => { if (ok) setSuspendReason('') })
                     }
                   }}

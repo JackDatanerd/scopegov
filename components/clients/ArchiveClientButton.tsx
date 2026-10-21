@@ -8,10 +8,12 @@
 'use client'
 import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
+import { useDialogs } from '@/components/ui/Dialogs'
 
 export default function ArchiveClientButton({
   clientId, status, activeProjectCount = 0,
 }: { clientId: string; status: string; activeProjectCount?: number }) {
+  const dialogs = useDialogs()
   const router = useRouter()
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -30,7 +32,7 @@ export default function ArchiveClientButton({
     // the actual count at least makes that an informed choice instead of
     // an invisible one.
     if (!archived && activeProjectCount > 0) {
-      const ok = window.confirm(
+      const ok = await dialogs.confirm(
         `This client has ${activeProjectCount} active project${activeProjectCount !== 1 ? 's' : ''}. ` +
         `Archiving only hides the client from the default list — it won't pause Guardian monitoring, invoicing, or any active work. Continue?`
       )

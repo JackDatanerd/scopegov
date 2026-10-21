@@ -42,6 +42,7 @@ import { isValidTimeZone, formatDateInZone } from '@/lib/utils/timezone'
 import { sameValue } from '@/lib/utils/audit-diff'
 import { isBlankText } from '@/lib/utils/client-input'
 import { lateFeeRateWarning } from '@/lib/documents/late-fee'
+import { useDialogs } from '@/components/ui/Dialogs'
 
 type SettingsTab = 'account' | 'workspace' | 'branding' | 'defaults' | 'guardian' | 'billing' | 'notifications' | 'integrations' | 'danger'
 
@@ -1169,6 +1170,7 @@ function WorkspaceTab({ form, setForm, permissions, onSave, saving, slugChangedA
 
 // ── BRANDING ──────────────────────────────────────────────────
 function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, logoFile, setLogoFile, savedLogoPreviewRef, sigSaved, setSigSaved, signatory, setSignatory, signatoryBase, onSaveWorkspace, baseRef, loadFailed, permissions, onSave, saving }: any) {
+  const dialogs = useDialogs()
   const [savingSignatory, setSavingSignatory] = useState(false)
   const signatoryDirty = trimText(signatory.name) !== String(signatoryBase.current.agencySignatoryName ?? '')
     || trimText(signatory.title) !== String(signatoryBase.current.agencySignatoryTitle ?? '')
@@ -1281,7 +1283,7 @@ function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, logo
   // server call is what actually deletes the Storage object and the
   // workspace's logo_storage_path.
   async function removeLogo() {
-    if (!confirm('Remove the workspace logo? This can\u2019t be undone — you\u2019ll need to upload a new one.')) return
+    if (!(await dialogs.confirm('Remove the workspace logo? This can\u2019t be undone — you\u2019ll need to upload a new one.'))) return
     setRemovingLogo(true); setFileError('')
     try {
       const res = await fetch(workspaceId ? `/api/workspace/branding/logo?workspaceId=${encodeURIComponent(workspaceId)}` : '/api/workspace/branding/logo', { method: 'DELETE' })
@@ -1546,6 +1548,7 @@ function StandardsFields({ value, onChange, disabled }: { value: StandardsForm; 
 const REVISION_ROUND_CHOICES = Array.from({ length: 10 }, (_, i) => String(i + 1))
 
 function DefaultsTab({ form, setForm, permissions, onSave, saving, setTab, globalLoadFailed, workspaceId, globalBase }: any) {
+  const dialogs = useDialogs()
   function set(key: string, value: string) {
     setForm((f: any) => ({ ...f, [key]: value }))
   }
@@ -1662,7 +1665,7 @@ function DefaultsTab({ form, setForm, permissions, onSave, saving, setTab, globa
 
   async function removeOverride() {
     if (isGlobal || !typeData?.isOverride) return
-    if (!confirm(`Remove the ${PROJECT_TYPE_LABELS[scope]} override? New ${PROJECT_TYPE_LABELS[scope]} projects will go back to using the global default.`)) return
+    if (!(await dialogs.confirm(`Remove the ${PROJECT_TYPE_LABELS[scope]} override? New ${PROJECT_TYPE_LABELS[scope]} projects will go back to using the global default.`))) return
     setTypeLoading(true); setLocalError('')
     try {
       const res = await fetch(`/api/workspace/defaults?projectType=${scope}${workspaceId ? `&workspaceId=${encodeURIComponent(workspaceId)}` : ''}`, { method: 'DELETE' })
@@ -1899,6 +1902,7 @@ function loadPaystackScript(): Promise<void> {
 }
 
 function BillingTab({ workspace, billing, billingLoadFailed = false, session, permissions }: any) {
+  const dialogs = useDialogs()
   const planTier  = workspace?.plan_tier || 'trial'
   const planLabel = PLAN_LABELS[planTier] || planTier
   // FIX (Billing fix round — MEDIUM): everything below that speaks about "the subscription" (Renews, Cancel,
@@ -1982,7 +1986,7 @@ function BillingTab({ workspace, billing, billingLoadFailed = false, session, pe
   if (!permissions.manageBilling) return <Restricted need="MANAGE_BILLING" />
 
   async function handleCancel() {
-    if (!confirm('Cancel your subscription? You\u2019ll keep access until the end of the current billing period, then the workspace becomes read-only (you can still view and export everything).')) return
+    if (!(await dialogs.confirm('Cancel your subscription? You\u2019ll keep access until the end of the current billing period, then the workspace becomes read-only (you can still view and export everything).'))) return
     setCancelling(true); setCancelError('')
     try {
       const res  = await fetchWithStepUp('/api/billing/cancel', { method: 'POST' })
@@ -2087,7 +2091,7 @@ function BillingTab({ workspace, billing, billingLoadFailed = false, session, pe
     // gets created either way). Word it for what's actually happening.
     const isRetrySamePlan = planKey === planTier && targetInterval === (billing?.plan_interval || 'monthly') && !!billing?.grace_period_started_at
     if (hasPaidSubscription && billing?.current_period_end && new Date(billing.current_period_end) > new Date()) {
-      const ok = confirm(
+      const ok = await dialogs.confirm(
         isRetrySamePlan
           ? `Retrying payment starts a new subscription on your ${PLAN_LABELS[planKey] || planKey} plan and charges your new card now.\n\nContinue?`
           : billing.cancels_at_period_end
@@ -2127,7 +2131,7 @@ function BillingTab({ workspace, billing, billingLoadFailed = false, session, pe
       })
       handler.openIframe()
     } catch (err: unknown) {
-      alert(err instanceof Error ? err.message : 'Could not open checkout')
+      await dialogs.alert(err instanceof Error ? err.message : 'Could not open checkout')
     } finally { setUpgrading(null) }
   }
 

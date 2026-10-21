@@ -24,6 +24,7 @@
 'use client'
 import { useEffect, useRef, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
+import { useDialogs } from '@/components/ui/Dialogs'
 
 interface Contact {
   id: string
@@ -39,6 +40,7 @@ const ROLE_TYPE_LABEL: Record<string, string> = { billing: 'Billing', scope: 'Sc
 export default function ClientContactsCard({
   clientId, contacts, editable,
 }: { clientId: string; contacts: Contact[]; editable: boolean }) {
+  const dialogs = useDialogs()
   const router = useRouter()
   const [adding, setAdding] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -64,7 +66,7 @@ export default function ClientContactsCard({
 
   async function remove(contactId: string, contactName: string, wasPrimary: boolean) {
     // One click used to delete a contact (and possibly the CC'd primary) irreversibly.
-    if (!window.confirm(`Remove ${contactName}?${wasPrimary ? ' They are the primary contact, so nobody will be CC’d by default afterwards.' : ''}`)) return
+    if (!(await dialogs.confirm(`Remove ${contactName}?${wasPrimary ? ' They are the primary contact, so nobody will be CC’d by default afterwards.' : ''}`))) return
     setBusyId(contactId); setError('')
     try {
       const res  = await fetch(`/api/clients/${clientId}/contacts/${contactId}`, { method: 'DELETE' })
@@ -171,6 +173,7 @@ export default function ClientContactsCard({
 function ContactForm({ clientId, initial, onDone, onCancel, busy = false }: {
   clientId: string; initial?: Contact; onDone: () => void; onCancel: () => void; busy?: boolean
 }) {
+  const dialogs = useDialogs()
   const [name, setName] = useState(initial?.name || '')
   const [email, setEmail] = useState(initial?.email || '')
   const [role, setRole] = useState(initial?.role || '')
@@ -205,7 +208,7 @@ function ContactForm({ clientId, initial, onDone, onCancel, busy = false }: {
       // is_primary TRUE; it never auto-promotes a replacement when the sole primary is explicitly
       // unset, so this needs the same warning Remove already gives, not a silent save.
       if (payload.isPrimary === false && baseline?.is_primary) {
-        if (!window.confirm(`Remove ${baseline.name} as the primary contact? Nobody will be CC’d by default afterwards unless you make another contact primary.`)) {
+        if (!(await dialogs.confirm(`Remove ${baseline.name} as the primary contact? Nobody will be CC’d by default afterwards unless you make another contact primary.`))) {
           return
         }
       }
