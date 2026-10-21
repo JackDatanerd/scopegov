@@ -7,7 +7,7 @@ import type { SessionUser } from '@/lib/supabase/types'
 import { PLAN_LABELS, initials, avatarColour } from '@/lib/utils/format'
 import { trialBarPercent } from '@/lib/billing/plans'
 import NotificationBell from './NotificationBell'
-import { SidebarCollapseButton, PageWidthButton } from './AppShell'
+import { SidebarCollapseButton, PageWidthButton, useSidebar } from './AppShell'
 import { useDialogs } from '@/components/ui/Dialogs'
 
 const NAV_ITEMS = [
@@ -44,6 +44,7 @@ type WorkspaceOption = {
 
 export default function Sidebar({ session }: { session: SessionUser }) {
   const dialogs = useDialogs()
+  const { peekHandlers } = useSidebar()
   const pathname = usePathname()
   const router   = useRouter()
   const supabase = createClient()
@@ -279,7 +280,7 @@ export default function Sidebar({ session }: { session: SessionUser }) {
     : null
 
   return (
-    <aside className="sb">
+    <aside className="sb" {...peekHandlers}>
       {/* Brand + workspace switcher */}
       <div className="sb-brand" ref={switcherRef} style={{ position: 'relative' }}>
         <div className="sb-logo-row" style={{ justifyContent: 'space-between' }}>

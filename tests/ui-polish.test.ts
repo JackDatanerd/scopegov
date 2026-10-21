@@ -98,6 +98,30 @@ describe('page width experiment (centred / full)', () => {
   })
 })
 
+describe('peek at the navigation while the sidebar is collapsed', () => {
+  const shell = read('components/layout/AppShell.tsx')
+  const css = read('styles/globals.css')
+  it('hovering the reopen button or the left edge opens it, with hover-intent delays so a passing mouse does not flash it', () => {
+    expect(shell).toContain('setTimeout(() => setPeek(true), 120)')
+    expect(shell).toContain('setTimeout(() => setPeek(false), 280)')
+    expect(shell).toContain('<div className="sb-edge"')
+    expect(shell).toContain('{...peekHandlers} aria-label="Show sidebar"')
+  })
+  it('it is the real sidebar floated over the page (same links, badges and active state), only on hover devices', () => {
+    expect(css).toContain('@media (hover: hover) and (min-width: 769px)')
+    expect(css).toContain('.app[data-sidebar="collapsed"][data-peek="open"] .sb {')
+    expect(read('components/layout/Sidebar.tsx')).toContain('<aside className="sb" {...peekHandlers}>')
+  })
+  it('following a link, Esc or expanding closes it, and the pin button keeps it open', () => {
+    expect(shell).toContain('setPeek(false) // following a link from the floating navigation closes it')
+    expect(shell).toContain('else if (peekOpenRef.current) setPeek(false)')
+    expect(shell).toContain('aria-label="Keep sidebar open"')
+  })
+  it('a collapsed sidebar is only reachable by keyboard while it is peeking', () => {
+    expect(shell).toContain("toggleAttribute('inert', collapsed && !peek)")
+  })
+})
+
 describe('collapsible sidebar', () => {
   const shell = read('components/layout/AppShell.tsx')
   it('is wired into the signed-in layout with a way back when collapsed', () => {
@@ -109,7 +133,7 @@ describe('collapsible sidebar', () => {
   it('remembers the choice, tolerates blocked storage, and keeps a collapsed sidebar out of the tab order', () => {
     expect(shell).toContain("const STORAGE_KEY = 'sg.sidebar'")
     expect(shell).toMatch(/catch \{ return null \}/)
-    expect(shell).toContain("toggleAttribute('inert', collapsed)")
+    expect(shell).toContain("toggleAttribute('inert', collapsed && !peek)")
   })
   it('has a keyboard shortcut and starts closed on a phone', () => {
     expect(shell).toContain("e.key === '\\\\'")

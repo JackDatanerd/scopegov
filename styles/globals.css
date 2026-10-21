@@ -68,6 +68,18 @@ p, h1, h2, h3, h4, h5 { margin: 0; }
 .app[data-width="full"] .page,
 .app[data-width="full"] .page-col,
 .app[data-width="full"] .co-grid { max-width: none !important; }
+/* Peek: a collapsed sidebar floats over the page while the reopen button (or the left edge) is hovered. Hover devices only. */
+.sb-edge { display: none; }
+@media (hover: hover) and (min-width: 769px) {
+  .sb-edge { display: block; position: fixed; left: 0; top: 0; bottom: 0; width: 8px; z-index: 940; }
+  .app[data-sidebar="collapsed"][data-peek="open"] .sb {
+    position: fixed; left: 0; top: 0; margin-left: 0; visibility: visible; z-index: 950; box-shadow: 8px 0 30px rgba(0,0,0,.14);
+    animation: sb-peek .14s ease-out; transition: none;
+  }
+  .app[data-sidebar="collapsed"][data-peek="open"] .sb-edge { display: none; }
+}
+@keyframes sb-peek { from { opacity: 0; transform: translateX(-12px) } to { opacity: 1; transform: none } }
+@media (prefers-reduced-motion: reduce) { .app[data-peek="open"] .sb { animation: none !important; } }
 .sb-backdrop { display: none; }
 @media (max-width: 768px) {
   /* Phones: the sidebar is an overlay, not a 240px column that squeezes the page. */

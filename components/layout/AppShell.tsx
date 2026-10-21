@@ -5,7 +5,7 @@
 // whole screen; the choice is remembered per browser. On a phone the sidebar is an overlay that starts closed and closes itself after
 // navigation. Ctrl/Cmd + \ toggles it from anywhere.
 
-import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { usePathname } from 'next/navigation'
 
 const STORAGE_KEY = 'sg.sidebar'
@@ -13,8 +13,8 @@ const WIDTH_KEY = 'sg.width'
 const MOBILE_QUERY = '(max-width: 768px)'
 const useIsoLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect
 
-interface SidebarState { collapsed: boolean; toggle: () => void; setCollapsed: (v: boolean) => void; fullWidth: boolean; toggleWidth: () => void }
-const SidebarContext = createContext<SidebarState>({ collapsed: false, toggle: () => {}, setCollapsed: () => {}, fullWidth: false, toggleWidth: () => {} })
+interface SidebarState { collapsed: boolean; toggle: () => void; setCollapsed: (v: boolean) => void; fullWidth: boolean; toggleWidth: () => void; peek: boolean; peekHandlers: { onMouseEnter: () => void; onMouseLeave: () => void } }
+const SidebarContext = createContext<SidebarState>({ collapsed: false, toggle: () => {}, setCollapsed: () => {}, fullWidth: false, toggleWidth: () => {}, peek: false, peekHandlers: { onMouseEnter: () => {}, onMouseLeave: () => {} } })
 export const useSidebar = () => useContext(SidebarContext)
 
 function readPreference(): boolean | null {
@@ -28,6 +28,15 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const [collapsed, setCollapsedState] = useState(false)
   // Page width: 'centered' (a readable column, centred) or 'full' (content fills the whole space). Remembered per browser.
   const [fullWidth, setFullWidth] = useState(false)
+  // Peek: while the sidebar is collapsed, hovering the reopen button (or the left screen edge) floats the navigation over the page so
+  // the next page is one click away without reopening the sidebar. Hover-intent timers stop a passing mouse from flashing it open.
+  const [peek, setPeek] = useState(false)
+  const peekTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const clearPeekTimer = () => { if (peekTimer.current) { clearTimeout(peekTimer.current); peekTimer.current = null } }
+  const peekHandlers = useMemo(() => ({
+    onMouseEnter: () => { clearPeekTimer(); peekTimer.current = setTimeout(() => setPeek(true), 120) },
+    onMouseLeave: () => { clearPeekTimer(); peekTimer.current = setTimeout(() => setPeek(false), 280) },
+  }), [])
   const pathname = usePathname()
 
   // First paint after hydration: a stored choice wins; with none, a phone starts closed and a desktop starts open.
@@ -56,12 +65,14 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   // An overlay sidebar on a phone gets out of the way once a link was followed (not remembered: it is not a choice).
   useEffect(() => {
     if (window.matchMedia(MOBILE_QUERY).matches) setCollapsedState(true)
+    setPeek(false) // following a link from the floating navigation closes it
   }, [pathname])
+  useEffect(() => { if (!collapsed) setPeek(false) }, [collapsed])
 
   // A collapsed sidebar must not stay in the tab order.
   useEffect(() => {
-    document.querySelector('.sb')?.toggleAttribute('inert', collapsed)
-  }, [collapsed])
+    document.querySelector('.sb')?.toggleAttribute('inert', collapsed && !peek)
+  }, [collapsed, peek])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -72,6 +83,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         // logic a click would. Shared dialogs (.dlg-layer) handle Esc themselves and stop it before it gets here.
         const legacy = document.querySelector<HTMLElement>('.modal-bg')
         if (legacy && !document.querySelector('.dlg-layer')) legacy.click()
+        else if (peekOpenRef.current) setPeek(false)
         else if (window.matchMedia(MOBILE_QUERY).matches) setCollapsedState(true)
       }
     }
@@ -79,11 +91,14 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener('keydown', onKey)
   }, [toggle, toggleWidth])
 
-  const value = useMemo(() => ({ collapsed, toggle, setCollapsed, fullWidth, toggleWidth }), [collapsed, toggle, setCollapsed, fullWidth, toggleWidth])
+  const peekOpenRef = useRef(false)
+  peekOpenRef.current = peek
+  const value = useMemo(() => ({ collapsed, toggle, setCollapsed, fullWidth, toggleWidth, peek, peekHandlers }), [collapsed, toggle, setCollapsed, fullWidth, toggleWidth, peek, peekHandlers])
   return (
     <SidebarContext.Provider value={value}>
-      <div className="app" data-sidebar={collapsed ? 'collapsed' : 'expanded'} data-width={fullWidth ? 'full' : 'centered'}>
+      <div className="app" data-sidebar={collapsed ? 'collapsed' : 'expanded'} data-width={fullWidth ? 'full' : 'centered'} data-peek={collapsed && peek ? 'open' : 'closed'}>
         {children}
+        {collapsed && <div className="sb-edge" {...peekHandlers} aria-hidden="true" />}
         <div className="sb-backdrop" onClick={() => setCollapsed(true)} aria-hidden="true" />
       </div>
     </SidebarContext.Provider>
@@ -92,11 +107,11 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
 /** The slim bar shown at the top of the page while the sidebar is collapsed: the way back, and the mark so the page still says where you are. */
 export function SidebarReopenBar() {
-  const { collapsed, setCollapsed } = useSidebar()
+  const { collapsed, setCollapsed, peekHandlers } = useSidebar()
   if (!collapsed) return null
   return (
     <div className="sb-reopen-bar">
-      <button type="button" className="sb-toggle" onClick={() => setCollapsed(false)} aria-label="Show sidebar" title="Show sidebar (Ctrl+\)">
+      <button type="button" className="sb-toggle" onClick={() => setCollapsed(false)} {...peekHandlers} aria-label="Show sidebar" title="Show sidebar (Ctrl+\). Hover to peek at the navigation.">
         <i className="ti ti-layout-sidebar-left-expand" />
       </button>
       <span className="sb-reopen-name">ScopeGov</span>
@@ -108,9 +123,14 @@ export function SidebarReopenBar() {
 
 /** The collapse button inside the sidebar header. */
 export function SidebarCollapseButton() {
-  const { setCollapsed } = useSidebar()
-  return (
-    <button type="button" className="sb-toggle" onClick={() => setCollapsed(true)} aria-label="Hide sidebar" title="Hide sidebar (Ctrl+\)">
+  const { collapsed, setCollapsed } = useSidebar()
+  // While the sidebar is only peeking over a collapsed page, this button keeps it open instead.
+  return collapsed ? (
+    <button type="button" className="sb-toggle" onClick={() => setCollapsed(false)} aria-label="Keep sidebar open" title="Keep the sidebar open">
+      <i className="ti ti-pin" />
+    </button>
+  ) : (
+    <button type="button" className="sb-toggle" onClick={() => setCollapsed(true)} aria-label="Hide sidebar" title="Hide sidebar (Ctrl+\\)">
       <i className="ti ti-layout-sidebar-left-collapse" />
     </button>
   )
