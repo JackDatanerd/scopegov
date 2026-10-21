@@ -80,6 +80,24 @@ describe('pages stay centred when the sidebar is hidden', () => {
   })
 })
 
+describe('page width experiment (centred / full)', () => {
+  const shell = read('components/layout/AppShell.tsx')
+  const css = read('styles/globals.css')
+  it('is remembered per browser, defaults to centred, and tolerates blocked storage', () => {
+    expect(shell).toContain("const WIDTH_KEY = 'sg.width'")
+    expect(shell).toContain("window.localStorage.getItem(WIDTH_KEY) === 'full'")
+    expect(shell).toContain("data-width={fullWidth ? 'full' : 'centered'}")
+  })
+  it('full width overrides the inline max-widths on every page wrapper', () => {
+    expect(css).toMatch(/\.app\[data-width="full"\] \.page,\s*\.app\[data-width="full"\] \.page-col,\s*\.app\[data-width="full"\] \.co-grid \{ max-width: none !important; \}/)
+    expect(read('components/co/CoEditor.tsx')).toContain('className="co-grid"')
+  })
+  it('the switch is in the sidebar header and in the reopen bar, so it is reachable either way', () => {
+    expect(read('components/layout/Sidebar.tsx')).toContain('<PageWidthButton />')
+    expect(shell).toMatch(/<span style=\{\{ flex: 1 \}\} \/>\s*<PageWidthButton \/>/)
+  })
+})
+
 describe('collapsible sidebar', () => {
   const shell = read('components/layout/AppShell.tsx')
   it('is wired into the signed-in layout with a way back when collapsed', () => {

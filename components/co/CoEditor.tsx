@@ -528,7 +528,7 @@ export default function CoEditor({ projId, coId }: Props) {
   }
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr 300px', gap: 24, padding: '28px 40px', maxWidth: 960, margin: '0 auto' }}>
+    <div className="co-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 300px', gap: 24, padding: '28px 40px', maxWidth: 960, margin: '0 auto' }}>
       {/* ── Left: editor ── */}
       <div>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>

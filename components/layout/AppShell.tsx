@@ -9,11 +9,12 @@ import { createContext, useCallback, useContext, useEffect, useLayoutEffect, use
 import { usePathname } from 'next/navigation'
 
 const STORAGE_KEY = 'sg.sidebar'
+const WIDTH_KEY = 'sg.width'
 const MOBILE_QUERY = '(max-width: 768px)'
 const useIsoLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect
 
-interface SidebarState { collapsed: boolean; toggle: () => void; setCollapsed: (v: boolean) => void }
-const SidebarContext = createContext<SidebarState>({ collapsed: false, toggle: () => {}, setCollapsed: () => {} })
+interface SidebarState { collapsed: boolean; toggle: () => void; setCollapsed: (v: boolean) => void; fullWidth: boolean; toggleWidth: () => void }
+const SidebarContext = createContext<SidebarState>({ collapsed: false, toggle: () => {}, setCollapsed: () => {}, fullWidth: false, toggleWidth: () => {} })
 export const useSidebar = () => useContext(SidebarContext)
 
 function readPreference(): boolean | null {
@@ -25,12 +26,15 @@ function readPreference(): boolean | null {
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const [collapsed, setCollapsedState] = useState(false)
+  // Page width: 'centered' (a readable column, centred) or 'full' (content fills the whole space). Remembered per browser.
+  const [fullWidth, setFullWidth] = useState(false)
   const pathname = usePathname()
 
   // First paint after hydration: a stored choice wins; with none, a phone starts closed and a desktop starts open.
   useIsoLayoutEffect(() => {
     const stored = readPreference()
     setCollapsedState(stored ?? window.matchMedia(MOBILE_QUERY).matches)
+    try { setFullWidth(window.localStorage.getItem(WIDTH_KEY) === 'full') } catch { /* blocked storage: centred */ }
   }, [])
 
   const setCollapsed = useCallback((v: boolean) => {
@@ -40,6 +44,12 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const toggle = useCallback(() => setCollapsedState(prev => {
     const next = !prev
     try { window.localStorage.setItem(STORAGE_KEY, next ? 'collapsed' : 'expanded') } catch { /* not remembered, still works */ }
+    return next
+  }), [])
+
+  const toggleWidth = useCallback(() => setFullWidth(prev => {
+    const next = !prev
+    try { window.localStorage.setItem(WIDTH_KEY, next ? 'full' : 'centered') } catch { /* not remembered, still works */ }
     return next
   }), [])
 
@@ -55,7 +65,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === '\\') { e.preventDefault(); toggle() }
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === '|' || e.key === '\\')) { e.preventDefault(); toggleWidth() }
+      else if ((e.ctrlKey || e.metaKey) && e.key === '\\') { e.preventDefault(); toggle() }
       else if (e.key === 'Escape') {
         // Older modals (.modal-bg + .modal) have no key handling of their own: Esc presses their backdrop, which runs the same close
         // logic a click would. Shared dialogs (.dlg-layer) handle Esc themselves and stop it before it gets here.
@@ -66,12 +77,12 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [toggle])
+  }, [toggle, toggleWidth])
 
-  const value = useMemo(() => ({ collapsed, toggle, setCollapsed }), [collapsed, toggle, setCollapsed])
+  const value = useMemo(() => ({ collapsed, toggle, setCollapsed, fullWidth, toggleWidth }), [collapsed, toggle, setCollapsed, fullWidth, toggleWidth])
   return (
     <SidebarContext.Provider value={value}>
-      <div className="app" data-sidebar={collapsed ? 'collapsed' : 'expanded'}>
+      <div className="app" data-sidebar={collapsed ? 'collapsed' : 'expanded'} data-width={fullWidth ? 'full' : 'centered'}>
         {children}
         <div className="sb-backdrop" onClick={() => setCollapsed(true)} aria-hidden="true" />
       </div>
@@ -89,6 +100,8 @@ export function SidebarReopenBar() {
         <i className="ti ti-layout-sidebar-left-expand" />
       </button>
       <span className="sb-reopen-name">ScopeGov</span>
+      <span style={{ flex: 1 }} />
+      <PageWidthButton />
     </div>
   )
 }
@@ -99,6 +112,18 @@ export function SidebarCollapseButton() {
   return (
     <button type="button" className="sb-toggle" onClick={() => setCollapsed(true)} aria-label="Hide sidebar" title="Hide sidebar (Ctrl+\)">
       <i className="ti ti-layout-sidebar-left-collapse" />
+    </button>
+  )
+}
+
+/** Switches pages between a centred readable column and content that fills the whole space. */
+export function PageWidthButton() {
+  const { fullWidth, toggleWidth } = useSidebar()
+  return (
+    <button type="button" className="sb-toggle" onClick={toggleWidth} aria-pressed={fullWidth}
+      aria-label={fullWidth ? 'Use centred page width' : 'Use full page width'}
+      title={fullWidth ? 'Page width: full. Click for centred (Ctrl+Shift+\\)' : 'Page width: centred. Click for full (Ctrl+Shift+\\)'}>
+      <i className={`ti ti-${fullWidth ? 'arrows-minimize' : 'arrows-maximize'}`} style={{ transform: 'rotate(45deg)' }} />
     </button>
   )
 }

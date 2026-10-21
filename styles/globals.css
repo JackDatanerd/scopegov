@@ -63,6 +63,11 @@ p, h1, h2, h3, h4, h5 { margin: 0; }
   background: var(--bg); border-bottom: 1px solid var(--border);
 }
 .sb-reopen-name { font-family: 'Cormorant Garamond', Georgia, serif; font-size: 16px; font-weight: 600; color: var(--text-2); }
+/* Page width experiment: 'full' lets content fill the whole space instead of a centred column. The caps live in inline styles on many
+   pages (style={{ maxWidth: 980 }}), so the override has to be !important. Toggle: the arrows button beside the sidebar button. */
+.app[data-width="full"] .page,
+.app[data-width="full"] .page-col,
+.app[data-width="full"] .co-grid { max-width: none !important; }
 .sb-backdrop { display: none; }
 @media (max-width: 768px) {
   /* Phones: the sidebar is an overlay, not a 240px column that squeezes the page. */

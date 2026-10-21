@@ -7,7 +7,7 @@ import type { SessionUser } from '@/lib/supabase/types'
 import { PLAN_LABELS, initials, avatarColour } from '@/lib/utils/format'
 import { trialBarPercent } from '@/lib/billing/plans'
 import NotificationBell from './NotificationBell'
-import { SidebarCollapseButton } from './AppShell'
+import { SidebarCollapseButton, PageWidthButton } from './AppShell'
 import { useDialogs } from '@/components/ui/Dialogs'
 
 const NAV_ITEMS = [
@@ -295,6 +295,7 @@ export default function Sidebar({ session }: { session: SessionUser }) {
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
             <NotificationBell />
+            <PageWidthButton />
             <SidebarCollapseButton />
           </div>
         </div>
