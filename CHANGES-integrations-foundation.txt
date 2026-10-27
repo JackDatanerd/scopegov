@@ -1,0 +1,56 @@
+Integrations foundation (Oct 27 2026, base 26d95ea) — shared plumbing for Slack / Zapier / HubSpot / Google Drive,
+shipped with the first live integration: signed webhooks + API keys.
+
+APPLY ORDER (matters): 1) run migration 165  2) set INTEGRATIONS_ENCRYPTION_KEY (openssl rand -base64 32)  3) deploy
+4) register the `integration-delivery` cron in the Cloudflare worker: every minute, `* * * * *`, POST /api/cron/integration-delivery
+with Authorization: Bearer $CRON_SECRET. Until (4) deliveries queue up harmlessly; the watchdog pages after 30 min of silence.
+
+NEW
+- supabase/migrations/165_integrations_foundation.sql — integration_connections, integration_api_keys,
+  integration_subscriptions, integration_events (outbox), integration_deliveries (retry queue). RLS on, NO policies,
+  grants to service_role only. Functions: emit_integration_event (atomic store + fan-out, 10-min per-entity dedupe,
+  stores nothing when no subscription matches), enqueue_integration_test, claim_integration_deliveries
+  (FOR UPDATE SKIP LOCKED; reclaims rows stuck 'delivering' > 5 min). Verified against real Postgres 16.
+- lib/integrations/: crypto (AES-256-GCM, key rotation, context-bound AAD, fails closed), plans (single plan table),
+  signing (HMAC-SHA256 v1, timestamped), url (save-time checks), events (public event allowlist + emit), event-input,
+  delivery (claim -> sign -> safeFetch -> classify -> retry/dead/skip; auto-disable), api-keys (sgk_ keys, hash only),
+  guard (one authorisation path for the routes).
+- app/api/cron/integration-delivery (every minute), registered in lib/cron/manifest.ts (new 'every-minute' cadence).
+- app/api/workspace/integrations/{,webhooks,webhooks/[id],webhooks/[id]/test,api-keys,api-keys/[id]} and
+  app/api/integrations/v1/me (API-key auth check, the call Zapier uses to test a connection).
+- components/settings/IntegrationsSection.tsx — live Webhooks + API keys UI above the (still "Coming soon") native list.
+- tests/integrations-foundation.test.ts (48 tests).
+
+CHANGED
+- lib/utils/notify.ts: notifyMembersWithPermission announces allowlisted events to integrations (before the recipient
+  lookup, never throws, never changes the return value). One choke point = integrations see exactly what the bell sees.
+- app/api/cron/notification-cleanup: prunes integration_events after 30 days (deliveries go by cascade).
+- tests/cron-infra.test.ts: interval table knows 'every-minute'.
+- README.md, .env.local.example: env vars, cron registration, how the pipeline works.
+
+DECISIONS
+- Plans: webhooks / Zapier / API keys from Starter; Slack, HubSpot, Drive from Pro; trial gets all; Solo + lapsed none.
+  One table: lib/integrations/plans.ts.
+- Permission: reuses MANAGE_WORKSPACE_SETTINGS (a new permission key would touch roles CHECK constraints, default roles,
+  the roles editor and the MFA policy; do it when native connectors need a separate admin).
+- Step-up required to create a webhook/key, rotate a secret, or re-point a URL. Revoking a key is always allowed.
+- Delivery: at-least-once; 8 attempts (1m/5m/15m/1h/3h/6h/12h), Retry-After may lengthen; 410 = stop + turn off;
+  10 dead in a row = turn off.
+- Not announced on purpose: per-person events (comments, mentions, member joined/left) and billing/security events.
+
+CAUGHT BY REAL `next build` (not by tsc or unit tests): events.ts first imported lib/supabase/server (next/headers) and
+notify.ts is reachable from client bundles via project-messages.ts. emitIntegrationEvent now takes the caller's service
+client and imports nothing server-only.
+
+KNOWN LIMITS (next)
+1. safeFetch validates DNS then fetch() resolves again: a hostile receiver could rebind between the two (TOCTOU). It
+   predates this change but webhook URLs are the first tenant-supplied targets it fetches. Harden by pinning the
+   validated IP for the connection (undici dispatcher with a custom lookup). Do before opening this beyond trusted workspaces.
+2. Payload `data` carries the notification title/summary, which can contain client or project names.
+3. consecutive_failures is read-modify-write (two dead deliveries finishing in the same run can count as one).
+4. Events raised through notifyUsers (approval_requested, escalation) are not announced yet.
+
+Apply
+-----
+  tar -xzf ~/Downloads/scopegov-integrations-foundation.tar.gz --strip-components=1 -C .
+  git add -A && git commit -m "Integrations foundation: signed webhooks, API keys, delivery queue" && git push

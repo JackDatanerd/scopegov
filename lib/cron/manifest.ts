@@ -23,7 +23,7 @@
 // check it against `npm run cron:schedule` and change whichever side is wrong. The watchdog only uses
 // `toleranceHours`, so a differing minute never causes a false page.
 
-export type CronCadence = 'every-15-min' | 'hourly' | 'daily' | 'weekly'
+export type CronCadence = 'every-minute' | 'every-15-min' | 'hourly' | 'daily' | 'weekly'
 
 export interface CronDef {
   /** Directory name under app/api/cron/. */
@@ -45,6 +45,8 @@ export interface CronDef {
 }
 
 export const CRON_MANIFEST: readonly CronDef[] = [
+  { name: 'integration-delivery',    cadence: 'every-minute', schedule: '* * * * *', toleranceHours: 0.5, heartbeat: true,
+    description: 'Delivers queued integration events (signed webhooks) with retries; auto-disables a receiver that keeps failing' },
   { name: 'guardian-health',         cadence: 'every-15-min', schedule: '*/15 * * * *', toleranceHours: 2,   heartbeat: true, githubBackup: true,
     description: 'Guardian pipeline health: unresolved classification failures, ops alerts' },
   { name: 'sow-stall',               cadence: 'hourly', schedule: '0 * * * *',  toleranceHours: 3,   heartbeat: true, githubBackup: true,

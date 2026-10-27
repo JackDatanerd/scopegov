@@ -42,7 +42,7 @@ describe('cron manifest — the in-repo list of what runs', () => {
   it('has no duplicate names and sane tolerances', () => {
     const names = CRON_MANIFEST.map(c => c.name)
     expect(new Set(names).size).toBe(names.length)
-    const interval: Record<string, number> = { 'every-15-min': 0.25, hourly: 1, daily: 24, weekly: 168 }
+    const interval: Record<string, number> = { 'every-minute': 1 / 60, 'every-15-min': 0.25, hourly: 1, daily: 24, weekly: 168 }
     for (const c of CRON_MANIFEST) {
       // tolerance must exceed the schedule interval, or a healthy cron would page between runs
       expect(c.toleranceHours, c.name).toBeGreaterThan(interval[c.cadence])

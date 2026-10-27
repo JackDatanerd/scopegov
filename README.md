@@ -172,7 +172,7 @@ RESEND_FROM_EMAIL=noreply@mail.scopegov.app
 RESEND_WEBHOOK_SECRET=               ← whsec_… signing secret for POST /api/webhooks/resend (bounce/complaint tracking)
 POSTMARK_INBOUND_WEBHOOK_SECRET=     ← Basic Auth password, see §4 (NOT an HMAC secret)
 NEXT_PUBLIC_GUARDIAN_EMAIL_DOMAIN=guard.scopegov.app
-PAYSTACK_PUBLIC_KEY=
+NEXT_PUBLIC_PAYSTACK_PUBLIC_KEY=
 PAYSTACK_SECRET_KEY=
 PAYSTACK_PLAN_SOLO_MONTHLY=
 PAYSTACK_PLAN_STARTER_MONTHLY=
@@ -188,6 +188,14 @@ MFA_BACKUP_CODE_PEPPER=              ← openssl rand -hex 32. Server-only key f
                                        before it was set keep working. DO NOT ROTATE casually: changing it
                                        invalidates every backup code issued under the old value (people can
                                        regenerate them in Settings). If unset, codes fall back to an unsalted SHA-256.
+INTEGRATIONS_ENCRYPTION_KEY=         ← openssl rand -base64 32 (exactly 32 bytes). Encrypts integration secrets at rest
+                                       (webhook signing secrets now; Slack/HubSpot/Drive OAuth tokens later).
+                                       REQUIRED to create a webhook or API key: with it unset the Integrations tab says so
+                                       and the create routes answer 503 (nothing falls back to plaintext).
+INTEGRATIONS_ENCRYPTION_KEY_PREVIOUS=  ← optional. To rotate: move the current value here, set a new
+                                       INTEGRATIONS_ENCRYPTION_KEY, deploy, then re-save/rotate each webhook secret and
+                                       only afterwards remove this. Dropping it early makes those secrets undecryptable
+                                       (their deliveries go dead with "signing secret unreadable").
 ```
 
 ### 2.2 Domains
@@ -348,6 +356,26 @@ frequent jobs only. So a **new cron route has to be registered in the Cloudflare
 repo can do it. `tests/cron-infra.test.ts` fails the build if a route under `app/api/cron/` and the manifest disagree,
 and `cron-heartbeat-watchdog` (which derives its expectations from the manifest) pages ops if a registered cron
 stops reporting.
+
+**`integration-delivery` runs every minute** (`* * * * *`) and is NOT in the GitHub backup (too frequent for it). Register it
+in the Cloudflare worker; until then queued webhook deliveries simply wait (nothing is lost — they are rows in
+`integration_deliveries`), and the watchdog pages after 30 minutes of silence.
+
+### Integrations (webhooks / API keys; foundation for Slack, Zapier, HubSpot, Google Drive)
+Migration **165** must be applied BEFORE deploying the matching build (the notify hook calls `emit_integration_event`;
+until it exists every emit logs an error and is dropped — business actions are unaffected, nothing is delivered).
+- **Flow:** `notifyMembersWithPermission` → `emitIntegrationEvent` → `emit_integration_event()` (stores the event + one
+  `integration_deliveries` row per matching active subscription, atomically; dropped if none match; same event for the
+  same entity inside 10 minutes is de-duplicated) → `integration-delivery` cron → signed POST with retries.
+- **Retries:** 8 attempts, backoff 1m / 5m / 15m / 1h / 3h / 6h / 12h (a receiver's `Retry-After` can lengthen, never
+  shorten). `410 Gone` stops immediately and turns the webhook off; 10 dead deliveries in a row also turns it off.
+  Delivery is at-least-once: receivers de-duplicate on `X-ScopeGov-Delivery`.
+- **Signature:** `X-ScopeGov-Signature: v1=hex(HMAC-SHA256(secret, "<X-ScopeGov-Timestamp>.<raw body>"))`.
+- **Plans** (one table, `lib/integrations/plans.ts`): webhooks / Zapier / API keys from Starter; Slack, HubSpot, Drive
+  from Pro; trial gets all; Solo and lapsed workspaces get none (and nothing is delivered for them).
+- **Permission:** `MANAGE_WORKSPACE_SETTINGS`. Creating a webhook or key, replacing a secret, or re-pointing a URL needs
+  step-up. Every change is in the audit log (`workspace.webhook_*`, `workspace.api_key_*`).
+- **Retention:** events (and, by cascade, deliveries) are pruned after 30 days by `notification-cleanup`.
 
 Every job requires `Authorization: Bearer {CRON_SECRET}`, exports `POST` (canonical) and `GET`, and reports through
 `lib/utils/cron-run.ts` (`CronRun`): a failed step or query alerts ops and withholds the heartbeat; a single bad row

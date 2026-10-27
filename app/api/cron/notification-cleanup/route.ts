@@ -40,6 +40,7 @@ const EMAIL_LOG_DAYS          = 180
 const AI_USAGE_DAYS           = 30
 const CRON_HISTORY_DAYS       = 60
 const SNAPSHOT_DAILY_KEEP_DAYS = 400
+const INTEGRATION_EVENT_DAYS   = 30
 
 export async function POST(request: NextRequest) {
   if (!verifyCronSecret(request))
@@ -81,6 +82,14 @@ export async function POST(request: NextRequest) {
       const r = await pruneInBatches(service, 'cron_run_history', q => q.lt('created_at', iso(CRON_HISTORY_DAYS)))
       run.result.cronHistoryPurged = r.deleted
       if (r.truncated) remaining.push('cron_run_history')
+    })
+    // Integration outbox: an event (and, by ON DELETE CASCADE, its deliveries) is kept 30 days so a receiver's
+    // delivery log can be inspected after an outage, then dropped. Rows still pending/delivering that old are
+    // dead in practice (the last retry is ~24h out) and go with them.
+    await run.step('prune integration_events', async () => {
+      const r = await pruneInBatches(service, 'integration_events', q => q.lt('created_at', iso(INTEGRATION_EVENT_DAYS)))
+      run.result.integrationEventsPurged = r.deleted
+      if (r.truncated) remaining.push('integration_events')
     })
     await run.step('downsample snapshot history', async () => {
       const { data, error } = await service.rpc('prune_snapshot_history', { p_keep_daily_days: SNAPSHOT_DAILY_KEEP_DAYS })

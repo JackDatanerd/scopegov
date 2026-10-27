@@ -10,6 +10,7 @@
 
 import { getMembersWithPermission, filterToProjectAccess, filterByNotificationPreference } from './permissions-query'
 import type { Permission } from '@/lib/supabase/types'
+import { emitIntegrationEvent } from '@/lib/integrations/events'
 
 interface NotifyParams {
   workspaceId: string
@@ -30,6 +31,17 @@ interface NotifyParams {
 
 /** Resolves true when the rows were written (or there was nobody eligible to write them for); false on failure. */
 export async function notifyMembersWithPermission(service: any, params: NotifyParams): Promise<boolean> {
+  // Integrations (signed webhooks, and Zapier/Slack/HubSpot/Drive as they land) hear about the same business events the
+  // bell does, from this one choke point. Announced BEFORE the recipient lookup so a workspace where nobody is eligible
+  // for the in-app row (or everyone muted it) still tells its integrations. emitIntegrationEvent never throws and ignores
+  // any event not on its allowlist; see lib/integrations/events.ts.
+  if (params.eventType) {
+    await emitIntegrationEvent({
+      workspaceId: params.workspaceId, eventKey: params.eventType,
+      entityType: params.entityType, entityId: params.entityId, projectId: params.projectId,
+      data: { title: params.title, summary: params.body },
+    }, service)
+  }
   try {
     // FIX (cron audit, section 17): eventType now passed into
     // getMembersWithPermission itself so the notification-preference
