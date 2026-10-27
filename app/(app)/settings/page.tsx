@@ -9,6 +9,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import { mfaIsEnforced } from '@/lib/auth/mfa-policy'
 import SettingsClient from '@/components/settings/SettingsClient'
+import { measurePlanFit } from '@/lib/billing/limits'
 
 export const metadata = { title: 'Settings' }
 
@@ -48,7 +49,7 @@ export default async function SettingsPage() {
       // here or the new "Workspace handle" field in WorkspaceTab below
       // would render blank on every load, and the rate-limit hint would
       // have nothing to compute "next eligible" from.
-      .select('id,name,slug,slug_changed_at,agency_name,brand_colour,logo_storage_path,agency_signature_data,agency_signatory_name,agency_signatory_title,industry,currency,timezone,sow_language,governing_law,proactive_risk_threshold,proactive_risk_alerts_enabled,guardian_sensitivity_tier,plan_tier,trial_ends_at,created_at,created_by,tax_id,phone,website,default_payment_instructions,legal_address,updated_at')
+      .select('id,name,slug,slug_changed_at,agency_name,brand_colour,logo_storage_path,agency_signature_data,agency_signatory_name,agency_signatory_title,industry,currency,timezone,sow_language,governing_law,proactive_risk_threshold,proactive_risk_alerts_enabled,guardian_sensitivity_tier,plan_tier,trial_ends_at,lapsed_at,created_at,created_by,tax_id,phone,website,default_payment_instructions,legal_address,updated_at')
       .eq('id', session.workspaceId)
       .single(),
     (service as any)
@@ -252,10 +253,23 @@ export default async function SettingsPage() {
   // Solo. session.planTier is the effective tier of this same workspace.
   const workspaceForClient = workspace ? { ...workspace, plan_tier: session.planTier } : workspace
 
+  // FEATURE (Billing / trial-end audit): how much the workspace uses today (active members, live projects), so the plan
+  // cards can say up front which plans it already fits and by how much it would exceed the others — instead of the
+  // person discovering it from a refusal after clicking. Solo carries both limits, so measuring against it returns both
+  // counts. Best-effort: a failed read just hides the hints (the upgrade route re-checks authoritatively).
+  let planUsage: { seats: number; projects: number } | null = null
+  if (canManageBilling) {
+    try {
+      const fit = await measurePlanFit(service, session.workspaceId, 'solo')
+      if (fit.ok) planUsage = { seats: fit.fit.seats.count, projects: fit.fit.projects.count }
+    } catch (e) { console.error('[settings] plan usage read failed (hints hidden):', e) }
+  }
+
   return (
     <SettingsClient
       workspace={workspaceForClient}
       billing={billing}
+      planUsage={planUsage}
       defaults={canManageWorkspace ? (defaultsRes.data?.[0] ?? null) : null}
       logoUrl={logoUrl}
       loadFailed={loadFailed}

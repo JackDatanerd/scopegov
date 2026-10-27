@@ -5,6 +5,7 @@ import { PLAN_LIMITS } from '@/lib/utils/format'
 import { parsePlanRequest, planCodeFor } from '@/lib/billing/plans'
 import { createPendingCheckout } from '@/lib/billing/checkouts'
 import { measurePlanFit } from '@/lib/billing/limits'
+import { getPaystackPublicKey, PAYSTACK_PUBLIC_KEY_ENV_NAMES } from '@/lib/billing/paystack-public-key'
 
 // Billing re-pass #3:
 //  - planKey / interval are parsed once against an allowlist and normalised
@@ -55,9 +56,14 @@ export async function POST(request: NextRequest) {
     // on an unset secret, so EVERY webhook was rejected with 401 and nobody was ever
     // upgraded, for money that had already been taken. Refuse before any money can
     // move, and tell the operator which one is missing.
-    if (!process.env.NEXT_PUBLIC_PAYSTACK_PUBLIC_KEY || !process.env.PAYSTACK_SECRET_KEY) {
+    // FIX (Billing / trial-end audit): the public key was read ONLY as NEXT_PUBLIC_PAYSTACK_PUBLIC_KEY. Vercel warns
+    // about a NEXT_PUBLIC_ name containing "KEY", the operator renamed it, and every checkout then failed with "Payments
+    // are not available right now". It is server-read-only (returned in the JSON below), so the prefix was never
+    // needed: accept PAYSTACK_PUBLIC_KEY plus both older names (lib/billing/paystack-public-key.ts).
+    const publicKey = getPaystackPublicKey()
+    if (!publicKey || !process.env.PAYSTACK_SECRET_KEY) {
       console.error(`[BILLING] Checkout refused — payments are not configured: ${[
-        !process.env.NEXT_PUBLIC_PAYSTACK_PUBLIC_KEY && 'NEXT_PUBLIC_PAYSTACK_PUBLIC_KEY',
+        !publicKey && `a Paystack public key (set ${PAYSTACK_PUBLIC_KEY_ENV_NAMES[0]})`,
         !process.env.PAYSTACK_SECRET_KEY && 'PAYSTACK_SECRET_KEY',
       ].filter(Boolean).join(', ')} is not set`)
       return NextResponse.json({ error: 'Payments are not available right now. Please contact support@scopegov.app.' }, { status: 503 })
@@ -103,17 +109,41 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Could not verify current plan. Please try again.' }, { status: 500 })
     }
     const { seats, projects } = planFit.fit
-    if (seats.over) {
-      return NextResponse.json({
-        error: `This workspace has ${seats.count} active member${seats.count === 1 ? '' : 's'}, more than the ${seats.limit}-seat limit on ${PLAN_LIMITS[planKey]?.name || planKey}. Deactivate members down to the new limit first, then switch plans.`,
-        seatLimitExceeded: true,
-      }, { status: 409 })
-    }
-    if (projects.over) {
-      return NextResponse.json({
-        error: `This workspace has ${projects.count} active project${projects.count === 1 ? '' : 's'}, more than the ${projects.limit}-project limit on ${PLAN_LIMITS[planKey]?.name || planKey}. Complete, archive or delete projects down to the new limit first, then switch plans.`,
-        projectLimitExceeded: true,
-      }, { status: 409 })
+    const planName = PLAN_LIMITS[planKey]?.name || planKey
+
+    // FIX (Billing / trial-end audit — HIGH): a READ-ONLY (lapsed) workspace cannot do what the two refusals below ask.
+    // The lapse strips INVITE_MEMBERS (Deactivate), MARK_PROJECT_COMPLETE (Archive) and DELETE_PROJECTS, so a lapsed
+    // workspace over the target plan's allowance — every ex-trial with 2+ members or 3+ projects trying Solo or
+    // Starter — was told to "deactivate members first" with the Team page frozen: it could only buy a bigger, dearer
+    // plan. The webhook already accepts over-limit usage after payment (it records over_limit and alerts ops, and
+    // the Team page shows an over-seat banner), and buying a plan is what restores the permissions needed to fix it.
+    // So for a lapsed workspace the overage is allowed, but only after the buyer has been told and has acknowledged it
+    // (`acknowledgeOverLimit`, set by the Billing tab after its confirm dialog). A workspace that is NOT lapsed can
+    // still deactivate / archive, so it keeps the hard refusal.
+    if (session.lapsed && (seats.over || projects.over)) {
+      const parts: string[] = []
+      if (seats.over) parts.push(`${seats.count} active member${seats.count === 1 ? '' : 's'} (${planName} includes ${seats.limit})`)
+      if (projects.over) parts.push(`${projects.count} active project${projects.count === 1 ? '' : 's'} (${planName} includes ${projects.limit})`)
+      if (body?.acknowledgeOverLimit !== true) {
+        return NextResponse.json({
+          error: `This workspace has ${parts.join(' and ')}. You can still subscribe to ${planName} now — your data stays intact and nobody is removed. Once the plan is active you can deactivate members or archive projects to get back within its limits; until then you can't invite or add more.`,
+          overLimitAckRequired: true,
+          overLimit: { seats: seats.over ? { count: seats.count, limit: seats.limit } : null, projects: projects.over ? { count: projects.count, limit: projects.limit } : null },
+        }, { status: 409 })
+      }
+    } else {
+      if (seats.over) {
+        return NextResponse.json({
+          error: `This workspace has ${seats.count} active member${seats.count === 1 ? '' : 's'}, more than the ${seats.limit}-seat limit on ${planName}. Deactivate members down to the new limit first, then switch plans.`,
+          seatLimitExceeded: true,
+        }, { status: 409 })
+      }
+      if (projects.over) {
+        return NextResponse.json({
+          error: `This workspace has ${projects.count} active project${projects.count === 1 ? '' : 's'}, more than the ${projects.limit}-project limit on ${planName}. Complete, archive or delete projects down to the new limit first, then switch plans.`,
+          projectLimitExceeded: true,
+        }, { status: 409 })
+      }
     }
 
     const { data: user } = await (service as any)
@@ -127,7 +157,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       planCode,
       email,
-      publicKey: process.env.NEXT_PUBLIC_PAYSTACK_PUBLIC_KEY,
+      publicKey,
       // Kept for the popup, but the webhook treats it as a tie-break hint
       // only — the server-side checkout row is what binds the workspace.
       metadata: { workspaceId: session.workspaceId, planKey, interval, userId: session.id },

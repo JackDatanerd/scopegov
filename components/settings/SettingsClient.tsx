@@ -289,6 +289,8 @@ const IN_APP_NOTIF_ITEMS = [
 interface Props {
   workspace:   any
   billing:     any
+  // Active members / live projects right now (null when it could not be read) — drives the plan cards' fit hints.
+  planUsage?:  { seats: number; projects: number } | null
   defaults:    any
   logoUrl:     string | null
   // Which of the page's initial reads failed (see settings/page.tsx). A failed read renders placeholders, and
@@ -300,7 +302,7 @@ interface Props {
   mfaRecommended?: boolean
 }
 
-export default function SettingsClient({ workspace, billing, defaults, logoUrl, loadFailed = { workspace: false, defaults: false, billing: false }, session, permissions, mfaMandatory, mfaRecommended = false }: Props) {
+export default function SettingsClient({ workspace, billing, planUsage = null, defaults, logoUrl, loadFailed = { workspace: false, defaults: false, billing: false }, session, permissions, mfaMandatory, mfaRecommended = false }: Props) {
   const searchParams = useSearchParams()
   const router       = useRouter()
   const supabase     = createClient()
@@ -583,7 +585,7 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
           <GuardianTab form={guardianForm} setForm={setGuardianForm} permissions={permissions} onSave={patchWorkspace} saving={saving} currency={workspace?.currency || 'USD'} />
         )}
 
-        {tab === 'billing' && <BillingTab workspace={workspace} billing={billing} billingLoadFailed={!!loadFailed.billing} session={session} permissions={permissions} />}
+        {tab === 'billing' && <BillingTab workspace={workspace} billing={billing} planUsage={planUsage} billingLoadFailed={!!loadFailed.billing} session={session} permissions={permissions} />}
 
         {tab === 'notifications' && <NotificationsTab permissions={permissions} workspaceId={workspace?.id} />}
 
@@ -1901,7 +1903,7 @@ function loadPaystackScript(): Promise<void> {
   })
 }
 
-function BillingTab({ workspace, billing, billingLoadFailed = false, session, permissions }: any) {
+function BillingTab({ workspace, billing, planUsage = null, billingLoadFailed = false, session, permissions }: any) {
   const dialogs = useDialogs()
   const planTier  = workspace?.plan_tier || 'trial'
   const planLabel = PLAN_LABELS[planTier] || planTier
@@ -1911,6 +1913,12 @@ function BillingTab({ workspace, billing, billingLoadFailed = false, session, pe
   // card showed a dead "Current plan" with no way to buy it, "Cancel subscription" led to a contact-support
   // dead end and a past renewal date was shown. Only a stored subscription code means there is one.
   const hasSubscription = !!billing?.paystack_subscription_code
+  // FIX (Billing / trial-end audit — MEDIUM): an expired trial (or a lapsed subscription) is stored/effective 'solo', so
+  // "Current plan" read "Solo" while the banner above and the Sidebar said the workspace has NO plan and is read-only.
+  // session.lapsed is the same flag they use; the date it started is lapsed_at, else (ex-trial the cron has not marked
+  // yet) when the trial ended.
+  const lapsed: boolean = !!session?.lapsed
+  const lapsedSince: string | null = lapsed ? (workspace?.lapsed_at || workspace?.trial_ends_at || null) : null
   const daysLeft  = workspace?.trial_ends_at
     ? Math.max(0, Math.ceil((new Date(workspace.trial_ends_at).getTime() - Date.now()) / 86400000))
     : null
@@ -2108,11 +2116,22 @@ function BillingTab({ workspace, billing, billingLoadFailed = false, session, pe
       // billing/upgrade has no step-up guard (see its header) — checkout must
       // never be gated behind an MFA/password prompt. fetchWithStepUp is kept only
       // so any future 401 step_up_required is handled, not swallowed.
-      const res  = await fetchWithStepUp('/api/billing/upgrade', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ planKey, interval: targetInterval }),
-      })
-      const json = await res.json().catch(() => ({}))
+      const requestCheckout = async (acknowledgeOverLimit: boolean) => {
+        const r  = await fetchWithStepUp('/api/billing/upgrade', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ planKey, interval: targetInterval, ...(acknowledgeOverLimit ? { acknowledgeOverLimit: true } : {}) }),
+        })
+        return { res: r, json: await r.json().catch(() => ({})) }
+      }
+      let { res, json } = await requestCheckout(false)
+      // FIX (Billing / trial-end audit — HIGH): a read-only workspace that is over this plan's seat / project allowance
+      // cannot reduce either (Team and project actions are frozen), so the server lets it subscribe once the buyer has
+      // seen exactly what is over. Cancelling here leaves everything as it was.
+      if (res.status === 409 && json.overLimitAckRequired) {
+        const ok = await dialogs.confirm(`${json.error}\n\nSubscribe anyway?`)
+        if (!ok) return
+        ;({ res, json } = await requestCheckout(true))
+      }
       if (!res.ok) throw new Error(json.error || 'Could not start checkout')
       const before = {
         planTier: planTier as string | null,
@@ -2191,7 +2210,16 @@ function BillingTab({ workspace, billing, billingLoadFailed = false, session, pe
         <div className="settings-section-title">Current plan</div>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
           <div>
-            <div style={{ fontSize: 20, fontFamily: 'Cormorant Garamond, Georgia, serif', fontWeight: 400, color: 'var(--green)', marginBottom: 3 }}>{planLabel}</div>
+            {lapsed ? (
+              <>
+                <div style={{ fontSize: 20, fontFamily: 'Cormorant Garamond, Georgia, serif', fontWeight: 400, color: 'var(--amber)', marginBottom: 3 }}>No active plan</div>
+                <div style={{ fontSize: 13, color: 'var(--text-2)', maxWidth: 460, lineHeight: 1.55 }}>
+                  Read-only{lapsedSince ? ` since ${formatDate(lapsedSince)}` : ''}. Your data is safe and can still be viewed and exported &mdash; choose a plan below to create and send again.
+                </div>
+              </>
+            ) : (
+              <div style={{ fontSize: 20, fontFamily: 'Cormorant Garamond, Georgia, serif', fontWeight: 400, color: 'var(--green)', marginBottom: 3 }}>{planLabel}</div>
+            )}
             {planTier === 'trial' && daysLeft !== null && (
               <div style={{ fontSize: 13, color: 'var(--amber)' }}>{daysLeft} trial days remaining</div>
             )}
@@ -2324,6 +2352,13 @@ function BillingTab({ workspace, billing, billingLoadFailed = false, session, pe
               ? (billing?.plan_interval ? billing.plan_interval === planInterval : true)
               : false
             const isLoading = upgrading === plan.key
+            // How far today's usage sits over this plan's allowance (see settings/page.tsx planUsage). Shown before the
+            // click so a refusal — or, on a read-only workspace, the over-limit confirmation — is never a surprise.
+            const seatsOver = planUsage ? Math.max(0, planUsage.seats - plan.seats) : 0
+            const projectsOver = planUsage && plan.projects ? Math.max(0, planUsage.projects - plan.projects) : 0
+            const overBits: string[] = []
+            if (planUsage && seatsOver > 0) overBits.push(`${planUsage.seats} active members (${seatsOver} over)`)
+            if (planUsage && projectsOver > 0) overBits.push(`${planUsage.projects} active projects (${projectsOver} over)`)
             return (
               <div key={plan.key} className={`tier-card${isExactCurrentPlan ? ' current' : ''}`}>
                 <div className="tier-card-name">{plan.name}</div>
@@ -2331,6 +2366,12 @@ function BillingTab({ workspace, billing, billingLoadFailed = false, session, pe
                 <div className="tier-card-desc">
                   {plan.seats} seat{plan.seats > 1 ? 's' : ''} · {plan.projects ? `${plan.projects} active projects` : 'Unlimited projects'}
                 </div>
+                {!isExactCurrentPlan && overBits.length > 0 && (
+                  <div style={{ marginTop: 8, fontSize: 11, lineHeight: 1.5, color: 'var(--amber)' }}>
+                    You have {overBits.join(' and ')}.{' '}
+                    {lapsed ? 'You can still subscribe, then reduce afterwards.' : 'Reduce first to switch to this plan.'}
+                  </div>
+                )}
                 {isExactCurrentPlan ? (
                   <div style={{ marginTop: 12, fontSize: 11, color: 'var(--green)', fontWeight: 600 }}>Current plan</div>
                 ) : (

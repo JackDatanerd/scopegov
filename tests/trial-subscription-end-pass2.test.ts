@@ -194,7 +194,9 @@ describe('lows', () => {
 
 describe('homepage', () => {
   it('the full calculator is reachable from the pricing section\'s verdict and the footer', () => {
-    expect(read('components/marketing/PricingSection.tsx')).toContain('href="/calculator"')
+    // The link now carries the visitor's numbers (calculatorHref -> /calculator?projects=...), always shown under the verdict.
+    expect(read('components/marketing/PricingSection.tsx')).toMatch(/href=\{fullCalcHref\}/)
+    expect(read('lib/billing/roi-url.ts')).toContain("base = '/calculator'")
     expect(read('components/marketing/MarketingFooter.tsx')).toContain('href="/calculator"')
   })
 })

@@ -499,9 +499,22 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
              plan (1 seat)" / "down to 1" — now names the workspace's
              actual plan and seat limit so the banner is accurate on
              every tier, not just Solo. */}
-          This workspace is on the {PLAN_LIMITS[session.planTier]?.name || session.planTier} plan
-          ({seatLimit} seat{seatLimit === 1 ? '' : 's'}) but has {members.length} active members.
-          Deactivate members down to {seatLimit}, or upgrade in Settings &rarr; Billing.
+          {session.lapsed ? (
+            // FIX (Billing / trial-end audit): a read-only workspace cannot deactivate anyone (INVITE_MEMBERS is withheld),
+            // so "Deactivate members down to N" was an instruction it could not follow — and the upgrade it pointed at
+            // refused for the same reason. Billing now lets it subscribe over-limit, so say that.
+            <>
+              This workspace has no active plan and is read-only, with {members.length} active members.
+              You can choose a plan in Settings &rarr; Billing now; once it is active you can deactivate members
+              {seatLimit != null ? <> to fit its {seatLimit}-seat limit</> : null} from this page.
+            </>
+          ) : (
+            <>
+              This workspace is on the {PLAN_LIMITS[session.planTier]?.name || session.planTier} plan
+              ({seatLimit} seat{seatLimit === 1 ? '' : 's'}) but has {members.length} active members.
+              Deactivate members down to {seatLimit}, or upgrade in Settings &rarr; Billing.
+            </>
+          )}
         </div>
       )}
       {error && <div className="auth-error" style={{ marginBottom: 16 }}>{error}</div>}

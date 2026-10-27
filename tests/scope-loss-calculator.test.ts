@@ -333,7 +333,9 @@ describe('wiring', () => {
   it('the public page is reachable signed-out and carries no workspace data', () => {
     expect(read('middleware.ts')).toMatch(/pathname === '\/calculator'/)
     const page = read('app/calculator/page.tsx')
-    expect(page).toMatch(/mode="public" measured=\{null\} defaults=\{\{\}\}/)
+    // Blank unless the homepage hands its numbers over in the query string (parsed and clamped by lib/billing/roi-url).
+    expect(page).toMatch(/mode="public" measured=\{null\} defaults=\{defaults\}/)
+    expect(page).toMatch(/parseCalculatorParams/)
     expect(page).not.toMatch(/getSession|createServiceClient/)
   })
 
@@ -350,7 +352,7 @@ describe('wiring', () => {
   })
 
   it('entry points: lapsed banner, Billing tab, trial dashboard and the pricing page all link to it', () => {
-    expect(read('app/(app)/layout.tsx')).toContain('href="/plan-calculator"')
+    expect(read('components/layout/LapsedBanner.tsx')).toContain('href="/plan-calculator"')
     expect(read('components/settings/SettingsClient.tsx')).toContain('href="/plan-calculator"')
     expect(read('app/(app)/dashboard/page.tsx')).toContain('href="/plan-calculator"')
     expect(read('components/marketing/MarketingFooter.tsx')).toContain('href="/calculator"')

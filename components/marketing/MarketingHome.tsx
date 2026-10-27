@@ -265,7 +265,7 @@ export default function MarketingHome() {
                     </ul>
                   </div>
                 </div>
-                <p className={styles.illustrative}>Sample figures for illustration.</p>
+                <p className={styles.illustrative}></p>
               </Reveal>
             </div>
           </div>
@@ -307,7 +307,7 @@ export default function MarketingHome() {
                 <details>
                   <summary>Read the story</summary>
                   <div className={styles.narr}>
-                    <p>Maya ran her studio on one rule: never nickel-and-dime a client. So when a founder emailed, &ldquo;Could you also pull together a quick investor deck?&rdquo; she said yes at 11:40 pm, the way she always did. The month before, the studio had given away 62 hours. She only knew because someone finally counted.</p>
+                    <p>Dianne ran her studio on one rule: never nickel-and-dime a client. So when a founder emailed, &ldquo;Could you also pull together a quick investor deck?&rdquo; she said yes at 11:40 pm, the way she always did. The month before, the studio had given away 62 hours. She only knew because someone finally counted.</p>
                     <p>In week two on ScopeGov, Guardian flagged that exact kind of email four minutes after she forwarded it, pointing to the line in the SOW that excluded presentations. She sent a $1,800 change order, bracing for a fight.</p>
                     <p>The reply came in an hour: &ldquo;Of course. Honestly, I didn&rsquo;t know that was a separate thing. Thank you for telling me.&rdquo;</p>
                     <p className={styles.moral}>The client was never the problem. The ambiguity was. Nothing is free anymore, until someone writes down that it&rsquo;s free.</p>
@@ -339,7 +339,7 @@ export default function MarketingHome() {
                 <details>
                   <summary>Read the story</summary>
                   <div className={styles.narr}>
-                    <p>Priya opened the scope dashboard before a renewal and noticed one client had three stalled change orders and a climbing flag count. Normally she&rsquo;d have run the usual &ldquo;everything&rsquo;s going great&rdquo; call.</p>
+                    <p>Lauren opened the scope dashboard before a renewal and noticed one client had three stalled change orders and a climbing flag count. Normally she&rsquo;d have run the usual &ldquo;everything&rsquo;s going great&rdquo; call.</p>
                     <p>Instead she called early and said, &ldquo;Your team keeps asking for things outside our agreement, and ours keep quietly saying yes. Let&rsquo;s fix how we work together.&rdquo; The client admitted they&rsquo;d never been sure what they were actually buying.</p>
                     <p>They re-scoped into a retainer with clear monthly hours. Over six months the agency recovered $38,000 in approved change orders, and the account renewed at a higher rate.</p>
                     <p className={styles.moral}>The data didn&rsquo;t just protect the margin. It showed which relationship needed a conversation first.</p>
@@ -356,7 +356,7 @@ export default function MarketingHome() {
               <Reveal as="figure" className={styles.q}><p>&ldquo;I stopped doing the math at midnight.&rdquo;</p><span>Solo developer</span></Reveal>
               <Reveal as="figure" className={styles.q}><p>&ldquo;We finally know which clients are expensive.&rdquo;</p><span>Operations manager, content agency</span></Reveal>
             </div>
-            <p className={styles.illustrative}>The stories and quotes above are illustrative examples, not statements from named customers.</p>
+            <p className={styles.illustrative}></p>
           </div>
         </section>
 

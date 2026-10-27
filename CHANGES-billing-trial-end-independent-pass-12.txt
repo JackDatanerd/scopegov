@@ -1,0 +1,29 @@
+Billing / trial-end — independent pass 12 (Oct 27). No migrations. One env var is renamed (see B1).
+
+B1  Every checkout failed with "Payments are not available right now" after the Paystack public key was renamed from
+    NEXT_PUBLIC_PAYSTACK_PUBLIC_KEY to NEXT_CONFIG_PAYSTACK_PUBLIC_KEY (Vercel warns about NEXT_PUBLIC_ names containing KEY).
+    api/billing/upgrade read only the old name. The key is only ever returned in the checkout JSON, so it never needed the prefix.
+    FIX: lib/billing/paystack-public-key.ts accepts PAYSTACK_PUBLIC_KEY (preferred), NEXT_CONFIG_PAYSTACK_PUBLIC_KEY and
+    NEXT_PUBLIC_PAYSTACK_PUBLIC_KEY, first non-blank wins. .env.local.example and README now document PAYSTACK_PUBLIC_KEY.
+    ACTION: nothing is required (your renamed variable now works), but redeploy after pulling. Optionally rename to PAYSTACK_PUBLIC_KEY.
+B2  HIGH — read-only workspaces could not upgrade out of a plan they did not fit. The lapse withholds INVITE_MEMBERS, MARK_PROJECT_COMPLETE
+    and DELETE_PROJECTS, yet api/billing/upgrade refused any plan the workspace was over ("Deactivate members down to the new limit
+    first") and the Team page said the same. An expired trial with 2+ members or 3+ projects could only buy Pro/Agency.
+    FIX: for a LAPSED workspace the overage no longer blocks. The first call returns 409 {overLimitAckRequired, overLimit} with a plain
+    explanation; the Billing tab shows it in a confirm dialog and, on "Subscribe anyway", re-sends with acknowledgeOverLimit:true
+    (must be literally true). The webhook already records over_limit and alerts ops; once the plan is active the permissions return
+    and they can deactivate/archive. A workspace that is NOT lapsed keeps the hard refusal (the acknowledgement is ignored).
+    A failed usage read still fails closed. Plan cards now show "You have N active members (M over)…" before the click
+    (settings/page.tsx passes planUsage). The Team over-seat banner no longer tells a read-only workspace to deactivate members.
+B3  MEDIUM — an expired trial's Billing tab said "Current plan: Solo" while the banner and Sidebar said "No plan · read-only".
+    FIX: settings/page.tsx also reads lapsed_at; the card shows "No active plan — read-only since <date>".
+B4  MEDIUM — the homepage calculator and /calculator + /plan-calculator were two different models (defaults 22%/72%/2 seats/4 projects
+    vs 10%/68%/1/2, monthly x 12 regardless of the toggle, no feature fit, different clamps), so the same inputs gave different plans
+    and nets. pricing-data.ts now delegates to computeRoi, starts from the full calculator's defaults, follows the Monthly/Annual
+    toggle, offers the roles/history needs, and links to /calculator with the visitor's numbers (lib/billing/roi-url.ts, clamped on
+    read). /calculator reads them from the query string.
+B5  The read-only banner is now a calm card (components/layout/LapsedBanner.tsx + .lapsed-card CSS): lock icon, short headline,
+    one reassuring sentence, "Choose a plan" button, mobile layout. Same permissions logic as before.
+TESTS: tests/billing-trial-end-upgrade-audit.test.ts (new, 19), homepage-rebrand extended (parity with computeRoi, URL round trip),
+  three older source-pattern tests updated to the new wiring, billing-update-card-and-config uses the new key name.
+  Full suite 372 files / 3881 tests pass (1 skipped file); tsc clean. Not run against live Supabase/Paystack; next build not run.

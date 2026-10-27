@@ -73,7 +73,8 @@ describe('billing/upgrade — payments must be configured (B5)', () => {
   const call = async () => { const r: any = await upgrade({ json: async () => ({ planKey: 'solo', interval: 'monthly' }) } as any); return { status: r.status as number, body: await r.json() } }
   beforeEach(() => {
     process.env.PAYSTACK_PLAN_SOLO_MONTHLY = 'PLN_sm'
-    process.env.NEXT_PUBLIC_PAYSTACK_PUBLIC_KEY = 'pk_test_x'
+    for (const k of ['PAYSTACK_PUBLIC_KEY', 'NEXT_CONFIG_PAYSTACK_PUBLIC_KEY', 'NEXT_PUBLIC_PAYSTACK_PUBLIC_KEY']) delete process.env[k]
+    process.env.PAYSTACK_PUBLIC_KEY = 'pk_test_x'
     process.env.PAYSTACK_SECRET_KEY = 'sk_test_x'
     h.db = createFakeSupabase({ workspaces: [{ id: 'w1', plan_tier: 'trial' }], billing: [], billing_checkouts: [] })
   })
@@ -86,7 +87,7 @@ describe('billing/upgrade — payments must be configured (B5)', () => {
   })
 
   it('a missing PUBLIC key (popup would get publicKey: undefined) refuses before recording a checkout', async () => {
-    delete process.env.NEXT_PUBLIC_PAYSTACK_PUBLIC_KEY
+    delete process.env.PAYSTACK_PUBLIC_KEY
     const r = await call()
     expect(r.status).toBe(503)
     expect((h.db.tables.billing_checkouts || []).length).toBe(0)
