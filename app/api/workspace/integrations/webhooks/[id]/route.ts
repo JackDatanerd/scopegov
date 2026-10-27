@@ -11,6 +11,8 @@ import { encryptSecret, integrationCryptoConfigured } from '@/lib/integrations/c
 import { generateSigningSecret } from '@/lib/integrations/signing'
 import { validateWebhookUrl } from '@/lib/integrations/url'
 import { parseEventTypes } from '@/lib/integrations/event-input'
+import { eventsBeyondPermissions } from '@/lib/integrations/events'
+import { hasPermission } from '@/lib/auth/session'
 
 type Ctx = { params: Promise<{ id: string }> }
 
@@ -41,6 +43,8 @@ export async function PATCH(request: NextRequest, { params }: Ctx) {
     if (body.events !== undefined) {
       const events = parseEventTypes(body.events)
       if (!events.ok) return NextResponse.json({ error: events.error }, { status: 400 })
+      const beyond = eventsBeyondPermissions(events.types, p => hasPermission(session, p as any))
+      if (beyond.length) return NextResponse.json({ error: `You need more permissions to subscribe to: ${beyond.join(', ')}` }, { status: 403 })
       patch.event_types = events.types
     }
     if (body.active !== undefined) {
@@ -64,8 +68,12 @@ export async function PATCH(request: NextRequest, { params }: Ctx) {
     if (Object.keys(patch).length === 0) return NextResponse.json({ error: 'Nothing to change.' }, { status: 400 })
 
     const service = createServiceClient() as any
-    const { data, error } = await service.from('integration_subscriptions').update(patch)
-      .eq('id', id).eq('workspace_id', session.workspaceId).select('id, name').maybeSingle()
+    // A Zapier-managed hook can only be switched on/off here (Zapier owns its URL and events); everything else is for
+    // customer webhooks.
+    const onlyToggle = Object.keys(patch).every(k => ['active', 'consecutive_failures', 'disabled_reason'].includes(k))
+    let q = service.from('integration_subscriptions').update(patch).eq('id', id).eq('workspace_id', session.workspaceId)
+    if (!onlyToggle) q = q.eq('kind', 'webhook')
+    const { data, error } = await q.select('id, name').maybeSingle()
     if (error) throw new Error(error.message)
     if (!data) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 

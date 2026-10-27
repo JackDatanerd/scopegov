@@ -83,7 +83,7 @@ function expandV6(ip: string): number[] {
   return clean.split(':').map(h => parseInt(h, 16))
 }
 
-function isBlockedAddress(ip: string): boolean {
+export function isBlockedAddress(ip: string): boolean {
   const version = net.isIP(ip)
   if (version === 4) return isBlockedV4(ip)
   if (version === 6) {

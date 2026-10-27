@@ -1,0 +1,66 @@
+Integrations round 2 (Oct 27 2026, base 740201f): connection hardening, two foundation bugs, Zapier server side + app.
+
+APPLY ORDER: 1) migration 166 (165 is already in)  2) deploy  3) (Zapier only) push the app — see integrations/zapier/README.md.
+The `integration-delivery` cron (every minute) and INTEGRATIONS_ENCRYPTION_KEY from round 1 are still required.
+
+!! CORRECTION TO ROUND 1 (my mistake): the round-1 archive shipped whole-file copies of components/settings/SettingsClient.tsx,
+README.md and .env.local.example taken from BEFORE your "Billing/trial-end" commit (4fe5a77), so extracting it reverted that
+work in those three files: planUsage prop, "No active plan" state, over-limit subscribe flow, the PAYSTACK_PUBLIC_KEY rename
+in README/.env example (and `tsc` failed on main for that reason). This round's copies were rebuilt from 4fe5a77 + only my
+lines (verified: `git diff 4fe5a77 -- <file>` shows additions and no removals of your lines). If you committed anything to
+those three files after 740201f, re-check before extracting.
+
+BUGS FIXED (both mine, from round 1)
+1. De-dupe dropped real events. Almost every notification is raised against the PROJECT (21 of 29 call sites use
+   entityType 'project'), and 165 de-duplicated on (workspace, event type, entity id) for 10 minutes, so a second invoice
+   paid / second Guardian flag on the same project inside ten minutes was silently lost. Now keyed on what the event SAYS
+   (type, entity, title, summary; md5 in SQL, migration 166). Verified on real Postgres: two different payments -> both stored;
+   identical announcement twice -> one; no key -> never de-duplicated.
+2. Privilege bypass. Anyone with MANAGE_WORKSPACE_SETTINGS could subscribe a webhook to invoice/payment events (amounts in
+   the text) or Guardian flags without holding VIEW_FINANCIALS / APPROVE_FLAGS. Subscribing now requires the permission the
+   matching notification is raised under (lib/integrations/events.ts permissionForEvent; a test reads every
+   notifyMembersWithPermission call site so the map cannot drift). Zapier: checked against the API key creator's CURRENT
+   permissions (a removed/demoted creator's key stops being able to subscribe).
+
+HARDENING
+- lib/integrations/pinned-request.ts replaces safeFetch for deliveries: resolves ALL addresses, refuses if ANY is
+  private/reserved (the old check looked only at the first record of a multi-A name), connects to the exact validated address
+  (closes DNS rebinding), never follows redirects (3xx = permanent failure, no 8 pointless retries), one deadline for
+  connect+TLS+headers. Real-socket tests prove the connection goes to the pinned IP (the hostname resolves nowhere).
+  safe-fetch.ts: isBlockedAddress is now exported (no behaviour change).
+
+NEW: ZAPIER
+- app/api/integrations/v1/hooks (POST subscribe, idempotent on target URL), hooks/[id] (DELETE, idempotent, scoped to the
+  key's workspace and to kind=zapier), events/[type]/sample, me. Hook URL pinned to https://hooks.zapier.com/hooks/…;
+  100 Zap triggers per workspace; customer webhooks keep their cap of 10 (counted by kind).
+- lib/integrations/event-catalog.ts (labels, descriptions, samples) + scripts/gen-zapier-events.mjs ->
+  integrations/zapier/events.json (a test fails if it drifts) + integrations/zapier/{index.js,package.json,README.md}:
+  19 REST-hook triggers, API-key auth.
+- Settings → Integrations: Zaps listed separately (turn off / remove), Zapier row now says "App listing pending".
+- Webhook PATCH on a Zapier row can only toggle it; "send test" is customer webhooks only.
+- Payloads now carry project {id,name,status} and client {id,name} (names only; never contract value, email, phone).
+
+VERIFICATION
+- tsc clean; full vitest suite; real `next build`; migrations 165+166 applied twice on Postgres 16 with behaviour checks.
+- Zapier's own validator (`zapier-platform validate`): "structurally sound". Its second, style pass needs Zapier's servers
+  (unreachable from my sandbox) — NOT run.
+- Zapier's runtime (createAppTester) driven against the real route handlers over HTTP: auth, wrong-key error, subscribe,
+  perform, performList, refusal beyond permissions, unsubscribe — all pass (a throwaway harness, not committed).
+- Pinned TLS: real HTTPS via the pinned address works. NOT demonstrated: that a wrong-hostname certificate is rejected —
+  my sandbox's egress proxy re-signs TLS for any name, so the check cannot fail there. It rests on Node verifying against
+  the request hostname (documented behaviour); worth one manual check from a normal machine.
+
+KNOWN LIMITS
+1. Payloads carry the notification's title/summary plus project/client names; document-level fields (invoice number,
+   amount, SOW number) are NOT structured yet, because most call sites raise the notification against the project. Next:
+   an optional `integrationData` on notify calls, wired per event. This is the biggest gap for Zapier usefulness.
+2. A webhook keeps delivering if its creator is later demoted (Zapier hooks are checked only when subscribing too).
+3. consecutive_failures is read-modify-write (two dead deliveries in one run can count as one).
+4. Events raised through notifyUsers (approval_requested, escalation) are not announced.
+5. Zapier app is NOT published: needs your developer account (register, push, promote, review).
+
+Apply
+-----
+  tar -xzf ~/Downloads/scopegov-integrations-round2.tar.gz --strip-components=1 -C .
+  Run migration 166 in the Supabase SQL editor.
+  git add -A && git commit -m "Integrations: Zapier, pinned requests, dedupe + permission fixes" && git push

@@ -12,6 +12,8 @@ import { encryptSecret, integrationCryptoConfigured } from '@/lib/integrations/c
 import { generateSigningSecret } from '@/lib/integrations/signing'
 import { validateWebhookUrl } from '@/lib/integrations/url'
 import { parseEventTypes } from '@/lib/integrations/event-input'
+import { eventsBeyondPermissions } from '@/lib/integrations/events'
+import { hasPermission } from '@/lib/auth/session'
 
 // Creates a webhook. The signing secret is generated here, stored ENCRYPTED, and returned exactly once in this
 // response — it is never readable again (rotate it to get a new one).
@@ -31,13 +33,16 @@ export async function POST(request: NextRequest) {
     if (!url.ok) return NextResponse.json({ error: url.error }, { status: 400 })
     const events = parseEventTypes(body.events)
     if (!events.ok) return NextResponse.json({ error: events.error }, { status: 400 })
+    // You can only subscribe to events you could see yourself (see permissionForEvent).
+    const beyond = eventsBeyondPermissions(events.types, p => hasPermission(session, p as any))
+    if (beyond.length) return NextResponse.json({ error: `You need more permissions to subscribe to: ${beyond.join(', ')}` }, { status: 403 })
 
     const stepUp = await requireStepUpForCurrentUser()
     if (stepUp) return stepUp
 
     const service = createServiceClient() as any
     const { count, error: countErr } = await service.from('integration_subscriptions')
-      .select('id', { count: 'exact', head: true }).eq('workspace_id', session.workspaceId)
+      .select('id', { count: 'exact', head: true }).eq('workspace_id', session.workspaceId).eq('kind', 'webhook')
     if (countErr) throw new Error(countErr.message)
     if ((count ?? 0) >= MAX_SUBSCRIPTIONS_PER_WORKSPACE)
       return NextResponse.json({ error: `A workspace can have up to ${MAX_SUBSCRIPTIONS_PER_WORKSPACE} webhooks. Remove one first.` }, { status: 409 })

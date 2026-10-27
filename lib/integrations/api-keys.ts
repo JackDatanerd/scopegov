@@ -22,14 +22,14 @@ export function extractBearerKey(authorization: string | null): string | null {
   return m ? m[1] : null
 }
 
-export interface ApiKeyAuth { workspaceId: string; keyId: string }
+export interface ApiKeyAuth { workspaceId: string; keyId: string; createdBy: string | null }
 
 /** Resolves the workspace a request's API key belongs to, or null (wrong/revoked/expired key, plan or workspace not eligible). */
 export async function authenticateApiKey(service: any, authorization: string | null, nowMs: number = Date.now()): Promise<ApiKeyAuth | null> {
   const key = extractBearerKey(authorization)
   if (!key) return null
   const { data: row, error } = await service.from('integration_api_keys')
-    .select('id, workspace_id, expires_at, revoked_at, last_used_at').eq('key_hash', hashApiKey(key)).maybeSingle()
+    .select('id, workspace_id, created_by, expires_at, revoked_at, last_used_at').eq('key_hash', hashApiKey(key)).maybeSingle()
   if (error || !row || row.revoked_at) return null
   if (row.expires_at && Date.parse(row.expires_at) <= nowMs) return null
 
@@ -40,5 +40,5 @@ export async function authenticateApiKey(service: any, authorization: string | n
   // last_used_at is informational: write it at most once a minute so a busy integration is not a write per request.
   if (!row.last_used_at || nowMs - Date.parse(row.last_used_at) > 60_000)
     await service.from('integration_api_keys').update({ last_used_at: new Date(nowMs).toISOString() }).eq('id', row.id)
-  return { workspaceId: row.workspace_id, keyId: row.id }
+  return { workspaceId: row.workspace_id, keyId: row.id, createdBy: row.created_by ?? null }
 }

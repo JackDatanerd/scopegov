@@ -10,6 +10,8 @@ import { signPayload, verifySignature, generateSigningSecret } from '@/lib/integ
 import { validateWebhookUrl } from '@/lib/integrations/url'
 import { INTEGRATION_EVENT_MAP, INTEGRATION_EVENT_TYPES, emitIntegrationEvent } from '@/lib/integrations/events'
 import { parseEventTypes } from '@/lib/integrations/event-input'
+import { pickSafeAddress, pinnedLookup, pinnedPost, TimeoutError } from '@/lib/integrations/pinned-request'
+import http from 'node:http'
 import { classifyStatus, retryDelayMs, parseRetryAfter, processDeliveries, MAX_ATTEMPTS, AUTO_DISABLE_AFTER_DEAD, buildEnvelope } from '@/lib/integrations/delivery'
 import { generateApiKey, hashApiKey, extractBearerKey, authenticateApiKey } from '@/lib/integrations/api-keys'
 import { EMAIL_EVENT_TYPES } from '@/lib/constants/notification-events'
@@ -151,7 +153,8 @@ describe('delivery policy', () => {
   it('classifies statuses', () => {
     expect(classifyStatus(200)).toBe('ok'); expect(classifyStatus(204)).toBe('ok')
     expect(classifyStatus(410)).toBe('gone')
-    for (const s of [301, 400, 401, 404, 408, 429, 500, 503]) expect(classifyStatus(s)).toBe('retry')
+    for (const s of [301, 302, 307, 308]) expect(classifyStatus(s)).toBe('permanent')
+    for (const s of [400, 401, 404, 408, 429, 500, 503]) expect(classifyStatus(s)).toBe('retry')
   })
   it('backs off 1m, 5m, 15m, 1h, 3h, 6h, 12h and never shortens for Retry-After', () => {
     expect([1, 2, 3, 4, 5, 6, 7].map(n => retryDelayMs(n) / 60_000)).toEqual([1, 5, 15, 60, 180, 360, 720])
@@ -167,7 +170,30 @@ describe('delivery policy', () => {
   })
   it('envelope carries ids, type, and data', () => {
     expect(buildEnvelope({ id: 'e', event_type: 'sow.signed', created_at: 'now', workspace_id: 'w', project_id: 'p', entity_type: 'sow', entity_id: 's', data: { a: 1 } }))
-      .toEqual({ id: 'e', type: 'sow.signed', created_at: 'now', workspace_id: 'w', project_id: 'p', entity: { type: 'sow', id: 's' }, data: { a: 1 } })
+      .toEqual({ id: 'e', type: 'sow.signed', created_at: 'now', workspace_id: 'w', project_id: 'p', entity: { type: 'sow', id: 's' }, project: null, client: null, data: { a: 1 } })
+  })
+  it('adds project and client NAMES (and nothing financial or personal) when it has them', () => {
+    const env: any = buildEnvelope({ id: 'e', event_type: 'x', created_at: 'n', workspace_id: 'w', project_id: 'p', data: {} },
+      { project: { id: 'p', name: 'Site', status: 'Active', contract_value: 99000, guardian_email: 'g@x.com', client_id: 'c' }, client: { id: 'c', name: 'Acme', email: 'a@acme.com', phone: '1' } })
+    expect(env.project).toEqual({ id: 'p', name: 'Site', status: 'Active' })
+    expect(env.client).toEqual({ id: 'c', name: 'Acme' })
+    expect(JSON.stringify(env)).not.toMatch(/99000|@|phone/)
+  })
+  it('delivery payloads include project/client context looked up for the event', async () => {
+    process.env.INTEGRATIONS_ENCRYPTION_KEY = KEY
+    const sealed = encryptSecret('whsec_t', 'ws-1:sub-1')
+    const db = createFakeSupabase({
+      integration_deliveries: [{ id: 'd1', workspace_id: 'ws-1', subscription_id: 'sub-1', event_id: 'ev-1', attempts: 1, status: 'delivering' }],
+      integration_subscriptions: [{ id: 'sub-1', workspace_id: 'ws-1', kind: 'webhook', target_url: 'https://h.example.com/x', secret_enc: sealed, active: true, consecutive_failures: 0 }],
+      integration_events: [{ id: 'ev-1', workspace_id: 'ws-1', event_type: 'invoice.paid', entity_type: 'project', entity_id: 'p1', project_id: 'p1', data: { title: 'T' }, created_at: 'now' }],
+      workspaces: [{ id: 'ws-1', plan_tier: 'pro', trial_ends_at: null, lapsed_at: null, deleted_at: null }],
+      projects: [{ id: 'p1', name: 'Site', status: 'Active', client_id: 'c1', contract_value: 5000, clients: { id: 'c1', name: 'Acme', email: 'a@acme.com' } }],
+    }, { rpc: { claim_integration_deliveries: () => ({ data: [{ id: 'd1', workspace_id: 'ws-1', subscription_id: 'sub-1', event_id: 'ev-1', attempts: 1 }] }) } })
+    const send = vi.fn(async () => ({ status: 200, retryAfter: null }))
+    await processDeliveries(db.client, { now: () => Date.now(), send })
+    const sent = JSON.parse((send.mock.calls[0] as any)[1].body)
+    expect(sent.project).toEqual({ id: 'p1', name: 'Site', status: 'Active' }); expect(sent.client).toEqual({ id: 'c1', name: 'Acme' })
+    expect(JSON.stringify(sent)).not.toMatch(/5000|acme\.com/)
   })
 })
 
@@ -196,13 +222,14 @@ describe('processDeliveries', () => {
   const run = (db: any, send: any) => processDeliveries(db.client, { now: () => NOW, send })
   const delivery = (db: any) => db.tables.integration_deliveries[0]
   const sub = (db: any) => db.tables.integration_subscriptions[0]
-  const ok = (status = 200, headers: Record<string, string> = {}) => vi.fn(async () => new Response(null, { status, headers }))
+  const ok = (status = 200, headers: Record<string, string> = {}) => vi.fn(async (_u: string, _r: any) => ({ status, retryAfter: headers['retry-after'] ?? null }))
 
   it('POSTs a signed envelope and marks the delivery succeeded', async () => {
     const db = setup(); const send = ok(200)
     const r = await run(db, send)
     expect(r).toMatchObject({ claimed: 1, succeeded: 1 })
     const [url, init] = send.mock.calls[0] as any
+    expect(init.timeoutMs).toBe(8000)
     expect(url).toBe('https://hooks.example.com/x')
     const h = init.headers
     expect(h['X-ScopeGov-Event']).toBe('sow.signed'); expect(h['X-ScopeGov-Delivery']).toBe('d1')
@@ -217,7 +244,7 @@ describe('processDeliveries', () => {
     expect(Date.parse(delivery(db).next_attempt_at) - NOW).toBe(600_000)
   })
   it('retries a network error / timeout', async () => {
-    const db = setup(); await run(db, vi.fn(async () => { throw Object.assign(new Error('x'), { name: 'AbortError' }) }))
+    const db = setup(); await run(db, vi.fn(async () => { throw new TimeoutError('timed out after 8s') }))
     expect(delivery(db)).toMatchObject({ status: 'pending' }); expect(delivery(db).last_error).toMatch(/timed out/)
   })
   it('goes dead after the last attempt and counts toward auto-disable', async () => {
@@ -233,6 +260,11 @@ describe('processDeliveries', () => {
   it('410 Gone kills the delivery and turns the webhook off immediately', async () => {
     const db = setup(); await run(db, ok(410))
     expect(delivery(db).status).toBe('dead'); expect(sub(db).active).toBe(false); expect(sub(db).disabled_reason).toMatch(/410/)
+  })
+  it('a redirect is permanent: dead at once (no 8 pointless retries), counted, hint to fix the URL', async () => {
+    const db = setup(); await run(db, ok(301))
+    expect(delivery(db)).toMatchObject({ status: 'dead', last_status: 301 }); expect(delivery(db).last_error).toMatch(/redirect/)
+    expect(sub(db).consecutive_failures).toBe(1); expect(sub(db).active).toBe(true)
   })
   it('a success resets the failure streak', async () => {
     const db = setup({ sub: { consecutive_failures: 4 } }); await run(db, ok(200))
@@ -284,7 +316,7 @@ describe('API keys', () => {
   }
   it('authenticates a live key and stamps last_used_at', async () => {
     const { k, db } = mk({})
-    expect(await authenticateApiKey(db.client, `Bearer ${k.key}`, NOW)).toEqual({ workspaceId: 'w1', keyId: 'k1' })
+    expect(await authenticateApiKey(db.client, `Bearer ${k.key}`, NOW)).toEqual({ workspaceId: 'w1', keyId: 'k1', createdBy: null })
     expect(db.tables.integration_api_keys[0].last_used_at).toBeTruthy()
   })
   it('refuses unknown, revoked, expired keys and ineligible workspaces', async () => {
@@ -293,5 +325,75 @@ describe('API keys', () => {
       const { k, db } = mk(row, ws)
       expect(await authenticateApiKey(db.client, `Bearer ${k.key}`, NOW)).toBeNull()
     }
+  })
+})
+
+describe('pinned outbound requests (SSRF: rebinding + multi-record)', () => {
+  const PUBLIC = '93.184.216.34'
+  it('refuses when ANY resolved address is private, even if the first is public (multi-A bypass of the old check)', async () => {
+    const lookupAll = async () => [{ address: PUBLIC, family: 4 }, { address: '10.0.0.5', family: 4 }]
+    await expect(pickSafeAddress('evil.example.com', { lookupAll })).rejects.toThrow(/internal\/reserved address: 10\.0\.0\.5/)
+    const meta = async () => [{ address: PUBLIC, family: 4 }, { address: '169.254.169.254', family: 4 }]
+    await expect(pickSafeAddress('evil.example.com', { lookupAll: meta })).rejects.toThrow()
+    const v6 = async () => [{ address: '::ffff:127.0.0.1', family: 6 }]
+    await expect(pickSafeAddress('evil.example.com', { lookupAll: v6 })).rejects.toThrow()
+  })
+  it('returns the first address when all are public; refuses an IP literal that is private; fails when nothing resolves', async () => {
+    expect(await pickSafeAddress('ok.example.com', { lookupAll: async () => [{ address: PUBLIC, family: 4 }] })).toEqual({ address: PUBLIC, family: 4 })
+    await expect(pickSafeAddress('127.0.0.1')).rejects.toThrow(/internal\/reserved/)
+    await expect(pickSafeAddress('[::1]')).rejects.toThrow(/internal\/reserved/)
+    await expect(pickSafeAddress('none.example.com', { lookupAll: async () => [] })).rejects.toThrow(/Could not resolve/)
+  })
+  it('the pinned lookup answers with the validated address in both shapes Node asks for', () => {
+    const l = pinnedLookup(PUBLIC, 4)
+    l('whatever.example.com', { all: true }, (e: any, a: any) => expect(a).toEqual([{ address: PUBLIC, family: 4 }]))
+    l('whatever.example.com', {}, (e: any, a: any, f: any) => { expect(a).toBe(PUBLIC); expect(f).toBe(4) })
+    ;(l as any)('whatever.example.com', (e: any, a: any) => expect(a).toBe(PUBLIC))
+  })
+
+  // A real connection. The hostname does not resolve anywhere; the request can only succeed by going to the pinned address.
+  describe('over a real socket', () => {
+    let server: http.Server, port: number, seen: { host?: string; sig?: string; body: string; method?: string }[] = []
+    let respond: (res: http.ServerResponse) => void
+    beforeEach(async () => {
+      seen = []; respond = res => { res.statusCode = 200; res.end('ignored body') }
+      server = http.createServer((req, res) => {
+        let body = ''; req.on('data', c => (body += c)); req.on('end', () => { seen.push({ host: req.headers.host, sig: String(req.headers['x-test'] ?? ''), body, method: req.method }); respond(res) })
+      })
+      await new Promise<void>(r => server.listen(0, '127.0.0.1', r)); port = (server.address() as any).port
+    })
+    const stop = () => new Promise<void>(r => { (server as any).closeAllConnections?.(); server.close(() => r()) })
+    const deps = { lookupAll: async () => [{ address: '127.0.0.1', family: 4 }], isBlocked: () => false }
+    const req = { headers: { 'Content-Type': 'application/json', 'X-Test': 'sig-1' }, body: '{"hello":"world"}', timeoutMs: 2000 }
+
+    it('connects to the pinned IP (not by resolving the name), keeps the real Host, sends body + headers', async () => {
+      const r = await pinnedPost(`http://hook.invalid:${port}/path?x=1`, req, deps, { NODE_ENV: 'test' } as any)
+      expect(r).toEqual({ status: 200, retryAfter: null })
+      expect(seen).toEqual([{ host: `hook.invalid:${port}`, sig: 'sig-1', body: '{"hello":"world"}', method: 'POST' }])
+      await stop()
+    })
+    it('reports the status and Retry-After, and does NOT follow a redirect', async () => {
+      respond = res => { res.statusCode = 302; res.setHeader('Location', 'http://169.254.169.254/latest/meta-data'); res.setHeader('Retry-After', '30'); res.end() }
+      const r = await pinnedPost(`http://hook.invalid:${port}/`, req, deps, { NODE_ENV: 'test' } as any)
+      expect(r).toEqual({ status: 302, retryAfter: '30' })
+      expect(seen).toHaveLength(1)
+      await stop()
+    })
+    it('times out a receiver that never answers', async () => {
+      respond = () => { /* hang */ }
+      await expect(pinnedPost(`http://hook.invalid:${port}/`, { ...req, timeoutMs: 150 }, deps, { NODE_ENV: 'test' } as any)).rejects.toBeInstanceOf(TimeoutError)
+      await stop()
+    })
+    it('refuses without connecting when the real check sees a private address', async () => {
+      await expect(pinnedPost(`http://hook.invalid:${port}/`, req, { lookupAll: deps.lookupAll }, { NODE_ENV: 'test' } as any)).rejects.toThrow(/internal\/reserved/)
+      expect(seen).toHaveLength(0)
+      await stop()
+    })
+    it('blocks plain http in production, and credentials in the URL', async () => {
+      await expect(pinnedPost(`http://hook.invalid:${port}/`, req, deps, { NODE_ENV: 'production' } as any)).rejects.toThrow(/Blocked protocol/)
+      await expect(pinnedPost(`http://u:p@hook.invalid:${port}/`, req, deps, { NODE_ENV: 'test' } as any)).rejects.toThrow(/Credentials/)
+      expect(seen).toHaveLength(0)
+      await stop()
+    })
   })
 })

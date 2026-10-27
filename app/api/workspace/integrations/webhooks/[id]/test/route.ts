@@ -16,6 +16,9 @@ export async function POST(_request: NextRequest, { params }: { params: Promise<
     if ('response' in auth) return auth.response
     const { session } = auth
     const service = createServiceClient() as any
+    // A test event is meaningless (and confusing) to a Zap, so only customer webhooks can be tested.
+    const { data: row } = await service.from('integration_subscriptions').select('kind').eq('id', id).eq('workspace_id', session.workspaceId).maybeSingle()
+    if (!row || row.kind !== 'webhook') return NextResponse.json({ error: 'Not found' }, { status: 404 })
     const { data, error } = await service.rpc('enqueue_integration_test', {
       p_subscription_id: id, p_workspace_id: session.workspaceId,
       p_data: { message: 'This is a test event from ScopeGov.', sent_by: session.name },

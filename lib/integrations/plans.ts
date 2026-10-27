@@ -34,5 +34,6 @@ export function minPlanLabel(kind: IntegrationKind): string {
   return p.charAt(0).toUpperCase() + p.slice(1)
 }
 
+// Customer webhooks. Zapier hooks (one per active Zap trigger) have their own, larger cap — see zapier.ts.
 export const MAX_SUBSCRIPTIONS_PER_WORKSPACE = 10
 export const MAX_API_KEYS_PER_WORKSPACE = 10

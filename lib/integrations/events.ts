@@ -41,6 +41,24 @@ export const INTEGRATION_EVENT_MAP: Record<string, string> = {
 
 export const INTEGRATION_EVENT_TYPES: readonly string[] = Object.values(INTEGRATION_EVENT_MAP)
 
+/**
+ * The permission someone must hold to SUBSCRIBE to an event: the same one the in-app notification for it is raised
+ * under (the `permission:` at each notifyMembersWithPermission call site — tests/integrations-foundation.test.ts reads
+ * the source to keep the two from drifting). Without this, anyone who can manage workspace settings could read
+ * payment amounts or client messages through a webhook that they could not open in the app.
+ */
+export function permissionForEvent(type: string): 'SEND_SOW' | 'SEND_CHANGE_ORDERS' | 'APPROVE_FLAGS' | 'VIEW_FINANCIALS' {
+  if (type.startsWith('sow.')) return 'SEND_SOW'
+  if (type.startsWith('change_order.')) return 'SEND_CHANGE_ORDERS'
+  if (type.startsWith('guardian.')) return 'APPROVE_FLAGS'
+  return 'VIEW_FINANCIALS' // invoice.*, milestone.*, retainer.*
+}
+
+/** The subset of `types` the holder of `has` may NOT subscribe to, as "event (PERMISSION)" strings. */
+export function eventsBeyondPermissions(types: readonly string[], has: (permission: string) => boolean): string[] {
+  return types.filter(t => !has(permissionForEvent(t))).map(t => `${t} (${permissionForEvent(t)})`)
+}
+
 export interface IntegrationEventInput {
   workspaceId: string
   /** The notification event key (e.g. 'sow_signed'). Anything not in INTEGRATION_EVENT_MAP is ignored. */
@@ -49,6 +67,16 @@ export interface IntegrationEventInput {
   entityId?: string | null
   projectId?: string | null
   data?: Record<string, unknown>
+}
+
+/**
+ * What identifies THIS announcement (the database hashes it). Almost every notification is raised against the project,
+ * not the invoice/SOW/flag, so (type, entity) alone would merge two different payments on one project; the title and
+ * summary carry the difference (amounts, document names). The same announcement made twice is byte-identical.
+ */
+function dedupeText(type: string, input: IntegrationEventInput): string {
+  const d = input.data || {}
+  return [type, input.entityType || '', input.entityId || '', String(d.title ?? ''), String(d.summary ?? '')].join('\u0001')
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -67,6 +95,7 @@ export async function emitIntegrationEvent(input: IntegrationEventInput, service
       p_entity_id:    uuidOrNull(input.entityId),
       p_project_id:   uuidOrNull(input.projectId),
       p_data:         input.data || {},
+      p_dedupe_key:   dedupeText(type, input),
       p_dedupe_minutes: 10,
     })
     if (error) { console.error('[integrations] emit failed:', error.message || error); return false }

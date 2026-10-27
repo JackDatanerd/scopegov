@@ -9,7 +9,7 @@ import { fetchWithStepUp } from '@/lib/client/step-up'
 import { useDialogs } from '@/components/ui/Dialogs'
 
 interface Health { pending: number; succeeded: number; dead: number; last?: { status: string; code: number | null; error: string | null; at: string } }
-interface Sub { id: string; name: string; target_url: string; event_types: string[]; active: boolean; disabled_reason: string | null; last_success_at: string | null; health: Health }
+interface Sub { id: string; kind: 'webhook' | 'zapier' | 'slack'; name: string; target_url: string; event_types: string[]; active: boolean; disabled_reason: string | null; last_success_at: string | null; health: Health }
 interface Key { id: string; name: string; key_prefix: string; created_at: string; last_used_at: string | null }
 interface Overview {
   encryptionConfigured: boolean; allowed: boolean; lapsed: boolean; minPlan: string; nativeMinPlan: string
@@ -70,6 +70,8 @@ export default function IntegrationsSection() {
   if (!data) return <p style={subtle}>Loading…</p>
 
   const canWrite = data.allowed && data.encryptionConfigured
+  const webhooks = data.subscriptions.filter(s => s.kind === 'webhook')
+  const zaps = data.subscriptions.filter(s => s.kind === 'zapier')
   return (
     <div style={{ marginBottom: 28 }}>
       {!data.allowed && (
@@ -103,8 +105,8 @@ export default function IntegrationsSection() {
           Verify the <code>X-ScopeGov-Signature</code> header (HMAC-SHA256 of <code>timestamp.body</code> with your signing secret) and de-duplicate on <code>X-ScopeGov-Delivery</code>.
           Failed deliveries are retried for about a day.
         </div>
-        {data.subscriptions.length === 0 && <div style={subtle}>No webhooks yet.</div>}
-        {data.subscriptions.map(s => (
+        {webhooks.length === 0 && <div style={subtle}>No webhooks yet.</div>}
+        {webhooks.map(s => (
           <div key={s.id} style={{ padding: '12px 0', borderBottom: '1px solid var(--surface-2)' }}>
             <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
               <div style={{ flex: 1, minWidth: 0 }}>
@@ -143,9 +145,30 @@ export default function IntegrationsSection() {
             <button type="button" className="btn btn-ghost btn-sm" onClick={() => setForm(null)}>Cancel</button>
           </form>
         ) : (
-          <button type="button" className="btn btn-secondary btn-sm" style={{ marginTop: 12 }} disabled={!canWrite || data.subscriptions.length >= data.limits.subscriptions}
+          <button type="button" className="btn btn-secondary btn-sm" style={{ marginTop: 12 }} disabled={!canWrite || webhooks.length >= data.limits.subscriptions}
             onClick={() => setForm({ name: '', url: '', events: [] })}>Add webhook</button>
         )}
+      </div>
+
+      <div className="settings-section" style={{ marginTop: 16 }}>
+        <div className="settings-section-title">Zapier</div>
+        <div style={{ ...subtle, marginBottom: 10 }}>
+          Zapier connects with an API key (below). Add ScopeGov in Zapier, paste the key when asked, and pick a trigger such as “Invoice Paid”.
+          Each active Zap that uses a ScopeGov trigger appears here; turning the Zap off in Zapier removes it.
+          You can only pick triggers for events you could see in ScopeGov yourself.
+        </div>
+        {zaps.length === 0 && <div style={subtle}>No Zaps are using ScopeGov yet.</div>}
+        {zaps.map(s => (
+          <div key={s.id} style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '8px 0', borderBottom: '1px solid var(--surface-2)' }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 13, fontWeight: 600 }}>{s.name} {!s.active && <span style={{ ...subtle, color: 'var(--red)' }}>· off</span>}</div>
+              <div style={subtle}>last delivered {when(s.last_success_at)} · {s.health.pending} waiting, {s.health.dead} failed</div>
+              {s.disabled_reason && <div style={{ ...subtle, color: 'var(--red)' }}>{s.disabled_reason}</div>}
+            </div>
+            <button className="btn btn-ghost btn-sm" disabled={busy || !canWrite} onClick={() => act(`/api/workspace/integrations/webhooks/${s.id}`, 'PATCH', { active: !s.active }, s.active ? 'Zap trigger turned off.' : 'Zap trigger turned on.')}>{s.active ? 'Turn off' : 'Turn on'}</button>
+            <button className="btn btn-ghost btn-sm" disabled={busy || !data.allowed} onClick={async () => { if (await dialogs.confirm(`Remove “${s.name}”? The Zap using it stops receiving events.`)) act(`/api/workspace/integrations/webhooks/${s.id}`, 'DELETE', undefined, 'Zap trigger removed.') }}>Remove</button>
+          </div>
+        ))}
       </div>
 
       <div className="settings-section" style={{ marginTop: 16 }}>

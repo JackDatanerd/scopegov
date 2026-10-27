@@ -10,7 +10,7 @@
 // Guarantees: at-least-once delivery. A receiver may see the same X-ScopeGov-Delivery id twice (a worker that died
 // after the POST but before recording it) and should de-duplicate on it.
 
-import { safeFetch } from '@/lib/utils/safe-fetch'
+import { pinnedPost, type PinnedResponse } from './pinned-request'
 import { effectivePlanTier, isWorkspaceLapsed } from '@/lib/billing/plans'
 import { decryptSecret } from './crypto'
 import { signPayload } from './signing'
@@ -24,11 +24,16 @@ const CONCURRENCY = 5
 const BACKOFF_MINUTES = [1, 5, 15, 60, 180, 360, 720]
 const MAX_RETRY_AFTER_SECONDS = 12 * 3600
 
-export type Outcome = 'ok' | 'gone' | 'retry'
+export type Outcome = 'ok' | 'gone' | 'permanent' | 'retry'
+
+/** What a sender must provide: one POST, no redirect-following, returns the status and any Retry-After. */
+export type Sender = (url: string, req: { headers: Record<string, string>; body: string; timeoutMs: number }) => Promise<PinnedResponse>
 
 export function classifyStatus(status: number): Outcome {
   if (status >= 200 && status < 300) return 'ok'
   if (status === 410) return 'gone'
+  // A redirect is never followed (see pinned-request.ts), and retrying cannot change the answer: the URL must be fixed.
+  if (status >= 300 && status < 400) return 'permanent'
   return 'retry'
 }
 
@@ -47,7 +52,7 @@ export function parseRetryAfter(header: string | null, now: number = Date.now())
   return Number.isNaN(at) ? null : Math.max(0, Math.round((at - now) / 1000))
 }
 
-export function buildEnvelope(event: any): Record<string, unknown> {
+export function buildEnvelope(event: any, context: { project?: any; client?: any } = {}): Record<string, unknown> {
   return {
     id: event.id,
     type: event.event_type,
@@ -55,6 +60,9 @@ export function buildEnvelope(event: any): Record<string, unknown> {
     workspace_id: event.workspace_id,
     project_id: event.project_id || null,
     entity: event.entity_type || event.entity_id ? { type: event.entity_type || null, id: event.entity_id || null } : null,
+    // Names and status only — never contract values, emails or phone numbers (those sit behind VIEW_FINANCIALS / VIEW_CLIENT_DATA).
+    project: context.project ? { id: context.project.id, name: context.project.name, status: context.project.status } : null,
+    client: context.client ? { id: context.client.id, name: context.client.name } : null,
     data: event.data || {},
   }
 }
@@ -65,9 +73,9 @@ export interface ProcessResult { claimed: number; succeeded: number; retried: nu
 
 export async function processDeliveries(
   service: any,
-  opts: { limit?: number; now?: () => number; send?: typeof safeFetch } = {},
+  opts: { limit?: number; now?: () => number; send?: Sender } = {},
 ): Promise<ProcessResult> {
-  const send = opts.send || safeFetch
+  const send: Sender = opts.send || ((u, r) => pinnedPost(u, r))
   const nowMs = opts.now || Date.now
   const result: ProcessResult = { claimed: 0, succeeded: 0, retried: 0, dead: 0, skipped: 0 }
 
@@ -84,6 +92,15 @@ export async function processDeliveries(
     service.from('workspaces').select('id, plan_tier, trial_ends_at, lapsed_at, deleted_at').in('id', ids('workspace_id')),
   ])
   for (const r of [subsRes, eventsRes, wsRes]) if (r.error) throw new Error(`lookup failed: ${r.error.message}`)
+  // Project + client NAMES for the payload, looked up now (only subscribed workspaces ever reach here). Best effort: a
+  // failed lookup sends the event without them rather than failing or delaying it.
+  const projectIds = Array.from(new Set((eventsRes.data || []).map((e: any) => e.project_id).filter(Boolean)))
+  const projects = new Map<string, any>()
+  if (projectIds.length) {
+    const { data: prows, error: perr } = await service.from('projects').select('id, name, status, client_id, clients(id, name)').in('id', projectIds)
+    if (perr) console.error('[integrations] project context lookup failed (sending without it):', perr.message)
+    for (const p of prows || []) projects.set(p.id, p)
+  }
   const subs = new Map<string, any>((subsRes.data || []).map((s: any) => [s.id, s]))
   const events = new Map<string, any>((eventsRes.data || []).map((e: any) => [e.id, e]))
   const workspaces = new Map<string, any>((wsRes.data || []).map((w: any) => [w.id, w]))
@@ -116,14 +133,12 @@ export async function processDeliveries(
       return finish(row, { status: 'dead', last_error: trim(`signing secret unreadable: ${e?.message || e}`), claimed_at: null })
     }
 
-    const body = JSON.stringify(buildEnvelope(event))
+    const proj = event.project_id ? projects.get(event.project_id) : null
+    const body = JSON.stringify(buildEnvelope(event, { project: proj, client: proj?.clients }))
     const ts = Math.floor(nowMs() / 1000)
-    const ctrl = new AbortController()
-    const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS)
     let status = 0, errorText: string | null = null, retryAfter: number | null = null
     try {
       const res = await send(sub.target_url, {
-        method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'User-Agent': 'ScopeGov-Webhooks/1',
@@ -134,14 +149,13 @@ export async function processDeliveries(
           'X-ScopeGov-Signature': signPayload(secret, ts, body),
         },
         body,
-        signal: ctrl.signal,
+        timeoutMs: REQUEST_TIMEOUT_MS,
       })
       status = res.status
-      retryAfter = parseRetryAfter(res.headers.get('retry-after'), nowMs())
-      try { await res.body?.cancel() } catch { /* body is not needed */ }
+      retryAfter = parseRetryAfter(res.retryAfter, nowMs())
     } catch (e: any) {
-      errorText = e?.name === 'AbortError' ? `timed out after ${REQUEST_TIMEOUT_MS / 1000}s` : String(e?.message || e)
-    } finally { clearTimeout(timer) }
+      errorText = e?.name === 'TimeoutError' ? String(e.message) : String(e?.message || e)
+    }
 
     const outcome: Outcome = status ? classifyStatus(status) : 'retry'
     const at = new Date(nowMs()).toISOString()
@@ -154,8 +168,8 @@ export async function processDeliveries(
       return
     }
 
-    const msg = trim(errorText || `receiver answered HTTP ${status}`)
-    if (outcome === 'gone' || row.attempts >= MAX_ATTEMPTS) {
+    const msg = trim(errorText || (outcome === 'permanent' ? `receiver answered HTTP ${status} (a redirect); update the URL to its final address` : `receiver answered HTTP ${status}`))
+    if (outcome === 'gone' || outcome === 'permanent' || row.attempts >= MAX_ATTEMPTS) {
       result.dead++
       await finish(row, { status: 'dead', last_status: status || null, last_error: msg, claimed_at: null })
       const failures = (sub.consecutive_failures || 0) + 1

@@ -172,7 +172,7 @@ RESEND_FROM_EMAIL=noreply@mail.scopegov.app
 RESEND_WEBHOOK_SECRET=               ← whsec_… signing secret for POST /api/webhooks/resend (bounce/complaint tracking)
 POSTMARK_INBOUND_WEBHOOK_SECRET=     ← Basic Auth password, see §4 (NOT an HMAC secret)
 NEXT_PUBLIC_GUARDIAN_EMAIL_DOMAIN=guard.scopegov.app
-NEXT_PUBLIC_PAYSTACK_PUBLIC_KEY=
+PAYSTACK_PUBLIC_KEY=
 PAYSTACK_SECRET_KEY=
 PAYSTACK_PLAN_SOLO_MONTHLY=
 PAYSTACK_PLAN_STARTER_MONTHLY=
@@ -362,14 +362,26 @@ in the Cloudflare worker; until then queued webhook deliveries simply wait (noth
 `integration_deliveries`), and the watchdog pages after 30 minutes of silence.
 
 ### Integrations (webhooks / API keys; foundation for Slack, Zapier, HubSpot, Google Drive)
-Migration **165** must be applied BEFORE deploying the matching build (the notify hook calls `emit_integration_event`;
-until it exists every emit logs an error and is dropped — business actions are unaffected, nothing is delivered).
+Migrations **165 and 166** must be applied BEFORE deploying the matching build, in that order (the notify hook calls
+`emit_integration_event`; until it exists every emit logs an error and is dropped — business actions are unaffected,
+nothing is delivered).
 - **Flow:** `notifyMembersWithPermission` → `emitIntegrationEvent` → `emit_integration_event()` (stores the event + one
-  `integration_deliveries` row per matching active subscription, atomically; dropped if none match; same event for the
-  same entity inside 10 minutes is de-duplicated) → `integration-delivery` cron → signed POST with retries.
+  `integration_deliveries` row per matching active subscription, atomically; dropped if none match; an IDENTICAL
+  announcement (same type, entity, title and summary) inside 10 minutes is de-duplicated — two different payments on one
+  project are not)) → `integration-delivery` cron → signed POST with retries.
 - **Retries:** 8 attempts, backoff 1m / 5m / 15m / 1h / 3h / 6h / 12h (a receiver's `Retry-After` can lengthen, never
   shorten). `410 Gone` stops immediately and turns the webhook off; 10 dead deliveries in a row also turns it off.
   Delivery is at-least-once: receivers de-duplicate on `X-ScopeGov-Delivery`.
+- **Outbound requests** (`lib/integrations/pinned-request.ts`) resolve DNS once, refuse if ANY address is private or
+  reserved, and connect to the exact address they validated (no second lookup to rebind, no private record hiding behind a
+  public one). Redirects are never followed; a 3xx is a permanent failure ("update the URL").
+- **Payload:** `{ id, type, created_at, workspace_id, project_id, entity, project: {id,name,status}, client: {id,name}, data: {title, summary} }`.
+  No contract values, emails or phone numbers.
+- **Who can subscribe to what:** only events whose notification you could see yourself (`SEND_SOW`, `SEND_CHANGE_ORDERS`,
+  `APPROVE_FLAGS`, `VIEW_FINANCIALS` — `permissionForEvent`). For Zapier it is the API key CREATOR's current permissions.
+- **Zapier:** `app/api/integrations/v1/{me,hooks,hooks/[id],events/[type]/sample}` + the Zapier app in `integrations/zapier`
+  (see its README — pushing it needs your Zapier developer account). Hook URLs are pinned to `hooks.zapier.com`; up to 100
+  Zap triggers per workspace (customer webhooks: 10, counted separately).
 - **Signature:** `X-ScopeGov-Signature: v1=hex(HMAC-SHA256(secret, "<X-ScopeGov-Timestamp>.<raw body>"))`.
 - **Plans** (one table, `lib/integrations/plans.ts`): webhooks / Zapier / API keys from Starter; Slack, HubSpot, Drive
   from Pro; trial gets all; Solo and lapsed workspaces get none (and nothing is delivered for them).
