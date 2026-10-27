@@ -1,0 +1,69 @@
+Integrations round 4 (Oct 27 2026, base b3c8abf): Slack.
+
+APPLY ORDER: 1) migration 167  2) create the Slack app (integrations/slack/README.md) and set SLACK_CLIENT_ID + SLACK_CLIENT_SECRET
+(NEXT_PUBLIC_APP_URL and INTEGRATIONS_ENCRYPTION_KEY must already be set)  3) deploy  4) test in YOUR OWN Slack workspace first.
+No new cron (the existing every-minute integration-delivery cron delivers Slack posts).
+
+WHAT IT DOES (Pro plan and above)
+- Settings -> Integrations -> Slack: "Add to Slack" (OAuth), pick a channel (public, or private once the app is invited),
+  choose which events post there, "Send test", turn off, delete, Disconnect / Reconnect.
+- Each post is a Block Kit message: headline, project, client, document number, amounts, due date, payment method, the
+  client's quoted words, and an "Open in ScopeGov" button to the right project tab.
+- Same event allowlist and per-event permission rule as webhooks (you can only post events you could see yourself).
+
+DESIGN
+- Reuses the 165 tables. A Slack connection = integration_connections row (bot token AES-GCM encrypted, bound to the row by AAD).
+  A rule = integration_subscriptions row, kind 'slack', one per channel (partial unique index), config {channel_id,...}.
+  So queueing, retries, backoff, plan gate, lapsed handling, auto-disable and the cron are all shared, not re-built.
+- delivery.ts: outcome handling extracted into one settle() used by webhooks, Zaps and Slack (webhook behaviour unchanged;
+  all pre-existing integration tests pass untouched). Slack branch decrypts the token, builds the message, posts, then
+  classifySlack() reads the JSON body: ok | retry | permanent | channel_off | connection_off.
+- OAuth: POST /slack/connect (needs Pro, the permission, step-up) returns the authorize URL with a signed state
+  (HMAC, 10 min, bound to workspace + person). GET callback re-checks state AND that the live session is the same person and
+  workspace, the permission, Pro and not lapsed, then exchanges the code (must be a xoxb- bot token for a team) and stores it.
+  Reconnecting the same Slack workspace switches rules that a dead token had turned off back on; a different Slack workspace
+  deletes the old rules (their channel ids mean nothing there).
+- Disconnect revokes the token at Slack (best effort), deletes the connection; rules cascade. Allowed on any plan / lapsed.
+- The older generic webhook PATCH/DELETE routes now only touch kind webhook/zapier, so a Slack rule cannot be switched on
+  there without the "connection is live" check.
+
+SAFETY
+- Text written by a client (decline reason, dispute note, change feedback...) is escaped (& < >) so it cannot @channel, @here,
+  mention a person, or forge a link; tests assert it for every free-text field.
+- Scopes: chat:write, chat:write.public, channels:read, groups:read. It cannot read messages.
+- Slack method names are allowlisted by pattern; the host is a constant (not tenant-supplied), so this uses plain fetch with a
+  timeout and redirect:'error', not the pinned-request path built for customer URLs.
+
+TESTS (tests/integrations-slack.test.ts, 57)
+- OAuth state: round trip, forgery, other key, expiry, malformed, nonce; authorize URL; the committed manifest matches the code.
+- classifySlack table; message limits for EVERY catalog event; escaping; button URL per event family; huge input clipped.
+- Delivery: success with the decrypted token, 429 + Retry-After, timeout, channel_not_found (only that rule off), not_in_channel,
+  revoked token (connection flagged + all rules off), malformed message, connection in error, unreadable token, plan gate, last attempt.
+- Routes: connect, callback (state/session/permission/plan/Cancel/bad OAuth answer/reconnect/different team), disconnect,
+  channels, rules create/edit/delete/test (validation, private-channel refusal, permissions, one per channel, cap, scoping).
+- Mutation-checked: removing the < escape, the user binding in the callback, the rule shut-off on a dead token, the fence on
+  the generic webhook routes, or encryption of the token each make a test fail.
+- Migration 167 verified on real Postgres 16 (after 165+166): null secret allowed only for slack; webhook/zapier still need a
+  secret; slack needs a connection and a channel; one rule per channel; cascade on disconnect; fan-out and test events work.
+
+NOT VERIFIED (cannot be from my sandbox — slack.com is unreachable)
+1. Any real call to Slack: the request shapes (oauth.v2.access form body, conversations.list/info, chat.postMessage with
+   blocks, auth.revoke) follow Slack's documented API but have only run against mocks. FIRST REAL TEST: install into your own
+   Slack workspace, add a channel, "Send test". If a method rejects, the delivery error text is shown on the rule.
+2. That Slack accepts the exact Block Kit JSON (limits are asserted; the Block Kit Builder at api.slack.com/block-kit-builder
+   will take a message pasted from a test delivery).
+3. The manifest's redirect URL assumes https://scopegov.app — edit it if your app lives elsewhere.
+
+NOT BUILT (deliberate)
+- Buttons that act from inside Slack (approve/dismiss a flag): needs a Slack-user <-> ScopeGov-user identity mapping and a
+  signed interactivity endpoint — a security design of its own.
+- The old placeholder idea "auto-create a channel per project": needs channels:manage and a lifecycle (archive on completion).
+- Events raised through notifyUsers (approvals, escalations) are still not announced to any integration.
+
+KNOWN LIMITS: Slack bot tokens are stored as non-expiring (token rotation off in the manifest). One Slack workspace per ScopeGov workspace.
+
+Apply
+-----
+  tar -xzf ~/Downloads/scopegov-integrations-slack.tar.gz --strip-components=1 -C .
+  Run migration 167 in the Supabase SQL editor.
+  git add -A && git commit -m "Integrations: Slack (OAuth, channel rules, Block Kit messages)" && git push

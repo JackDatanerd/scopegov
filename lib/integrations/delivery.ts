@@ -16,6 +16,8 @@ import { decryptSecret } from './crypto'
 import { signPayload } from './signing'
 import { integrationAllowed, type IntegrationKind } from './plans'
 import { loadDocuments, withDocument } from './enrich'
+import { classifySlack, slackCall, type SlackCaller } from './slack'
+import { buildSlackMessage } from './slack-message'
 
 export const MAX_ATTEMPTS = 8
 export const REQUEST_TIMEOUT_MS = 8_000
@@ -74,9 +76,10 @@ export interface ProcessResult { claimed: number; succeeded: number; retried: nu
 
 export async function processDeliveries(
   service: any,
-  opts: { limit?: number; now?: () => number; send?: Sender } = {},
+  opts: { limit?: number; now?: () => number; send?: Sender; slack?: SlackCaller } = {},
 ): Promise<ProcessResult> {
   const send: Sender = opts.send || ((u, r) => pinnedPost(u, r))
+  const slack: SlackCaller = opts.slack || slackCall
   const nowMs = opts.now || Date.now
   const result: ProcessResult = { claimed: 0, succeeded: 0, retried: 0, dead: 0, skipped: 0 }
 
@@ -88,7 +91,7 @@ export async function processDeliveries(
 
   const ids = (k: string) => Array.from(new Set(rows.map(r => r[k])))
   const [subsRes, eventsRes, wsRes] = await Promise.all([
-    service.from('integration_subscriptions').select('id, workspace_id, kind, target_url, secret_enc, active, consecutive_failures').in('id', ids('subscription_id')),
+    service.from('integration_subscriptions').select('id, workspace_id, kind, target_url, secret_enc, active, consecutive_failures, connection_id, config').in('id', ids('subscription_id')),
     service.from('integration_events').select('id, workspace_id, event_type, entity_type, entity_id, project_id, data, created_at').in('id', ids('event_id')),
     service.from('workspaces').select('id, plan_tier, trial_ends_at, lapsed_at, deleted_at').in('id', ids('workspace_id')),
   ])
@@ -104,6 +107,14 @@ export async function processDeliveries(
   }
   // Document details (number, status, amounts, dates) for the document each event refers to — see enrich.ts.
   const documents = await loadDocuments(service, eventsRes.data || [], pid => (pid ? projects.get(pid)?.currency ?? null : null))
+  // Slack rules post with their connection's token: load those connections (one query) alongside.
+  const connectionIds = Array.from(new Set((subsRes.data || []).filter((s: any) => s.kind === 'slack' && s.connection_id).map((s: any) => s.connection_id)))
+  const connections = new Map<string, any>()
+  if (connectionIds.length) {
+    const { data: crows, error: cerr } = await service.from('integration_connections').select('id, workspace_id, status, credentials_enc').in('id', connectionIds)
+    if (cerr) throw new Error(`lookup failed: ${cerr.message}`)
+    for (const c of crows || []) connections.set(c.id, c)
+  }
   const subs = new Map<string, any>((subsRes.data || []).map((s: any) => [s.id, s]))
   const events = new Map<string, any>((eventsRes.data || []).map((e: any) => [e.id, e]))
   const workspaces = new Map<string, any>((wsRes.data || []).map((w: any) => [w.id, w]))
@@ -128,6 +139,10 @@ export async function processDeliveries(
     if (!integrationAllowed(kind, tier, isWorkspaceLapsed(ws.plan_tier, ws.trial_ends_at, ws.lapsed_at, nowMs())))
       return skip(row, 'the workspace plan does not include this integration')
 
+    const proj = event.project_id ? projects.get(event.project_id) : null
+    const envelope = buildEnvelope(event, { project: proj, client: proj?.clients, data: withDocument(event, documents) })
+    if (sub.kind === 'slack') return handleSlack(row, sub, envelope)
+
     let secret: string
     try { secret = decryptSecret(sub.secret_enc, `${sub.workspace_id}:${sub.id}`) }
     catch (e: any) {
@@ -136,8 +151,7 @@ export async function processDeliveries(
       return finish(row, { status: 'dead', last_error: trim(`signing secret unreadable: ${e?.message || e}`), claimed_at: null })
     }
 
-    const proj = event.project_id ? projects.get(event.project_id) : null
-    const body = JSON.stringify(buildEnvelope(event, { project: proj, client: proj?.clients, data: withDocument(event, documents) }))
+    const body = JSON.stringify(envelope)
     const ts = Math.floor(nowMs() / 1000)
     let status = 0, errorText: string | null = null, retryAfter: number | null = null
     try {
@@ -159,8 +173,15 @@ export async function processDeliveries(
     } catch (e: any) {
       errorText = e?.name === 'TimeoutError' ? String(e.message) : String(e?.message || e)
     }
+    return settle({ row, sub, outcome: status ? classifyStatus(status) : 'retry', status, errorText, retryAfter })
+  }
 
-    const outcome: Outcome = status ? classifyStatus(status) : 'retry'
+  /**
+   * Record what happened to one delivery and keep the subscription's health in step. Shared by every transport so a
+   * webhook, a Zap and a Slack rule retry, die and switch off by exactly the same rules.
+   */
+  const settle = async (a: { row: any; sub: any; outcome: Outcome; status: number; errorText: string | null; retryAfter: number | null; disableReason?: string; connectionFault?: boolean }) => {
+    const { row, sub, outcome, status, errorText, retryAfter } = a
     const at = new Date(nowMs()).toISOString()
 
     if (outcome === 'ok') {
@@ -179,8 +200,13 @@ export async function processDeliveries(
       const disable = outcome === 'gone' || failures >= AUTO_DISABLE_AFTER_DEAD
       await service.from('integration_subscriptions').update({
         consecutive_failures: failures, last_failure_at: at,
-        ...(disable ? { active: false, disabled_reason: outcome === 'gone' ? 'The receiver answered 410 Gone (it asked us to stop).' : `Turned off after ${failures} deliveries in a row failed.` } : {}),
+        ...(disable ? { active: false, disabled_reason: outcome === 'gone' ? (a.disableReason ?? 'The receiver answered 410 Gone (it asked us to stop).') : `Turned off after ${failures} deliveries in a row failed.` } : {}),
       }).eq('id', sub.id)
+      if (a.connectionFault && sub.connection_id) {
+        // The Slack token is dead: stop every rule on this connection and flag it, so the settings page says "reconnect".
+        await service.from('integration_connections').update({ status: 'error', last_error: msg, last_error_at: at, updated_at: at }).eq('id', sub.connection_id)
+        await service.from('integration_subscriptions').update({ active: false, disabled_reason: a.disableReason ?? 'Slack needs to be reconnected.' }).eq('connection_id', sub.connection_id)
+      }
       return
     }
 
@@ -190,6 +216,37 @@ export async function processDeliveries(
       next_attempt_at: new Date(nowMs() + retryDelayMs(row.attempts, retryAfter)).toISOString(),
     })
     await service.from('integration_subscriptions').update({ last_failure_at: at }).eq('id', sub.id)
+  }
+
+  const handleSlack = async (row: any, sub: any, envelope: Record<string, unknown>) => {
+    const conn = connections.get(sub.connection_id)
+    if (!conn) return skip(row, 'Slack is not connected')
+    if (conn.status !== 'active') return skip(row, 'Slack needs to be reconnected')
+    const channel = sub.config?.channel_id
+    let token: string
+    try { token = JSON.parse(decryptSecret(conn.credentials_enc, `${conn.workspace_id}:${conn.id}`)).access_token } catch (e: any) {
+      result.dead++
+      return finish(row, { status: 'dead', last_error: trim(`Slack token unreadable: ${e?.message || e}`), claimed_at: null })
+    }
+    if (!token || !channel) { result.dead++; return finish(row, { status: 'dead', last_error: 'Slack rule has no token or channel', claimed_at: null }) }
+
+    const message = buildSlackMessage(envelope, { appUrl: process.env.NEXT_PUBLIC_APP_URL })
+    let res
+    try {
+      res = await slack('chat.postMessage', token, { channel, text: message.text, blocks: message.blocks, unfurl_links: false, unfurl_media: false })
+    } catch (e: any) {
+      const text = e?.name === 'TimeoutError' || e?.name === 'AbortError' ? `Slack did not answer within ${REQUEST_TIMEOUT_MS / 1000}s` : String(e?.message || e)
+      return settle({ row, sub, outcome: 'retry', status: 0, errorText: text, retryAfter: null })
+    }
+    const verdict = classifySlack(res)
+    const retryAfter = parseRetryAfter(res.retryAfter, nowMs())
+    switch (verdict.outcome) {
+      case 'ok': return settle({ row, sub, outcome: 'ok', status: res.status, errorText: null, retryAfter: null })
+      case 'retry': return settle({ row, sub, outcome: 'retry', status: res.status, errorText: verdict.error, retryAfter })
+      case 'permanent': return settle({ row, sub, outcome: 'permanent', status: res.status, errorText: verdict.error, retryAfter: null })
+      case 'channel_off': return settle({ row, sub, outcome: 'gone', status: res.status, errorText: verdict.error, retryAfter: null, disableReason: verdict.reason })
+      case 'connection_off': return settle({ row, sub, outcome: 'gone', status: res.status, errorText: verdict.error, retryAfter: null, disableReason: verdict.reason, connectionFault: true })
+    }
   }
 
   // Small fixed pool: one slow receiver must not hold up the rest of the batch.

@@ -2659,7 +2659,6 @@ function IntegrationsTab({ session, permissions }: { session: SessionUser; permi
         : <p style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 20 }}>Ask a workspace admin to manage webhooks and API keys.</p>}
       <div className="settings-section">
         {[
-          { name: 'Slack',        icon: 'ti-brand-slack',        desc: 'Auto-create a channel per project for Guardian monitoring' },
           { name: 'Zapier',       icon: 'ti-bolt',               desc: 'Connect ScopeGov to 5,000+ apps via Zapier', status: 'App listing pending' },
           { name: 'HubSpot',      icon: 'ti-circle-dashed',      desc: 'Sync clients and project status with HubSpot CRM' },
           { name: 'Google Drive', icon: 'ti-brand-google-drive', desc: 'Attach Drive files to SOWs and change orders' },

@@ -6,6 +6,7 @@ import { requireIntegrationAdmin } from '@/lib/integrations/guard'
 import { integrationAllowed, minPlanLabel, INTEGRATION_MIN_PLAN, MAX_SUBSCRIPTIONS_PER_WORKSPACE, MAX_API_KEYS_PER_WORKSPACE } from '@/lib/integrations/plans'
 import { integrationCryptoConfigured } from '@/lib/integrations/crypto'
 import { INTEGRATION_EVENT_TYPES } from '@/lib/integrations/events'
+import { slackConfigured } from '@/lib/integrations/slack-config'
 
 // Everything the Integrations tab needs in one read: the webhooks (never their secrets), their recent delivery
 // health, the API keys (never the key material), and what this plan allows. Read-only, so a lapsed workspace and a
@@ -17,15 +18,17 @@ export async function GET() {
     const { session } = auth
     const service = createServiceClient() as any
 
-    const [subsRes, keysRes] = await Promise.all([
+    const [subsRes, keysRes, connRes] = await Promise.all([
       service.from('integration_subscriptions')
-        .select('id, kind, name, target_url, event_types, active, consecutive_failures, disabled_reason, last_success_at, last_failure_at, created_at')
+        .select('id, kind, name, target_url, event_types, config, active, consecutive_failures, disabled_reason, last_success_at, last_failure_at, created_at')
         .eq('workspace_id', session.workspaceId).order('created_at', { ascending: true }),
       service.from('integration_api_keys')
         .select('id, name, key_prefix, created_at, last_used_at, expires_at, revoked_at')
         .eq('workspace_id', session.workspaceId).is('revoked_at', null).order('created_at', { ascending: true }),
+      service.from('integration_connections').select('status, display_name, config, last_error, created_at').eq('workspace_id', session.workspaceId).eq('provider', 'slack').maybeSingle(),
     ])
-    if (subsRes.error || keysRes.error) throw new Error(subsRes.error?.message || keysRes.error?.message)
+    if (subsRes.error || keysRes.error || connRes.error) throw new Error(subsRes.error?.message || keysRes.error?.message || connRes.error?.message)
+    const slackConn = connRes.data
 
     const subs: any[] = subsRes.data || []
     let recent: Record<string, { pending: number; succeeded: number; dead: number; last?: { status: string; code: number | null; error: string | null; at: string } }> = {}
@@ -52,8 +55,14 @@ export async function GET() {
       limits: { subscriptions: MAX_SUBSCRIPTIONS_PER_WORKSPACE, apiKeys: MAX_API_KEYS_PER_WORKSPACE },
       eventTypes: INTEGRATION_EVENT_TYPES,
       planGates: INTEGRATION_MIN_PLAN,
-      subscriptions: subs.map(s => ({ ...s, health: recent[s.id] || { pending: 0, succeeded: 0, dead: 0 } })),
+      subscriptions: subs.filter(s => s.kind !== 'slack').map(({ config: _c, ...s }) => ({ ...s, health: recent[s.id] || { pending: 0, succeeded: 0, dead: 0 } })),
       apiKeys: keysRes.data || [],
+      slack: {
+        configured: slackConfigured(),
+        allowed: integrationAllowed('slack', session.planTier, !!session.lapsed),
+        connection: slackConn ? { team_name: slackConn.config?.team_name || slackConn.display_name || null, status: slackConn.status, last_error: slackConn.last_error, connected_at: slackConn.created_at } : null,
+        rules: subs.filter(s => s.kind === 'slack').map(s => ({ id: s.id, channel: s.config?.channel_name || s.name, is_private: !!s.config?.is_private, event_types: s.event_types, active: s.active, disabled_reason: s.disabled_reason, last_success_at: s.last_success_at, health: recent[s.id] || { pending: 0, succeeded: 0, dead: 0 } })),
+      },
     })
   } catch (err) {
     console.error('Integrations overview error:', err)

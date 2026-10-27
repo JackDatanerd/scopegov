@@ -192,6 +192,9 @@ INTEGRATIONS_ENCRYPTION_KEY=         ← openssl rand -base64 32 (exactly 32 byt
                                        (webhook signing secrets now; Slack/HubSpot/Drive OAuth tokens later).
                                        REQUIRED to create a webhook or API key: with it unset the Integrations tab says so
                                        and the create routes answer 503 (nothing falls back to plaintext).
+SLACK_CLIENT_ID=                     ← from the Slack app you create with integrations/slack/manifest.json (see
+SLACK_CLIENT_SECRET=                   integrations/slack/README.md). Without them the Slack card says it is not set up.
+                                       NEXT_PUBLIC_APP_URL must be the exact origin registered as the Slack redirect URL.
 INTEGRATIONS_ENCRYPTION_KEY_PREVIOUS=  ← optional. To rotate: move the current value here, set a new
                                        INTEGRATIONS_ENCRYPTION_KEY, deploy, then re-save/rotate each webhook secret and
                                        only afterwards remove this. Dropping it early makes those secrets undecryptable
@@ -387,6 +390,13 @@ nothing is delivered).
 - **Guardian borderline items** are not announced to integrations until a person confirms them (same policy as the email).
 - **Who can subscribe to what:** only events whose notification you could see yourself (`SEND_SOW`, `SEND_CHANGE_ORDERS`,
   `APPROVE_FLAGS`, `VIEW_FINANCIALS` — `permissionForEvent`). For Zapier it is the API key CREATOR's current permissions.
+- **Slack** (Pro+; migration **167**; setup in `integrations/slack/README.md`): "Add to Slack" OAuth -> bot token stored encrypted
+  (`integration_connections`); routing RULES are `integration_subscriptions` rows (kind `slack`, one per channel, a list of
+  events) so they share the queue, retries, plan gate and per-event permission rule. Delivery reads Slack's JSON answer
+  (HTTP 200 + `ok:false` is the normal failure) and maps it: revoked token -> flag the connection and switch every rule off
+  ("Reconnect"); channel gone / archived / app not invited -> that rule off with the reason; rate limit -> retry with
+  Retry-After; malformed message -> dead, rule stays on. Client-written text is escaped so it cannot `@channel`. Messages
+  link back to the project tab with "Open in ScopeGov". OAuth `state` is signed, expiring and bound to the starting person.
 - **Zapier:** `app/api/integrations/v1/{me,hooks,hooks/[id],events/[type]/sample}` + the Zapier app in `integrations/zapier`
   (see its README — pushing it needs your Zapier developer account). Hook URLs are pinned to `hooks.zapier.com`; up to 100
   Zap triggers per workspace (customer webhooks: 10, counted separately).

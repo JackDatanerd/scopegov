@@ -71,7 +71,8 @@ export async function PATCH(request: NextRequest, { params }: Ctx) {
     // A Zapier-managed hook can only be switched on/off here (Zapier owns its URL and events); everything else is for
     // customer webhooks.
     const onlyToggle = Object.keys(patch).every(k => ['active', 'consecutive_failures', 'disabled_reason'].includes(k))
-    let q = service.from('integration_subscriptions').update(patch).eq('id', id).eq('workspace_id', session.workspaceId)
+    // Slack rules have their own routes (they need the connection checked before a rule is switched on).
+    let q = service.from('integration_subscriptions').update(patch).eq('id', id).eq('workspace_id', session.workspaceId).in('kind', ['webhook', 'zapier'])
     if (!onlyToggle) q = q.eq('kind', 'webhook')
     const { data, error } = await q.select('id, name').maybeSingle()
     if (error) throw new Error(error.message)
@@ -99,7 +100,7 @@ export async function DELETE(_request: NextRequest, { params }: Ctx) {
 
     const service = createServiceClient() as any
     const { data, error } = await service.from('integration_subscriptions').delete()
-      .eq('id', id).eq('workspace_id', session.workspaceId).select('id, name').maybeSingle()
+      .eq('id', id).eq('workspace_id', session.workspaceId).in('kind', ['webhook', 'zapier']).select('id, name').maybeSingle()
     if (error) throw new Error(error.message)
     if (!data) return NextResponse.json({ error: 'Not found' }, { status: 404 })
     await logAudit(service, {

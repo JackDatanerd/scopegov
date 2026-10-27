@@ -11,9 +11,19 @@ import { useDialogs } from '@/components/ui/Dialogs'
 interface Health { pending: number; succeeded: number; dead: number; last?: { status: string; code: number | null; error: string | null; at: string } }
 interface Sub { id: string; kind: 'webhook' | 'zapier' | 'slack'; name: string; target_url: string; event_types: string[]; active: boolean; disabled_reason: string | null; last_success_at: string | null; health: Health }
 interface Key { id: string; name: string; key_prefix: string; created_at: string; last_used_at: string | null }
+interface SlackRule { id: string; channel: string; is_private: boolean; event_types: string[]; active: boolean; disabled_reason: string | null; last_success_at: string | null; health: Health }
+interface SlackInfo { configured: boolean; allowed: boolean; connection: { team_name: string | null; status: string; last_error: string | null; connected_at: string } | null; rules: SlackRule[] }
+interface Channel { id: string; name: string; is_private: boolean; is_member: boolean }
+const SLACK_RESULT: Record<string, { text: string; bad?: boolean }> = {
+  connected: { text: 'Slack is connected. Choose a channel below to start receiving events.' },
+  denied: { text: 'Slack connection cancelled.', bad: true },
+  expired: { text: 'That Slack link expired. Please try connecting again.', bad: true },
+  forbidden: { text: 'Your account or plan cannot connect Slack.', bad: true },
+  failed: { text: 'Slack could not be connected. Please try again.', bad: true },
+}
 interface Overview {
   encryptionConfigured: boolean; allowed: boolean; lapsed: boolean; minPlan: string; nativeMinPlan: string
-  limits: { subscriptions: number; apiKeys: number }; eventTypes: string[]; subscriptions: Sub[]; apiKeys: Key[]
+  limits: { subscriptions: number; apiKeys: number }; eventTypes: string[]; subscriptions: Sub[]; apiKeys: Key[]; slack: SlackInfo
 }
 
 const when = (iso: string | null) => (iso ? new Date(iso).toLocaleString() : 'never')
@@ -29,6 +39,19 @@ export default function IntegrationsSection() {
   const [secret, setSecret] = useState<{ label: string; value: string } | null>(null)
   const [form, setForm] = useState<{ name: string; url: string; events: string[] } | null>(null)
   const [keyName, setKeyName] = useState('')
+  const [slackForm, setSlackForm] = useState<{ channel: string; events: string[] } | null>(null)
+  const [channels, setChannels] = useState<Channel[] | null>(null)
+  const [slackResult, setSlackResult] = useState<string | null>(null)
+
+  // Slack sends the browser back to ?tab=integrations&slack=<result>; show it once and tidy the address bar.
+  useEffect(() => {
+    const p = new URLSearchParams(window.location.search)
+    const r = p.get('slack')
+    if (r) {
+      setSlackResult(r); p.delete('slack')
+      window.history.replaceState(null, '', `${window.location.pathname}${p.toString() ? '?' + p : ''}`)
+    }
+  }, [])
 
   const load = useCallback(async () => {
     try {
@@ -60,6 +83,27 @@ export default function IntegrationsSection() {
     e.preventDefault()
     const json = await call('/api/workspace/integrations/api-keys', 'POST', { name: keyName })
     if (json) { setSecret({ label: 'API key', value: json.key }); setKeyName(''); load() }
+  }
+  async function connectSlack() {
+    const json = await call('/api/workspace/integrations/slack/connect', 'POST')
+    if (json?.url) window.location.href = json.url
+  }
+  async function openSlackForm() {
+    setSlackForm({ channel: '', events: [] })
+    if (channels) return
+    setBusy(true); setErr('')
+    try {
+      const res = await fetch('/api/workspace/integrations/slack/channels', { cache: 'no-store' })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(json.error || 'Could not load Slack channels.')
+      setChannels(json.channels)
+    } catch (e: any) { setErr(e.message); setSlackForm(null) } finally { setBusy(false) }
+  }
+  async function createSlackRule(e: React.FormEvent) {
+    e.preventDefault()
+    if (!slackForm) return
+    const json = await call('/api/workspace/integrations/slack/rules', 'POST', { channel_id: slackForm.channel, events: slackForm.events })
+    if (json) { setSlackForm(null); setNote('Rule added. Use “Send test” to check it.'); load() }
   }
   async function act(url: string, method: string, body: unknown, ok: string) {
     const json = await call(url, method, body)
@@ -97,6 +141,75 @@ export default function IntegrationsSection() {
           <button type="button" className="btn btn-ghost btn-sm" onClick={() => setSecret(null)}>I have saved it</button>
         </div>
       )}
+
+      {slackResult && SLACK_RESULT[slackResult] && (
+        <p style={{ ...subtle, color: SLACK_RESULT[slackResult].bad ? 'var(--red)' : 'var(--green, #1A5C3A)', marginBottom: 12 }}>{SLACK_RESULT[slackResult].text}</p>
+      )}
+
+      <div className="settings-section" style={{ marginBottom: 16 }}>
+        <div className="settings-section-title">Slack</div>
+        {!data.slack.allowed ? (
+          <div style={subtle}>{data.lapsed ? 'Reactivate your subscription to use Slack.' : `Slack needs the ${data.nativeMinPlan} plan or above.`}</div>
+        ) : !data.slack.configured ? (
+          <div style={subtle}>Slack is not set up on this server yet. The operator needs SLACK_CLIENT_ID and SLACK_CLIENT_SECRET (see integrations/slack/README.md).</div>
+        ) : !data.slack.connection ? (
+          <>
+            <div style={{ ...subtle, marginBottom: 10 }}>Post scope flags, signed SOWs, payments and more into a Slack channel, each with a link back to the project.</div>
+            <button type="button" className="btn btn-primary btn-sm" disabled={busy || !data.encryptionConfigured} onClick={connectSlack}>Add to Slack</button>
+          </>
+        ) : (
+          <>
+            <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 6 }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 13, fontWeight: 600 }}>Connected to {data.slack.connection.team_name || 'Slack'}{data.slack.connection.status !== 'active' && <span style={{ ...subtle, color: 'var(--red)' }}> · needs reconnecting</span>}</div>
+                {data.slack.connection.status !== 'active' && <div style={{ ...subtle, color: 'var(--red)' }}>{data.slack.connection.last_error || 'The connection stopped working.'} Reconnect to switch your rules back on.</div>}
+              </div>
+              {data.slack.connection.status !== 'active' && <button type="button" className="btn btn-primary btn-sm" disabled={busy} onClick={connectSlack}>Reconnect</button>}
+              <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={async () => { if (await dialogs.confirm('Disconnect Slack? Its rules are deleted and the ScopeGov app’s access is revoked.')) act('/api/workspace/integrations/slack', 'DELETE', undefined, 'Slack disconnected.') }}>Disconnect</button>
+            </div>
+            {data.slack.rules.length === 0 && <div style={subtle}>No channels yet.</div>}
+            {data.slack.rules.map(r => (
+              <div key={r.id} style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '8px 0', borderBottom: '1px solid var(--surface-2)' }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600 }}>{r.is_private ? '🔒 ' : '#'}{r.channel.replace(/^#/, '')} {!r.active && <span style={{ ...subtle, color: 'var(--red)' }}>· off</span>}</div>
+                  <div style={subtle}>{r.event_types.length} event{r.event_types.length === 1 ? '' : 's'} · last posted {when(r.last_success_at)} · {r.health.pending} waiting, {r.health.dead} failed</div>
+                  {r.disabled_reason && <div style={{ ...subtle, color: 'var(--red)' }}>{r.disabled_reason}</div>}
+                  {r.health.last?.error && r.health.last.status !== 'succeeded' && <div style={{ ...subtle, color: 'var(--red)' }}>Last problem: {r.health.last.error}</div>}
+                </div>
+                <button className="btn btn-ghost btn-sm" disabled={busy || !canWrite} onClick={() => act(`/api/workspace/integrations/slack/rules/${r.id}/test`, 'POST', undefined, 'Test message queued — it arrives within about a minute.')}>Send test</button>
+                <button className="btn btn-ghost btn-sm" disabled={busy || !canWrite} onClick={() => act(`/api/workspace/integrations/slack/rules/${r.id}`, 'PATCH', { active: !r.active }, r.active ? 'Rule turned off.' : 'Rule turned on.')}>{r.active ? 'Turn off' : 'Turn on'}</button>
+                <button className="btn btn-ghost btn-sm" disabled={busy} onClick={async () => { if (await dialogs.confirm(`Stop posting to ${r.is_private ? '' : '#'}${r.channel.replace(/^#/, '')}?`)) act(`/api/workspace/integrations/slack/rules/${r.id}`, 'DELETE', undefined, 'Rule deleted.') }}>Delete</button>
+              </div>
+            ))}
+            {slackForm ? (
+              <form onSubmit={createSlackRule} style={{ marginTop: 14 }}>
+                <div className="fgrp" style={{ marginBottom: 10 }}>
+                  <label className="flbl">Channel</label>
+                  <select className="finp" value={slackForm.channel} onChange={e => setSlackForm({ ...slackForm, channel: e.target.value })}>
+                    <option value="">{channels ? 'Choose a channel…' : 'Loading…'}</option>
+                    {(channels || []).filter(c => !data.slack.rules.some(r => r.channel.replace(/^#/, '') === c.name)).map(c => (
+                      <option key={c.id} value={c.id}>{c.is_private ? '🔒 ' : '#'}{c.name}</option>
+                    ))}
+                  </select>
+                  <div style={subtle}>Private channels only appear once you have invited the app (/invite @ScopeGov).</div>
+                </div>
+                <div className="flbl" style={{ marginBottom: 6 }}>Post these events</div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 16px', marginBottom: 12 }}>
+                  {data.eventTypes.map(t => (
+                    <label key={t} style={{ fontSize: 12 }}>
+                      <input type="checkbox" checked={slackForm.events.includes(t)} onChange={e => setSlackForm({ ...slackForm, events: e.target.checked ? [...slackForm.events, t] : slackForm.events.filter(x => x !== t) })} /> {t}
+                    </label>
+                  ))}
+                </div>
+                <button type="submit" className="btn btn-primary btn-sm" disabled={busy || !slackForm.channel || slackForm.events.length === 0}>Add channel</button>{' '}
+                <button type="button" className="btn btn-ghost btn-sm" onClick={() => setSlackForm(null)}>Cancel</button>
+              </form>
+            ) : (
+              <button type="button" className="btn btn-secondary btn-sm" style={{ marginTop: 12 }} disabled={busy || !canWrite || data.slack.connection.status !== 'active' || data.slack.rules.length >= 10} onClick={openSlackForm}>Add channel</button>
+            )}
+          </>
+        )}
+      </div>
 
       <div className="settings-section">
         <div className="settings-section-title">Webhooks</div>
@@ -191,7 +304,7 @@ export default function IntegrationsSection() {
         </form>
       </div>
 
-      <div style={{ ...subtle, marginTop: 10 }}>Native Slack, HubSpot and Google Drive connections will need the {data.nativeMinPlan} plan or above.</div>
+      <div style={{ ...subtle, marginTop: 10 }}>HubSpot and Google Drive connections will need the {data.nativeMinPlan} plan or above.</div>
     </div>
   )
 }

@@ -1,0 +1,19 @@
+{
+  "display_information": {
+    "name": "ScopeGov",
+    "description": "Scope flags, signed documents and payments from ScopeGov, posted to the channels you choose.",
+    "background_color": "#1a5c3a"
+  },
+  "features": {
+    "bot_user": { "display_name": "ScopeGov", "always_online": false }
+  },
+  "oauth_config": {
+    "redirect_urls": ["https://scopegov.app/api/integrations/slack/callback"],
+    "scopes": { "bot": ["chat:write", "chat:write.public", "channels:read", "groups:read"] }
+  },
+  "settings": {
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": false,
+    "token_rotation_enabled": false
+  }
+}
