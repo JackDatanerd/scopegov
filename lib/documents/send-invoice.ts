@@ -290,6 +290,7 @@ export async function sendInvoiceDocument(service: any, params: {
       title: `Invoice sent — ${project.name}`,
       body: `${client.name} was sent an invoice for ${formatMoney(invoice.amount, invoice.currency)} on "${invoice.title}".`,
       entityType: 'project', entityId: project.id, excludeUserId: actorId, projectId: project.id,
+      integrationData: { document: { type: 'invoice', id: invoiceId } },
     })
     try {
       const emails = await getMemberEmailsWithPermission(service, workspaceId, 'VIEW_FINANCIALS', 25, 'invoice_sent', project.id, actorId)

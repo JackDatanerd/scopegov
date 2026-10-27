@@ -1,0 +1,53 @@
+Integrations round 3 (Oct 27 2026, base 5c92d88): structured payloads. No migration, no new env var, no new cron.
+
+WHY: after round 2 a Zap on "Invoice Paid" received only a title string and a sentence. Now it gets the invoice number,
+amount, balance, due date, payment method, etc. as separate fields it can map.
+
+WHAT CHANGED
+- lib/utils/notify.ts: NotifyParams gains `integrationData` (structured facts merged into the event's data; the bell's
+  title/summary always win) and `skipIntegrations`.
+- 20 notification call sites (19 events) now pass `integrationData: { document: { type, id }, ...facts }` — one inserted
+  property each, no query or control-flow change:
+    sow.*            sign, decline, request-changes routes; sow-expiry, sow-stall crons
+    change_order.*   finalize-co, portal co _actions (decline, counter); co-expiry, co-stall crons
+    guardian.*       flags/[id] (confirm), guardian-pipeline, guardian-flag-stall cron
+    invoice.* / milestone.overdue   send-invoice, invoices/[id]/payments, portal paid + dispute, payment-overdue cron
+    retainer.ending  retainer-milestones cron
+- lib/integrations/enrich.ts (new): the delivery worker resolves each `document` reference — number, status, amounts, dates —
+  with ONE batched query per document type. Sites therefore only pass ids they already hold, and none of their own queries
+  changed. Each row must belong to the event's own workspace (milestones: the event's project) or it is dropped; only the
+  event's OWN document type is ever loaded; a failed lookup sends the event with just {type,id}.
+- Envelope project now includes `currency`. Catalog samples (and integrations/zapier/events.json) carry the real fields so
+  Zapier's field mapper shows them.
+- BEHAVIOUR DECISION: the Guardian pipeline no longer announces LOW-CONFIDENCE BORDERLINE items to integrations
+  (skipIntegrations: isBorderline) — the email path already skips them for the same reason, and a Zap firing on a guess is
+  noise. They reach integrations when a person confirms one (the confirm route, which now also says confirmed_by_human).
+  In-app notifications are unchanged. If you want borderline items announced, delete that one line.
+- De-dupe text now includes the document id, so two events about different documents with identical wording stay distinct.
+
+TESTS (tests/integrations-payloads.test.ts, 40)
+- Drift guard over the source: all 20 sites pass integrationData with the right document type; the borderline skip is
+  present. Mutation-checked (removing one site's data / giving one the wrong type makes it fail).
+- Schema guard: every column enrichment selects exists in the migrations (a wrong column would otherwise degrade silently
+  to bare references). projects.currency/name/status/client_id too.
+- Enrichment: shaping, no leakage of tokens / payment instructions / emails, cross-workspace refusal, milestone/project
+  ownership, unknown type and non-uuid ignored, failed lookup tolerated, one query per type.
+- Samples use only fields enrichment can really produce, and the right document type per event family.
+- End to end through processDeliveries: enriched payload + the site's own facts.
+
+VERIFICATION: tsc clean; full vitest suite (existing tests for the 20 modified sites all still pass); real `next build`;
+Zapier official validator ("structurally sound"; its style pass needs Zapier's servers and was not run).
+
+NOT VERIFIED: enrichment queries against a real Supabase (they are plain select/in on columns the schema test checks, but
+no live PostgREST here). First real delivery after deploy is the check: look at integration_deliveries / a receiver's body.
+
+KNOWN LIMITS
+1. Document details are as of DELIVERY (usually <1 min after the event), not a snapshot at the event.
+2. Events raised through notifyUsers (approval_requested, escalation) are still not announced.
+3. A webhook keeps delivering if its creator is later demoted (Zapier hooks are only checked when subscribing).
+4. consecutive_failures is read-modify-write.
+
+Apply
+-----
+  tar -xzf ~/Downloads/scopegov-integrations-round3.tar.gz --strip-components=1 -C .
+  git add -A && git commit -m "Integrations: structured payloads (document details, event facts), Guardian borderline policy" && git push

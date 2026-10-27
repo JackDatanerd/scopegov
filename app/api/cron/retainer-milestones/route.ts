@@ -174,6 +174,7 @@ export async function POST(request: NextRequest) {
             type: 'retainer_ending', title: `Retainer term ended — ${p.name}`,
             body: `The ${termMonths}-month retainer for ${p.clients?.name || 'this client'} on ${p.name} has run its course. No further monthly milestones will be generated unless the term is extended (a retainer-renewal change order extends it automatically).`,
             entityType: 'project', entityId: p.id, projectId: p.id,
+            integrationData: { retainer: { term_months: termMonths, months_completed: monthsSigned } },
           })
           // FIX (cron section 17, pass 4 — B4): the retainer.ended marker above is one-shot, so a lost bell is never retried.
           if (!notified) run.rowError(`retainer ${p.id}`, new Error('retainer.ended recorded but the team bell notification failed to write'))

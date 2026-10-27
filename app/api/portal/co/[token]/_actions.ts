@@ -194,6 +194,7 @@ export async function POST_DECLINE(request: NextRequest, token: string) {
     type: 'co_declined', title: `CO declined — ${co.title}`,
     body: reason ? `${co.projects?.clients?.name}: ${truncateText(reason, 200)}` : `${co.projects?.clients?.name} declined this change order.`,
     entityType: 'project', entityId: co.project_id, projectId: co.project_id,
+    integrationData: { document: { type: 'change_order', id: co.id }, reason: reason ? truncateText(reason, 500) : null },
   })
   // FIX (re-audit, section 18 — feature gap): every other client-initiated portal response (SOW
   // decline/request-changes, CO *counter*, invoice dispute) sends the client a "we received your
@@ -332,6 +333,7 @@ export async function POST_COUNTER(request: NextRequest, token: string) {
     type: 'co_countered', title: `Counter offer — ${co.title}`,
     body: `${co.projects?.clients?.name} proposed ${formatMoney(parsedAmount, co.projects?.currency)}.`,
     entityType: 'project', entityId: co.project_id, projectId: co.project_id,
+    integrationData: { document: { type: 'change_order', id: co.id }, counter_amount: parsedAmount, counter_note: counterNote ? truncateText(counterNote, 500) : null },
   })
 
   return NextResponse.json({

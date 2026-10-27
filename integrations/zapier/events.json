@@ -16,13 +16,25 @@
       "project": {
         "id": "7a6b5c4d-3e2f-4a1b-8c9d-0e1f2a3b4c5d",
         "name": "Website Redesign",
-        "status": "Active"
+        "status": "Active",
+        "currency": "USD"
       },
       "client": {
         "id": "9c8d7e6f-5a4b-4c3d-8e2f-1a0b9c8d7e6f",
         "name": "Acme Ltd"
       },
       "data": {
+        "document": {
+          "type": "sow",
+          "id": "3c1f0a52-7d84-4b6e-9a21-5e0d8c7b4a10",
+          "number": "SOW-0007",
+          "version": 1,
+          "status": "signed",
+          "sent_at": "2026-01-08T10:00:00.000Z",
+          "signed_at": "2026-01-15T09:30:00.000Z",
+          "expires_at": "2026-01-22T10:00:00.000Z"
+        },
+        "signed_by": "Jane Doe",
         "title": "SOW signed — Website Redesign",
         "summary": "Acme Ltd signed the statement of work for \"Website Redesign\"."
       }
@@ -45,13 +57,25 @@
       "project": {
         "id": "7a6b5c4d-3e2f-4a1b-8c9d-0e1f2a3b4c5d",
         "name": "Website Redesign",
-        "status": "Active"
+        "status": "Active",
+        "currency": "USD"
       },
       "client": {
         "id": "9c8d7e6f-5a4b-4c3d-8e2f-1a0b9c8d7e6f",
         "name": "Acme Ltd"
       },
       "data": {
+        "document": {
+          "type": "sow",
+          "id": "3c1f0a52-7d84-4b6e-9a21-5e0d8c7b4a10",
+          "number": "SOW-0007",
+          "version": 1,
+          "status": "declined",
+          "sent_at": "2026-01-08T10:00:00.000Z",
+          "signed_at": null,
+          "expires_at": "2026-01-22T10:00:00.000Z"
+        },
+        "reason": "The timeline does not work for us.",
         "title": "SOW declined — Website Redesign",
         "summary": "Acme Ltd declined the statement of work for \"Website Redesign\"."
       }
@@ -74,13 +98,26 @@
       "project": {
         "id": "7a6b5c4d-3e2f-4a1b-8c9d-0e1f2a3b4c5d",
         "name": "Website Redesign",
-        "status": "Active"
+        "status": "Active",
+        "currency": "USD"
       },
       "client": {
         "id": "9c8d7e6f-5a4b-4c3d-8e2f-1a0b9c8d7e6f",
         "name": "Acme Ltd"
       },
       "data": {
+        "document": {
+          "type": "sow",
+          "id": "3c1f0a52-7d84-4b6e-9a21-5e0d8c7b4a10",
+          "number": "SOW-0007",
+          "version": 1,
+          "status": "changes_requested",
+          "sent_at": "2026-01-08T10:00:00.000Z",
+          "signed_at": null,
+          "expires_at": "2026-01-22T10:00:00.000Z"
+        },
+        "feedback": "Please split phase 2 into two milestones.",
+        "new_version": 2,
         "title": "Changes requested — Website Redesign",
         "summary": "Acme Ltd asked for changes to the statement of work."
       }
@@ -103,13 +140,24 @@
       "project": {
         "id": "7a6b5c4d-3e2f-4a1b-8c9d-0e1f2a3b4c5d",
         "name": "Website Redesign",
-        "status": "Active"
+        "status": "Active",
+        "currency": "USD"
       },
       "client": {
         "id": "9c8d7e6f-5a4b-4c3d-8e2f-1a0b9c8d7e6f",
         "name": "Acme Ltd"
       },
       "data": {
+        "document": {
+          "type": "sow",
+          "id": "3c1f0a52-7d84-4b6e-9a21-5e0d8c7b4a10",
+          "number": "SOW-0007",
+          "version": 1,
+          "status": "expired",
+          "sent_at": "2026-01-08T10:00:00.000Z",
+          "signed_at": null,
+          "expires_at": "2026-01-22T10:00:00.000Z"
+        },
         "title": "SOW expired — Website Redesign",
         "summary": "The signing link for \"Website Redesign\" expired before it was signed."
       }
@@ -132,13 +180,25 @@
       "project": {
         "id": "7a6b5c4d-3e2f-4a1b-8c9d-0e1f2a3b4c5d",
         "name": "Website Redesign",
-        "status": "Active"
+        "status": "Active",
+        "currency": "USD"
       },
       "client": {
         "id": "9c8d7e6f-5a4b-4c3d-8e2f-1a0b9c8d7e6f",
         "name": "Acme Ltd"
       },
       "data": {
+        "document": {
+          "type": "sow",
+          "id": "3c1f0a52-7d84-4b6e-9a21-5e0d8c7b4a10",
+          "number": "SOW-0007",
+          "version": 1,
+          "status": "awaiting_signature",
+          "sent_at": "2026-01-08T10:00:00.000Z",
+          "signed_at": null,
+          "expires_at": "2026-01-22T10:00:00.000Z"
+        },
+        "days_unsigned": 7,
         "title": "SOW stalled — Website Redesign",
         "summary": "The statement of work has been unsigned for 7 days."
       }
@@ -161,13 +221,30 @@
       "project": {
         "id": "7a6b5c4d-3e2f-4a1b-8c9d-0e1f2a3b4c5d",
         "name": "Website Redesign",
-        "status": "Active"
+        "status": "Active",
+        "currency": "USD"
       },
       "client": {
         "id": "9c8d7e6f-5a4b-4c3d-8e2f-1a0b9c8d7e6f",
         "name": "Acme Ltd"
       },
       "data": {
+        "document": {
+          "type": "change_order",
+          "id": "6e2b9d14-1a73-4c58-8f0e-2d9a7b3c5e41",
+          "number": "CO-0003",
+          "title": "Second landing page",
+          "version": 1,
+          "status": "accepted",
+          "total": 1800,
+          "currency": "USD",
+          "is_credit": false,
+          "is_retainer_renewal": false,
+          "sent_at": "2026-01-08T10:00:00.000Z",
+          "accepted_at": "2026-01-15T09:30:00.000Z",
+          "expires_at": "2026-01-22T10:00:00.000Z"
+        },
+        "accepted_by": "Jane Doe",
         "title": "Change order accepted — Website Redesign",
         "summary": "Acme Ltd accepted a change order."
       }
@@ -190,13 +267,30 @@
       "project": {
         "id": "7a6b5c4d-3e2f-4a1b-8c9d-0e1f2a3b4c5d",
         "name": "Website Redesign",
-        "status": "Active"
+        "status": "Active",
+        "currency": "USD"
       },
       "client": {
         "id": "9c8d7e6f-5a4b-4c3d-8e2f-1a0b9c8d7e6f",
         "name": "Acme Ltd"
       },
       "data": {
+        "document": {
+          "type": "change_order",
+          "id": "6e2b9d14-1a73-4c58-8f0e-2d9a7b3c5e41",
+          "number": "CO-0003",
+          "title": "Second landing page",
+          "version": 1,
+          "status": "declined",
+          "total": 1800,
+          "currency": "USD",
+          "is_credit": false,
+          "is_retainer_renewal": false,
+          "sent_at": "2026-01-08T10:00:00.000Z",
+          "accepted_at": null,
+          "expires_at": "2026-01-22T10:00:00.000Z"
+        },
+        "reason": "Out of budget this quarter.",
         "title": "Change order declined — Website Redesign",
         "summary": "Acme Ltd declined a change order."
       }
@@ -219,13 +313,31 @@
       "project": {
         "id": "7a6b5c4d-3e2f-4a1b-8c9d-0e1f2a3b4c5d",
         "name": "Website Redesign",
-        "status": "Active"
+        "status": "Active",
+        "currency": "USD"
       },
       "client": {
         "id": "9c8d7e6f-5a4b-4c3d-8e2f-1a0b9c8d7e6f",
         "name": "Acme Ltd"
       },
       "data": {
+        "document": {
+          "type": "change_order",
+          "id": "6e2b9d14-1a73-4c58-8f0e-2d9a7b3c5e41",
+          "number": "CO-0003",
+          "title": "Second landing page",
+          "version": 1,
+          "status": "countered",
+          "total": 1800,
+          "currency": "USD",
+          "is_credit": false,
+          "is_retainer_renewal": false,
+          "sent_at": "2026-01-08T10:00:00.000Z",
+          "accepted_at": null,
+          "expires_at": "2026-01-22T10:00:00.000Z"
+        },
+        "counter_amount": 1500,
+        "counter_note": "Could we do it for 1,500?",
         "title": "Change order countered — Website Redesign",
         "summary": "Acme Ltd sent a counter-proposal on a change order."
       }
@@ -248,13 +360,29 @@
       "project": {
         "id": "7a6b5c4d-3e2f-4a1b-8c9d-0e1f2a3b4c5d",
         "name": "Website Redesign",
-        "status": "Active"
+        "status": "Active",
+        "currency": "USD"
       },
       "client": {
         "id": "9c8d7e6f-5a4b-4c3d-8e2f-1a0b9c8d7e6f",
         "name": "Acme Ltd"
       },
       "data": {
+        "document": {
+          "type": "change_order",
+          "id": "6e2b9d14-1a73-4c58-8f0e-2d9a7b3c5e41",
+          "number": "CO-0003",
+          "title": "Second landing page",
+          "version": 1,
+          "status": "expired",
+          "total": 1800,
+          "currency": "USD",
+          "is_credit": false,
+          "is_retainer_renewal": false,
+          "sent_at": "2026-01-08T10:00:00.000Z",
+          "accepted_at": null,
+          "expires_at": "2026-01-22T10:00:00.000Z"
+        },
         "title": "Change order expired — Website Redesign",
         "summary": "A change order expired before the client answered."
       }
@@ -277,13 +405,30 @@
       "project": {
         "id": "7a6b5c4d-3e2f-4a1b-8c9d-0e1f2a3b4c5d",
         "name": "Website Redesign",
-        "status": "Active"
+        "status": "Active",
+        "currency": "USD"
       },
       "client": {
         "id": "9c8d7e6f-5a4b-4c3d-8e2f-1a0b9c8d7e6f",
         "name": "Acme Ltd"
       },
       "data": {
+        "document": {
+          "type": "change_order",
+          "id": "6e2b9d14-1a73-4c58-8f0e-2d9a7b3c5e41",
+          "number": "CO-0003",
+          "title": "Second landing page",
+          "version": 1,
+          "status": "sent",
+          "total": 1800,
+          "currency": "USD",
+          "is_credit": false,
+          "is_retainer_renewal": false,
+          "sent_at": "2026-01-08T10:00:00.000Z",
+          "accepted_at": null,
+          "expires_at": "2026-01-22T10:00:00.000Z"
+        },
+        "days_unanswered": 5,
         "title": "Change order stalled — Website Redesign",
         "summary": "A change order has had no answer for 5 days."
       }
@@ -306,13 +451,24 @@
       "project": {
         "id": "7a6b5c4d-3e2f-4a1b-8c9d-0e1f2a3b4c5d",
         "name": "Website Redesign",
-        "status": "Active"
+        "status": "Active",
+        "currency": "USD"
       },
       "client": {
         "id": "9c8d7e6f-5a4b-4c3d-8e2f-1a0b9c8d7e6f",
         "name": "Acme Ltd"
       },
       "data": {
+        "document": {
+          "type": "guardian_flag",
+          "id": "9b5e3a71-0c48-4d26-8e1f-7a2c6d0b4f95",
+          "severity": "medium",
+          "status": "open",
+          "flag_type": "scope_creep",
+          "description": "The client asked for a second landing page, which is not in the signed scope.",
+          "sow_reference": "Section 2.1",
+          "raised_at": "2026-01-15T09:30:00.000Z"
+        },
         "title": "Scope flag — Website Redesign",
         "summary": "Guardian flagged a request as outside the signed scope."
       }
@@ -335,13 +491,25 @@
       "project": {
         "id": "7a6b5c4d-3e2f-4a1b-8c9d-0e1f2a3b4c5d",
         "name": "Website Redesign",
-        "status": "Active"
+        "status": "Active",
+        "currency": "USD"
       },
       "client": {
         "id": "9c8d7e6f-5a4b-4c3d-8e2f-1a0b9c8d7e6f",
         "name": "Acme Ltd"
       },
       "data": {
+        "document": {
+          "type": "guardian_flag",
+          "id": "9b5e3a71-0c48-4d26-8e1f-7a2c6d0b4f95",
+          "severity": "medium",
+          "status": "open",
+          "flag_type": "scope_creep",
+          "description": "The client asked for a second landing page, which is not in the signed scope.",
+          "sow_reference": "Section 2.1",
+          "raised_at": "2026-01-15T09:30:00.000Z"
+        },
+        "days_open": 3,
         "title": "Scope flag unresolved — Website Redesign",
         "summary": "A scope flag has been open for several days."
       }
@@ -364,13 +532,28 @@
       "project": {
         "id": "7a6b5c4d-3e2f-4a1b-8c9d-0e1f2a3b4c5d",
         "name": "Website Redesign",
-        "status": "Active"
+        "status": "Active",
+        "currency": "USD"
       },
       "client": {
         "id": "9c8d7e6f-5a4b-4c3d-8e2f-1a0b9c8d7e6f",
         "name": "Acme Ltd"
       },
       "data": {
+        "document": {
+          "type": "invoice",
+          "id": "8a4d6f20-5b19-4e37-a6c2-1f0b9d8e7c53",
+          "number": "INV-0042",
+          "title": "Milestone 1",
+          "status": "sent",
+          "amount": 2500,
+          "amount_paid": 0,
+          "balance_due": 2500,
+          "currency": "USD",
+          "due_date": "2026-02-07",
+          "sent_at": "2026-01-08T10:00:00.000Z",
+          "paid_at": null
+        },
         "title": "Invoice sent — Website Redesign",
         "summary": "Invoice \"Milestone 1\" was sent to Acme Ltd."
       }
@@ -393,13 +576,35 @@
       "project": {
         "id": "7a6b5c4d-3e2f-4a1b-8c9d-0e1f2a3b4c5d",
         "name": "Website Redesign",
-        "status": "Active"
+        "status": "Active",
+        "currency": "USD"
       },
       "client": {
         "id": "9c8d7e6f-5a4b-4c3d-8e2f-1a0b9c8d7e6f",
         "name": "Acme Ltd"
       },
       "data": {
+        "document": {
+          "type": "invoice",
+          "id": "8a4d6f20-5b19-4e37-a6c2-1f0b9d8e7c53",
+          "number": "INV-0042",
+          "title": "Milestone 1",
+          "status": "paid",
+          "amount": 2500,
+          "amount_paid": 2500,
+          "balance_due": 0,
+          "currency": "USD",
+          "due_date": "2026-02-07",
+          "sent_at": "2026-01-08T10:00:00.000Z",
+          "paid_at": "2026-01-15T09:30:00.000Z"
+        },
+        "payment": {
+          "amount": 2500,
+          "method": "bank_transfer",
+          "paid_at": "2026-01-15T09:30:00.000Z"
+        },
+        "fully_paid": true,
+        "balance_remaining": 0,
         "title": "Invoice paid in full — Website Redesign",
         "summary": "Acme Ltd paid $2,500.00 on \"Milestone 1\"."
       }
@@ -422,13 +627,30 @@
       "project": {
         "id": "7a6b5c4d-3e2f-4a1b-8c9d-0e1f2a3b4c5d",
         "name": "Website Redesign",
-        "status": "Active"
+        "status": "Active",
+        "currency": "USD"
       },
       "client": {
         "id": "9c8d7e6f-5a4b-4c3d-8e2f-1a0b9c8d7e6f",
         "name": "Acme Ltd"
       },
       "data": {
+        "document": {
+          "type": "invoice",
+          "id": "8a4d6f20-5b19-4e37-a6c2-1f0b9d8e7c53",
+          "number": "INV-0042",
+          "title": "Milestone 1",
+          "status": "sent",
+          "amount": 2500,
+          "amount_paid": 0,
+          "balance_due": 2500,
+          "currency": "USD",
+          "due_date": "2026-02-07",
+          "sent_at": "2026-01-08T10:00:00.000Z",
+          "paid_at": null
+        },
+        "claim_reference": "TRX-88213",
+        "claim_note": "Paid by bank transfer this morning.",
         "title": "Payment claimed — Website Redesign",
         "summary": "Acme Ltd says they have paid \"Milestone 1\"."
       }
@@ -451,13 +673,30 @@
       "project": {
         "id": "7a6b5c4d-3e2f-4a1b-8c9d-0e1f2a3b4c5d",
         "name": "Website Redesign",
-        "status": "Active"
+        "status": "Active",
+        "currency": "USD"
       },
       "client": {
         "id": "9c8d7e6f-5a4b-4c3d-8e2f-1a0b9c8d7e6f",
         "name": "Acme Ltd"
       },
       "data": {
+        "document": {
+          "type": "invoice",
+          "id": "8a4d6f20-5b19-4e37-a6c2-1f0b9d8e7c53",
+          "number": "INV-0042",
+          "title": "Milestone 1",
+          "status": "overdue",
+          "amount": 2500,
+          "amount_paid": 0,
+          "balance_due": 2500,
+          "currency": "USD",
+          "due_date": "2026-02-07",
+          "sent_at": "2026-01-08T10:00:00.000Z",
+          "paid_at": null
+        },
+        "balance_due": 2500,
+        "under_dispute": false,
         "title": "Invoice overdue — Website Redesign",
         "summary": "Invoice \"Milestone 1\" is overdue."
       }
@@ -480,13 +719,29 @@
       "project": {
         "id": "7a6b5c4d-3e2f-4a1b-8c9d-0e1f2a3b4c5d",
         "name": "Website Redesign",
-        "status": "Active"
+        "status": "Active",
+        "currency": "USD"
       },
       "client": {
         "id": "9c8d7e6f-5a4b-4c3d-8e2f-1a0b9c8d7e6f",
         "name": "Acme Ltd"
       },
       "data": {
+        "document": {
+          "type": "invoice",
+          "id": "8a4d6f20-5b19-4e37-a6c2-1f0b9d8e7c53",
+          "number": "INV-0042",
+          "title": "Milestone 1",
+          "status": "sent",
+          "amount": 2500,
+          "amount_paid": 0,
+          "balance_due": 2500,
+          "currency": "USD",
+          "due_date": "2026-02-07",
+          "sent_at": "2026-01-08T10:00:00.000Z",
+          "paid_at": null
+        },
+        "dispute_note": "The second line item looks wrong.",
         "title": "Invoice disputed — Website Redesign",
         "summary": "Acme Ltd disputed \"Milestone 1\"."
       }
@@ -509,13 +764,24 @@
       "project": {
         "id": "7a6b5c4d-3e2f-4a1b-8c9d-0e1f2a3b4c5d",
         "name": "Website Redesign",
-        "status": "Active"
+        "status": "Active",
+        "currency": "USD"
       },
       "client": {
         "id": "9c8d7e6f-5a4b-4c3d-8e2f-1a0b9c8d7e6f",
         "name": "Acme Ltd"
       },
       "data": {
+        "document": {
+          "type": "payment_milestone",
+          "id": "2f7c1e96-4d03-4a8b-b5e1-9c6a0d3f8b27",
+          "title": "Design sign-off",
+          "amount": 1200,
+          "currency": "USD",
+          "due_date": "2026-02-07",
+          "status": "overdue",
+          "milestone_type": "milestone"
+        },
         "title": "Milestone overdue — Website Redesign",
         "summary": "A payment milestone is past due."
       }
@@ -538,13 +804,18 @@
       "project": {
         "id": "7a6b5c4d-3e2f-4a1b-8c9d-0e1f2a3b4c5d",
         "name": "Website Redesign",
-        "status": "Active"
+        "status": "Active",
+        "currency": "USD"
       },
       "client": {
         "id": "9c8d7e6f-5a4b-4c3d-8e2f-1a0b9c8d7e6f",
         "name": "Acme Ltd"
       },
       "data": {
+        "retainer": {
+          "term_months": 12,
+          "months_completed": 12
+        },
         "title": "Retainer ending — Monthly Support",
         "summary": "The retainer ends soon."
       }

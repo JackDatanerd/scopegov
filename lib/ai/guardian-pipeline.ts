@@ -374,6 +374,10 @@ export async function classifyAndRecord(service: any, p: {
         ? 'A possible scope item needs a quick look.'
         : 'A new out-of-scope request was flagged.'),
       entityType: 'project', entityId: project.id, projectId: project.id,
+      integrationData: { document: { type: 'guardian_flag', id: flag.id } },
+      // Low-confidence borderline items are for a human to look at; they reach integrations only if someone confirms
+      // one (the confirm route above). Same policy as the email, which also skips them.
+      skipIntegrations: isBorderline,
       ...(p.excludeUserId ? { excludeUserId: p.excludeUserId } : {}),
     })
   } catch (notifyErr) {

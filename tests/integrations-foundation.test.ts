@@ -175,7 +175,7 @@ describe('delivery policy', () => {
   it('adds project and client NAMES (and nothing financial or personal) when it has them', () => {
     const env: any = buildEnvelope({ id: 'e', event_type: 'x', created_at: 'n', workspace_id: 'w', project_id: 'p', data: {} },
       { project: { id: 'p', name: 'Site', status: 'Active', contract_value: 99000, guardian_email: 'g@x.com', client_id: 'c' }, client: { id: 'c', name: 'Acme', email: 'a@acme.com', phone: '1' } })
-    expect(env.project).toEqual({ id: 'p', name: 'Site', status: 'Active' })
+    expect(env.project).toEqual({ id: 'p', name: 'Site', status: 'Active', currency: null })
     expect(env.client).toEqual({ id: 'c', name: 'Acme' })
     expect(JSON.stringify(env)).not.toMatch(/99000|@|phone/)
   })
@@ -192,7 +192,7 @@ describe('delivery policy', () => {
     const send = vi.fn(async () => ({ status: 200, retryAfter: null }))
     await processDeliveries(db.client, { now: () => Date.now(), send })
     const sent = JSON.parse((send.mock.calls[0] as any)[1].body)
-    expect(sent.project).toEqual({ id: 'p1', name: 'Site', status: 'Active' }); expect(sent.client).toEqual({ id: 'c1', name: 'Acme' })
+    expect(sent.project).toEqual({ id: 'p1', name: 'Site', status: 'Active', currency: null }); expect(sent.client).toEqual({ id: 'c1', name: 'Acme' })
     expect(JSON.stringify(sent)).not.toMatch(/5000|acme\.com/)
   })
 })

@@ -15,6 +15,7 @@ import { effectivePlanTier, isWorkspaceLapsed } from '@/lib/billing/plans'
 import { decryptSecret } from './crypto'
 import { signPayload } from './signing'
 import { integrationAllowed, type IntegrationKind } from './plans'
+import { loadDocuments, withDocument } from './enrich'
 
 export const MAX_ATTEMPTS = 8
 export const REQUEST_TIMEOUT_MS = 8_000
@@ -52,7 +53,7 @@ export function parseRetryAfter(header: string | null, now: number = Date.now())
   return Number.isNaN(at) ? null : Math.max(0, Math.round((at - now) / 1000))
 }
 
-export function buildEnvelope(event: any, context: { project?: any; client?: any } = {}): Record<string, unknown> {
+export function buildEnvelope(event: any, context: { project?: any; client?: any; data?: Record<string, unknown> } = {}): Record<string, unknown> {
   return {
     id: event.id,
     type: event.event_type,
@@ -61,9 +62,9 @@ export function buildEnvelope(event: any, context: { project?: any; client?: any
     project_id: event.project_id || null,
     entity: event.entity_type || event.entity_id ? { type: event.entity_type || null, id: event.entity_id || null } : null,
     // Names and status only — never contract values, emails or phone numbers (those sit behind VIEW_FINANCIALS / VIEW_CLIENT_DATA).
-    project: context.project ? { id: context.project.id, name: context.project.name, status: context.project.status } : null,
+    project: context.project ? { id: context.project.id, name: context.project.name, status: context.project.status, currency: context.project.currency ?? null } : null,
     client: context.client ? { id: context.client.id, name: context.client.name } : null,
-    data: event.data || {},
+    data: context.data ?? event.data ?? {},
   }
 }
 
@@ -97,10 +98,12 @@ export async function processDeliveries(
   const projectIds = Array.from(new Set((eventsRes.data || []).map((e: any) => e.project_id).filter(Boolean)))
   const projects = new Map<string, any>()
   if (projectIds.length) {
-    const { data: prows, error: perr } = await service.from('projects').select('id, name, status, client_id, clients(id, name)').in('id', projectIds)
+    const { data: prows, error: perr } = await service.from('projects').select('id, name, status, currency, client_id, clients(id, name)').in('id', projectIds)
     if (perr) console.error('[integrations] project context lookup failed (sending without it):', perr.message)
     for (const p of prows || []) projects.set(p.id, p)
   }
+  // Document details (number, status, amounts, dates) for the document each event refers to — see enrich.ts.
+  const documents = await loadDocuments(service, eventsRes.data || [], pid => (pid ? projects.get(pid)?.currency ?? null : null))
   const subs = new Map<string, any>((subsRes.data || []).map((s: any) => [s.id, s]))
   const events = new Map<string, any>((eventsRes.data || []).map((e: any) => [e.id, e]))
   const workspaces = new Map<string, any>((wsRes.data || []).map((w: any) => [w.id, w]))
@@ -134,7 +137,7 @@ export async function processDeliveries(
     }
 
     const proj = event.project_id ? projects.get(event.project_id) : null
-    const body = JSON.stringify(buildEnvelope(event, { project: proj, client: proj?.clients }))
+    const body = JSON.stringify(buildEnvelope(event, { project: proj, client: proj?.clients, data: withDocument(event, documents) }))
     const ts = Math.floor(nowMs() / 1000)
     let status = 0, errorText: string | null = null, retryAfter: number | null = null
     try {

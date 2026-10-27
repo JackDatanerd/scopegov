@@ -115,6 +115,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       type: 'invoice_disputed', title: `Invoice question — ${project?.name || invoice.title}`,
       body: truncateText(`${client?.name || 'The client'}: ${note}`, 160),
       entityType: 'project', entityId: project?.id, projectId: project?.id,
+      integrationData: { document: { type: 'invoice', id: invoice.id }, dispute_note: truncateText(note, 500) },
     })
 
     try {

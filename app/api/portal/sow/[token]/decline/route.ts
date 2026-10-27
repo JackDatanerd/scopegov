@@ -147,6 +147,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       type: 'sow_declined', title: `SOW declined — ${project.name}`,
       body: reason ? `${client.name} declined: ${truncateText(reason, 200)}` : `${client.name} declined the Statement of Work.`,
       entityType: 'project', entityId: project.id, projectId: project.id,
+      integrationData: { document: { type: 'sow', id: sow.id }, reason: reason ? truncateText(reason, 500) : null },
     })
 
     return NextResponse.json({ ok: true })

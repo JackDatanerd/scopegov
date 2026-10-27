@@ -415,6 +415,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       type: 'sow_signed', title: `SOW signed — ${project.name}`,
       body: `${signerName} signed the Statement of Work.`,
       entityType: 'project', entityId: project.id, projectId: project.id,
+      integrationData: { document: { type: 'sow', id: sow.id }, signed_by: signerName },
     })
 
     // ── 10. Confirm to client (Event 4) ───────────────────────

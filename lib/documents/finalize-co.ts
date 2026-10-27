@@ -521,6 +521,7 @@ export async function finalizeCoAcceptance(service: any, params: {
       ? `${signerName.trim()} accepted a credit of ${formatMoney(Math.abs(Number(co.total) || 0), project.currency)} for ${project.name}.`
       : `${signerName.trim()} accepted ${formatMoney(co.total, project.currency)} for ${project.name}.`,
     entityType: 'project', entityId: co.project_id, projectId: co.project_id,
+    integrationData: { document: { type: 'change_order', id: co.id }, accepted_by: signerName.trim() },
   })
 
   return { ok: true as const, agencyName: ws.agency_name, token: coToken }

@@ -641,6 +641,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
             type: 'guardian_flag', title: `Scope flag confirmed — ${projectName}`,
             body: truncateText(flag.description || '', 140) || 'A borderline item was confirmed as out of scope.',
             entityType: 'project', entityId: flag.project_id, projectId: flag.project_id,
+            integrationData: { document: { type: 'guardian_flag', id: id }, confirmed_by_human: true },
             excludeUserId: session.id,
           })
           const emails = await getMemberEmailsWithPermission(

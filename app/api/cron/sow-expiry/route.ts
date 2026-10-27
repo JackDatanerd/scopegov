@@ -134,6 +134,7 @@ export async function POST(request: NextRequest) {
             type: 'sow_expired', title: `SOW signing link expired — ${projectName}`,
             body: `The signing link for the ${projectName} SOW (v${sow.version}) has expired. Start a new version to send a fresh link.`,
             entityType: 'project', entityId: sow.project_id, projectId: sow.project_id,
+            integrationData: { document: { type: 'sow', id: sow.id } },
           })
 
           // 'sow_expired' is an EVENT_TYPES entry (rendered under "Email notifications", lockable by

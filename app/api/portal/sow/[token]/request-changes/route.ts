@@ -215,6 +215,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       type: 'sow_changes_requested', title: `Changes requested — ${project.name}`,
       body: truncateText(`${client.name}: ${note}`, 160),
       entityType: 'project', entityId: project.id, projectId: project.id,
+      integrationData: { document: { type: 'sow', id: sow.id }, feedback: truncateText(note, 500), new_version: newSow.version },
     })
 
     return NextResponse.json({ ok: true })

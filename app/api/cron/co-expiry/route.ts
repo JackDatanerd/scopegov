@@ -121,6 +121,7 @@ export async function POST(request: NextRequest) {
             type: 'co_expired', title: `Change order link expired — ${projectName}`,
             body: `The signing link for "${co.title}" on ${projectName} has expired. Revise and resend it to give the client a fresh link.`,
             entityType: 'project', entityId: co.project_id, projectId: co.project_id,
+            integrationData: { document: { type: 'change_order', id: co.id } },
           })
 
           try {

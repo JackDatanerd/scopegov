@@ -27,6 +27,16 @@ interface NotifyParams {
   // are additionally filtered to VIEW_ALL_PROJECTS holders or actual
   // members of that project — see lib/utils/permissions-query.ts.
   projectId?: string
+  /**
+   * Structured facts for integrations (webhooks / Zapier), merged into the event's `data`. Put a document reference in
+   * `document: { type, id }` (types: sow | change_order | invoice | payment_milestone | guardian_flag) and the delivery
+   * worker fills in its number, status, amounts and dates (lib/integrations/enrich.ts); add only facts the call site
+   * already holds (who signed, the client's reason, the payment just recorded). Never put a secret or an email in here.
+   * tests/integrations-payloads.test.ts fails for a mapped event whose call site omits this.
+   */
+  integrationData?: Record<string, unknown>
+  /** Do not announce this to integrations (the in-app notification is unaffected). */
+  skipIntegrations?: boolean
 }
 
 /** Resolves true when the rows were written (or there was nobody eligible to write them for); false on failure. */
@@ -35,11 +45,12 @@ export async function notifyMembersWithPermission(service: any, params: NotifyPa
   // bell does, from this one choke point. Announced BEFORE the recipient lookup so a workspace where nobody is eligible
   // for the in-app row (or everyone muted it) still tells its integrations. emitIntegrationEvent never throws and ignores
   // any event not on its allowlist; see lib/integrations/events.ts.
-  if (params.eventType) {
+  if (params.eventType && !params.skipIntegrations) {
     await emitIntegrationEvent({
       workspaceId: params.workspaceId, eventKey: params.eventType,
       entityType: params.entityType, entityId: params.entityId, projectId: params.projectId,
-      data: { title: params.title, summary: params.body },
+      // title/summary last: a call site's structured facts can add fields but never rewrite what the bell says.
+      data: { ...(params.integrationData || {}), title: params.title, summary: params.body },
     }, service)
   }
   try {

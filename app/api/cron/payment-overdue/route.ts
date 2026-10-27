@@ -125,6 +125,7 @@ export async function POST(request: NextRequest) {
           type: 'payment_milestone_overdue', title: `Milestone overdue — ${project.name}`,
           body: `"${m.title}" (${formatMoney(m.amount, project.currency)}) for ${project.clients?.name || 'the client'} is now overdue.`,
           entityType: 'project', entityId: project.id, projectId: project.id,
+          integrationData: { document: { type: 'payment_milestone', id: m.id } },
         })
         // FIX (cron section 17, pass 4 — B4): the milestone is already 'overdue' (never re-selected), so a lost bell is surfaced, not retried.
         if (!msNotified) run.rowError(`milestone ${m.id}`, new Error('marked overdue but the team bell notification failed to write'))
@@ -198,6 +199,7 @@ export async function POST(request: NextRequest) {
           // A disputed invoice is a conversation to have, not just a chase — say so.
           body: `${inv.projects?.clients?.name || 'Client'} has ${formatMoney(balanceDue, inv.currency)} overdue on "${inv.title}"${underDispute ? ' — the client has disputed this invoice' : ''}`,
           entityType: 'project', entityId: inv.projects?.id, projectId: inv.projects?.id,
+          integrationData: { document: { type: 'invoice', id: inv.id }, balance_due: balanceDue, under_dispute: underDispute },
         })
         if (!invNotified) run.rowError(`invoice ${inv.id}`, new Error('marked overdue but the team bell notification failed to write'))
 

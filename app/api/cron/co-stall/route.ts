@@ -81,6 +81,7 @@ export async function POST(request: NextRequest) {
           type: 'co_stalled', title: `Change order stalled — ${co.title}`,
           body: `${clientName} hasn't responded to "${co.title}" on ${projectName} in ${threshold}+ days. ${seen}`.trim(),
           entityType: 'project', entityId: co.project_id, projectId: co.project_id,
+          integrationData: { document: { type: 'change_order', id: co.id }, days_unanswered: threshold },
         })
         if (!notified) run.rowError(`co ${co.id}`, new Error('marked stalled but the team bell notification failed to write'))
 

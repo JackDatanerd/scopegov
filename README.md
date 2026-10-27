@@ -375,8 +375,16 @@ nothing is delivered).
 - **Outbound requests** (`lib/integrations/pinned-request.ts`) resolve DNS once, refuse if ANY address is private or
   reserved, and connect to the exact address they validated (no second lookup to rebind, no private record hiding behind a
   public one). Redirects are never followed; a 3xx is a permanent failure ("update the URL").
-- **Payload:** `{ id, type, created_at, workspace_id, project_id, entity, project: {id,name,status}, client: {id,name}, data: {title, summary} }`.
-  No contract values, emails or phone numbers.
+- **Payload:** `{ id, type, created_at, workspace_id, project_id, entity, project: {id,name,status,currency}, client: {id,name}, data }`.
+  `data` = `title` + `summary` (what the bell says) + structured fields: `document` (sow | change_order | invoice |
+  payment_milestone | guardian_flag — number, status, amounts, dates; looked up by the delivery worker, `lib/integrations/enrich.ts`,
+  as of delivery time) and event facts the call site already holds (`signed_by`, `reason`, `payment`, `counter_amount`,
+  `balance_due`…). Samples for every event are in `lib/integrations/event-catalog.ts`. No contract values, emails, phone
+  numbers, tokens or payment instructions.
+- **Adding an integration event / call site:** pass `integrationData: { document: { type, id }, … }` to
+  `notifyMembersWithPermission` (`skipIntegrations: true` to keep one in-app only). `tests/integrations-payloads.test.ts`
+  fails for a mapped event whose call site omits it, or names the wrong document type, or selects a column that is not in the migrations.
+- **Guardian borderline items** are not announced to integrations until a person confirms them (same policy as the email).
 - **Who can subscribe to what:** only events whose notification you could see yourself (`SEND_SOW`, `SEND_CHANGE_ORDERS`,
   `APPROVE_FLAGS`, `VIEW_FINANCIALS` — `permissionForEvent`). For Zapier it is the API key CREATOR's current permissions.
 - **Zapier:** `app/api/integrations/v1/{me,hooks,hooks/[id],events/[type]/sample}` + the Zapier app in `integrations/zapier`

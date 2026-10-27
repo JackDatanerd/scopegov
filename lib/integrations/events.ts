@@ -76,7 +76,8 @@ export interface IntegrationEventInput {
  */
 function dedupeText(type: string, input: IntegrationEventInput): string {
   const d = input.data || {}
-  return [type, input.entityType || '', input.entityId || '', String(d.title ?? ''), String(d.summary ?? '')].join('\u0001')
+  const doc = (d as any).document
+  return [type, input.entityType || '', input.entityId || '', String(doc?.id ?? ''), String(d.title ?? ''), String(d.summary ?? '')].join('\u0001')
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i

@@ -104,6 +104,7 @@ export async function POST(request: NextRequest) {
               ? `A borderline scope item on ${project.name} has been awaiting review ${threshold}+ days with no action.`
               : `A ${flag.severity} flag on ${project.name} has been open ${threshold}+ days with no action.`,
             entityType: 'project', entityId: project.id, projectId: project.id,
+            integrationData: { document: { type: 'guardian_flag', id: flag.id }, days_open: threshold },
           })
 
           try {

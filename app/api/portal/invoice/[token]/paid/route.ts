@@ -113,6 +113,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       type: 'invoice_payment_claimed', title: `Client says they've paid — ${project?.name || invoice.title}`,
       body: truncateText(`${client?.name || 'The client'} says invoice ${invoice.invoice_number || invoice.title} has been paid${reference.trim() ? ` (ref: ${reference.trim()})` : ''}. Check your account and record the payment.`, 200),
       entityType: 'project', entityId: project?.id, projectId: project?.id,
+      integrationData: { document: { type: 'invoice', id: invoice.id }, claim_reference: reference.trim() || null, claim_note: note.trim() ? truncateText(note.trim(), 500) : null },
     })
 
     try {

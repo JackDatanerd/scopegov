@@ -81,6 +81,7 @@ export async function POST(request: NextRequest) {
           type: 'sow_stalled', title: `SOW stalled — ${projectName}`,
           body: `${clientName} hasn't signed the SOW for ${projectName} in ${threshold}+ days. ${seen}`.trim(),
           entityType: 'project', entityId: sow.project_id, projectId: sow.project_id,
+          integrationData: { document: { type: 'sow', id: sow.id }, days_unsigned: threshold },
         })
         if (!notified) run.rowError(`sow ${sow.id}`, new Error('marked stalled but the team bell notification failed to write'))
 

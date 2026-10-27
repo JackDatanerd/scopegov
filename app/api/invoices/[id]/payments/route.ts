@@ -189,6 +189,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       // the project's Billing tab instead, matching the pattern every other
       // notification type already uses.
       entityType: 'project', entityId: invoice.project_id, excludeUserId: session.id, projectId: invoice.project_id,
+      integrationData: { document: { type: 'invoice', id: id }, payment: { amount, method, paid_at: paidAt }, fully_paid: isFullyPaid, balance_remaining: balanceRemaining },
     })
 
     try {
