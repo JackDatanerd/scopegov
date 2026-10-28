@@ -28,6 +28,9 @@ function anthropicClient(): Anthropic {
 }
 
 export async function POST(request: NextRequest) {
+  // Set once the monthly AI-draft slot is claimed: called when the model call fails or yields nothing, so a draft the customer
+  // never got does not spend their allowance (lib/utils/rate-limit.ts).
+  let refundDraft: (() => Promise<void>) | undefined
   try {
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -100,6 +103,7 @@ export async function POST(request: NextRequest) {
     // Same fix co/draft and guardian/check already have; see claimAiRateSlot. The slot stays used even if the call fails.
     const limited = await claimAiRateSlot(service, session.workspaceId, session.id, 'sow.regenerateSection')
     if (!limited.allowed) return NextResponse.json({ error: limited.message }, { status: 429 })
+    refundDraft = limited.refund
 
     // Word ceiling. The model now sees the WHOLE current section (it used to see the first 800
     // characters while the ceiling was computed from the full length, so any section over
@@ -141,6 +145,7 @@ No preamble, no explanation, no markdown fences. Just the HTML content.`
     // A cut-off answer is a partial section. Never hand that back to be autosaved over the
     // real one — keep the current content and say so.
     if (msg.stop_reason === 'max_tokens') {
+      await refundDraft?.() // nothing new came back: the customer keeps their current text and keeps their allowance
       return NextResponse.json({
         content: sanitizeRichText(currentContent || ''), wordCount: currentWords, truncated: true,
       })
@@ -155,6 +160,7 @@ No preamble, no explanation, no markdown fences. Just the HTML content.`
     if (!raw || stripHtml(raw).length < 10) {
       // FIX (SOW lifecycle pass, B3): the model call already happened — count it, like every other
       // post-call exit in this route, so empty replies can't be retried past the rate limit for free.
+      await refundDraft?.()
       return NextResponse.json({ error: 'Regeneration produced empty content' }, { status: 500 })
     }
 
@@ -174,6 +180,7 @@ No preamble, no explanation, no markdown fences. Just the HTML content.`
     const newWords = countWords(raw)
     if (newWords > wordLimit * 1.1) {
       console.warn(`Section regeneration exceeded word limit (${newWords} > ${wordLimit}) — falling back to current content`)
+      await refundDraft?.()
       return NextResponse.json({
         content: sanitizeRichText(currentContent || ''),
         wordCount: currentWords,
@@ -184,6 +191,7 @@ No preamble, no explanation, no markdown fences. Just the HTML content.`
     // B6 (pass 10): see lib/sow/figures.ts — a rewrite may not silently change or drop amounts / round counts.
     if (!figuresPreserved(currentContent || '', raw, instruction)) {
       console.warn('Section regeneration changed the figures in the section — keeping current content', { sowId, sectionId })
+      await refundDraft?.()
       return NextResponse.json({
         content: sanitizeRichText(currentContent || ''),
         wordCount: currentWords,
@@ -197,6 +205,7 @@ No preamble, no explanation, no markdown fences. Just the HTML content.`
     }))
     return NextResponse.json({ content: finalHtml, wordCount: countWords(finalHtml) })
   } catch (err) {
+    await refundDraft?.()
     console.error('Section regeneration error:', err)
     return NextResponse.json({ error: 'Regeneration failed. Please try again.' }, { status: 500 })
   }

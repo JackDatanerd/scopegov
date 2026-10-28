@@ -100,6 +100,17 @@ export default function TermsPage() {
           cancelled.
         </p>
         <p>
+          <strong>What a plan includes.</strong> Each plan includes the number of seats and active projects, the
+          features, and the monthly allowance of AI drafts shown on the pricing page. AI drafts are the uses of
+          AI to draft or rewrite a SOW, brief, change order or invoice. The allowance is counted per calendar
+          month (UTC) and resets on the first of the month. A request that fails, or that returns nothing usable,
+          and an automatic retry that we make on your behalf, do not count against it. Usage during a free trial is
+          counted separately and does not carry over to your first paid month. Once the allowance is used, AI drafting
+          pauses until it resets or you move to a plan with a larger one; everything else keeps working. Guardian
+          monitoring is not part of the monthly allowance, but like every part of the service it is subject to
+          reasonable-use rate limits that protect the service for everyone.
+        </p>
+        <p>
           <strong>Free trial.</strong> New workspaces start with a 14-day free trial. No card is required to
           start one. Billing begins when you upgrade to a paid plan, and upgrading ends the trial. When the trial
           ends, you need to subscribe to a paid plan to keep making changes in ScopeGov. Until you do, your

@@ -80,6 +80,9 @@ function anthropicClient(): Anthropic {
 }
 
 export async function POST(request: NextRequest) {
+  // Set once the monthly AI-draft slot is claimed: called when the model call fails or yields nothing, so a draft the customer
+  // never got does not spend their allowance (lib/utils/rate-limit.ts).
+  let refundDraft: (() => Promise<void>) | undefined
   try {
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -141,6 +144,7 @@ Flag description (agency's summary, not the client's own words): ${flag.descript
     // fails or returns an unusable draft — the call may still have been billed, and retries must not run past the limit.
     const limited = await claimAiRateSlot(service, session.workspaceId, session.id, 'co.draft')
     if (!limited.allowed) return NextResponse.json({ error: limited.message }, { status: 429 })
+    refundDraft = limited.refund
 
     const snapshot     = project.project_scope_snapshot
     const inScope       = (snapshot?.deliverables || []).map((d: any) => d.title || d).join(', ') || 'not specified'
@@ -214,6 +218,7 @@ Rules:
     const toolUse = msg.content.find((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use')
     if (!toolUse) {
       console.error('CO draft: no tool_use block in response', msg.stop_reason)
+      await refundDraft?.()
       return NextResponse.json({ error: 'AI returned an unusable draft. Please try again or write it manually.' }, { status: 500 })
     }
 
@@ -250,6 +255,7 @@ Rules:
     // (the tool schema requires them; this is the model ignoring it or every line failing sanitization), so say so.
     if (lineItems.length === 0) {
       console.error('CO draft: model returned no usable line items', msg.stop_reason)
+      await refundDraft?.()
       return NextResponse.json({ error: 'AI could not break that into line items. Add more detail about the work, or write it manually.' }, { status: 422 })
     }
     // The tool schema tells the model to return null when it can't tell. Number(null) is 0, which would pass the
@@ -270,6 +276,7 @@ Rules:
       lineItems,
     })
   } catch (err) {
+    await refundDraft?.()
     console.error('CO draft error:', err)
     return NextResponse.json({ error: 'Could not draft the change order. Please try again or write it manually.' }, { status: 500 })
   }

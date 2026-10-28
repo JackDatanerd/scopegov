@@ -994,6 +994,13 @@ function SowTab({ project, sows, amendments, permissions, router, pendingApprova
         </div>
       ) : (
         <div>
+          {currentSow && currentSow.status === 'draft' && currentSow.metadata?.aiGenerated === false && (
+            // aiGenerated is false when every AI attempt failed OR the plan's monthly AI allowance was used up: either way this
+            // draft is the standard template, so say so before it is sent (it used to be silent).
+            <div className="banner banner-info" style={{ marginBottom: 14 }}>
+              <span>This draft was created from the standard template, without AI drafting (the AI service was unavailable, or this month&rsquo;s AI drafts are used up). Review and edit each section before you send it.</span>
+            </div>
+          )}
           {currentSow && (
             <div className="surface surface-p" style={{ marginBottom: 14 }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>

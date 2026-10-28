@@ -22,6 +22,9 @@ function anthropicClient(): Anthropic {
 }
 
 export async function POST(request: NextRequest) {
+  // Set once the monthly AI-draft slot is claimed: called when the model call fails or yields nothing, so a draft the customer
+  // never got does not spend their allowance (lib/utils/rate-limit.ts).
+  let refundDraft: (() => Promise<void>) | undefined
   try {
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -46,6 +49,7 @@ export async function POST(request: NextRequest) {
     // Same fix co/draft and guardian/check already have; see claimAiRateSlot. The slot stays used even if the call fails.
     const limited = await claimAiRateSlot(service, session.workspaceId, session.id, 'sow.parseBrief')
     if (!limited.allowed) return NextResponse.json({ error: limited.message }, { status: 429 })
+    refundDraft = limited.refund
 
     // Carry-forward §1.4: Haiku for brief parsing — fast, reliable extraction
     const prompt = `Extract structured scope information from this text. Return ONLY valid JSON, no markdown fences, no explanation.
@@ -94,8 +98,10 @@ Rules:
 
     // FIX (SOW lifecycle independent pass 15, B3): a reply cut off at max_tokens is incomplete JSON; say so instead of a
     // generic parse failure.
-    if (msg.stop_reason === 'max_tokens')
+    if (msg.stop_reason === 'max_tokens') {
+      await refundDraft?.()
       return NextResponse.json({ error: 'That brief is too long to read in one go. Shorten it or split it, then try again.' }, { status: 422 })
+    }
     const parsed = stripAndParse<Record<string, unknown>>(raw)
     // SOW lifecycle pass 17, B2: the model's JSON shape is not trusted. A list (instead of the requested newline
     // string) in a text field reached the form as an array and was then dropped by generate's string-only cap.
@@ -116,6 +122,7 @@ Rules:
     }
     return NextResponse.json({ brief })
   } catch (err) {
+    await refundDraft?.()
     console.error('Brief parse error:', err)
     return NextResponse.json({ error: 'Failed to parse brief' }, { status: 500 })
   }

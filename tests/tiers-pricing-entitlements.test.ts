@@ -13,7 +13,8 @@ import { PLAN_LIMITS } from '@/lib/utils/format'
 import { LIST_PRICES_USD } from '@/lib/billing/list-prices'
 import { PAID_PLAN_KEYS } from '@/lib/billing/plans'
 import { INTEGRATION_MIN_PLAN, integrationAllowed } from '@/lib/integrations/plans'
-import { claimAiRateSlot, getAiDraftUsage, aiDraftMonthWindow, isAiDraftRoute } from '@/lib/utils/rate-limit'
+import { claimAiRateSlot, recordAiUsage, getAiDraftUsage, aiDraftMonthWindow, isAiDraftRoute } from '@/lib/utils/rate-limit'
+import { loadFeatureNeeds } from '@/lib/billing/roi-inputs'
 
 const read = (p: string) => readFileSync(join(process.cwd(), p), 'utf8')
 
@@ -169,10 +170,10 @@ describe('portfolio and audit export gates', () => {
 const WS = 'ws-1'
 const DAYS = 86_400_000
 
-function seedUsage(n: number, routeKey: string, opts: { daysAgo?: number; users?: number } = {}) {
+function seedUsage(n: number, routeKey: string, opts: { daysAgo?: number; users?: number; bucket?: 'trial' | 'paid' | 'none' } = {}) {
   // Spread over distinct users and older than the 10-minute burst window, so only the MONTHLY allowance can refuse.
   const created = new Date(Date.now() - (opts.daysAgo ?? 0) * DAYS - 3_600_000).toISOString()
-  return Array.from({ length: n }, (_, i) => ({ id: `u${routeKey}${i}${opts.daysAgo ?? 0}`, workspace_id: WS, user_id: `user-${i % (opts.users ?? 50)}`, route_key: routeKey, created_at: created }))
+  return Array.from({ length: n }, (_, i) => ({ id: `u${routeKey}${i}${opts.daysAgo ?? 0}`, workspace_id: WS, user_id: `user-${i % (opts.users ?? 50)}`, route_key: routeKey, created_at: created, allowance_bucket: opts.bucket ?? 'paid' }))
 }
 const db = (plan: string, rows: any[], trialEndsAt: string | null = null) =>
   createFakeSupabase({ workspaces: [{ id: WS, plan_tier: plan, trial_ends_at: trialEndsAt }], ai_usage_log: rows })
@@ -209,13 +210,84 @@ describe('monthly AI drafting allowance', () => {
     expect((await claim(d, 'invoice.draft')).allowed).toBe(false)
   })
 
-  it.runIf(sameMonth)('a higher plan has a higher allowance, and an expired trial is metered as Solo', async () => {
+  it.runIf(sameMonth)('a higher plan has a higher allowance', async () => {
     const solo = PLAN_ENTITLEMENTS.solo.aiDraftsPerMonth
     expect((await claim(db('pro', seedUsage(solo, 'sow.generate')), 'sow.generate')).allowed).toBe(true)
-    const expired = new Date(Date.now() - DAYS).toISOString()
-    expect((await claim(db('trial', seedUsage(solo, 'sow.generate'), expired), 'sow.generate')).allowed).toBe(false)
+  })
+
+  it.runIf(sameMonth)('B2: trial usage is its own allowance and does not follow the workspace onto its first paid month', async () => {
+    const solo = PLAN_ENTITLEMENTS.solo.aiDraftsPerMonth
     const live = new Date(Date.now() + DAYS).toISOString()
-    expect((await claim(db('trial', seedUsage(solo, 'sow.generate'), live), 'sow.generate')).allowed).toBe(true)
+    const expired = new Date(Date.now() - DAYS).toISOString()
+    // 100 drafts made on the trial: fine on the trial (allows 600) AND fine the moment they subscribe to Solo (allows 60).
+    const trialRows = seedUsage(100, 'co.draft', { bucket: 'trial' })
+    expect((await claim(db('trial', trialRows, live), 'co.draft')).allowed).toBe(true)
+    const subscribed = await claim(db('solo', trialRows), 'co.draft')
+    expect(subscribed.allowed).toBe(true)
+    // the trial's own allowance still applies on the trial, and only its own rows count there
+    const trialLimit = PLAN_ENTITLEMENTS.trial.aiDraftsPerMonth
+    expect((await claim(db('trial', seedUsage(trialLimit, 'co.draft', { bucket: 'trial' }), live), 'co.draft')).allowed).toBe(false)
+    expect((await claim(db('trial', seedUsage(trialLimit, 'co.draft', { bucket: 'paid' }), live), 'co.draft')).allowed).toBe(true)
+    // an expired trial is metered as Solo, on paid rows only
+    expect((await claim(db('trial', seedUsage(solo, 'sow.generate'), expired), 'sow.generate')).allowed).toBe(false)
+    expect((await claim(db('trial', seedUsage(solo, 'sow.generate', { bucket: 'trial' }), expired), 'sow.generate')).allowed).toBe(true)
+    // the row a trial call writes is tagged 'trial', a paid one 'paid'
+    const t = db('trial', [], live); await claim(t, 'co.draft')
+    expect(t.tables.ai_usage_log[0].allowance_bucket).toBe('trial')
+    const p = db('pro', []); await claim(p, 'co.draft')
+    expect(p.tables.ai_usage_log[0].allowance_bucket).toBe('paid')
+  })
+
+  it.runIf(sameMonth)('B1: an internal retry does not spend the allowance, but still counts for the burst limit', async () => {
+    const d = db('solo', [])
+    await claim(d, 'sow.generate')                                                       // the click
+    await recordAiUsage(d.client, WS, 'me', 'sow.generate', { countsTowardAllowance: false }) // attempt 2
+    await recordAiUsage(d.client, WS, 'me', 'sow.generate', { countsTowardAllowance: false }) // attempt 3
+    expect((await getAiDraftUsage(d.client, WS, 'solo'))!.used).toBe(1)
+    expect(d.tables.ai_usage_log.length).toBe(3) // all three are still in the log: the burst limit and the cost trail see them
+    expect(d.tables.ai_usage_log.filter((r: any) => r.allowance_bucket === 'none').length).toBe(2)
+  })
+
+  it.runIf(sameMonth)('B1: a refunded call (the model failed or returned nothing usable) is not charged to the allowance', async () => {
+    const limit = PLAN_ENTITLEMENTS.solo.aiDraftsPerMonth
+    const d = db('solo', seedUsage(limit - 1, 'sow.generate'))
+    const first = await claim(d, 'co.draft')
+    expect(first.allowed).toBe(true)
+    expect(typeof first.refund).toBe('function')
+    // at the limit now: without a refund the next draft is refused
+    expect((await getAiDraftUsage(d.client, WS, 'solo'))!.used).toBe(limit)
+    await first.refund!()
+    expect((await getAiDraftUsage(d.client, WS, 'solo'))!.used).toBe(limit - 1)
+    expect((await claim(d, 'co.draft')).allowed).toBe(true)
+    // the refunded row is still logged
+    expect(d.tables.ai_usage_log.some((r: any) => r.allowance_bucket === 'none' && r.route_key === 'co.draft')).toBe(true)
+    // non-drafting routes have nothing to refund
+    expect((await claim(db('solo', []), 'guardian.check')).refund).toBeUndefined()
+  })
+
+  it.runIf(sameMonth)('a refusal says why: the allowance (reason) versus the short-window burst limit', async () => {
+    const limit = PLAN_ENTITLEMENTS.solo.aiDraftsPerMonth
+    const over = await claim(db('solo', seedUsage(limit, 'co.draft')), 'co.draft')
+    expect(over.allowed).toBe(false); expect(over.reason).toBe('allowance')
+    const burst = await claim(db('pro', seedUsage(60, 'co.draft', { users: 1 }).map(r => ({ ...r, user_id: 'me', created_at: new Date().toISOString() }))), 'co.draft')
+    expect(burst.allowed).toBe(false); expect(burst.reason).toBe('burst')
+  })
+
+  it('code deployed before migration 169 keeps the burst limiter working and fails the allowance open', async () => {
+    const fake = db('solo', [])
+    const old = new Proxy(fake.client as any, { get: (t, k) => k !== 'from' ? t[k] : (table: string) => {
+      const b = t.from(table)
+      if (table !== 'ai_usage_log') return b
+      return new Proxy(b, { get: (bt, bk) => bk === 'insert'
+        ? (row: any) => 'allowance_bucket' in row
+          ? { select: () => ({ single: async () => ({ data: null, error: { code: '42703', message: 'column "allowance_bucket" of relation "ai_usage_log" does not exist' } }) }) }
+          : bt.insert(row)
+        : typeof bt[bk] === 'function' ? bt[bk].bind(bt) : bt[bk] })
+    } })
+    const r = await claimAiRateSlot(old, WS, 'me', 'co.draft')
+    expect(r.allowed).toBe(true)
+    expect(fake.tables.ai_usage_log.length).toBe(1)            // the row was still written, without the new column
+    expect('allowance_bucket' in fake.tables.ai_usage_log[0]).toBe(false)
   })
 
   it('last month\'s usage does not count', async () => {
@@ -256,15 +328,33 @@ describe('monthly AI drafting allowance', () => {
     expect(w.resetsAt.toISOString()).toBe('2027-01-01T00:00:00.000Z')
   })
 
-  it('every drafting route goes through claimAiRateSlot and returns its message, and retention outlives a month', () => {
+  it('every drafting route claims a slot, returns its message, and refunds a call that produced nothing; retention outlives a month', () => {
     for (const f of ['sow/parse-brief', 'sow/generate', 'sow/regenerate-section', 'co/draft', 'invoices/draft']) {
       const src = read(`app/api/${f}/route.ts`)
       expect(src, f).toMatch(/claimAiRateSlot\(service, session\.workspaceId, session\.id, '/)
-      expect(src, f).toMatch(/if \(!limited\.allowed\) return NextResponse\.json\(\{ error: limited\.message \}, \{ status: 429 \}\)/)
+      expect(src, f).toMatch(/refundDraft = limited\.refund/)
+      expect(src, f).toMatch(/await refundDraft\?\.\(\)/)
+      expect(src.slice(src.lastIndexOf('} catch (err)')), f).toMatch(/refundDraft/)
+      if (f !== 'sow/generate') expect(src, f).toMatch(/if \(!limited\.allowed\) return NextResponse\.json\(\{ error: limited\.message \}, \{ status: 429 \}\)/)
     }
     const m = read('app/api/cron/notification-cleanup/route.ts').match(/const AI_USAGE_DAYS\s*=\s*(\d+)/)
     expect(Number(m![1])).toBeGreaterThanOrEqual(62)
-    expect(read('supabase/migrations/168_ai_usage_monthly_allowance.sql')).toMatch(/\(workspace_id, route_key, created_at DESC\)/)
+    expect(read('supabase/migrations/169_ai_usage_allowance_bucket.sql')).toMatch(/\(workspace_id, allowance_bucket, route_key, created_at DESC\)/)
+  })
+
+  it('SOW generation carries on from the standard template when the allowance is used up, because there is no other way to create a SOW', () => {
+    const gen = read('app/api/sow/generate/route.ts')
+    expect(gen).toMatch(/const allowanceExhausted = !limited\.allowed && limited\.reason === 'allowance'/)
+    expect(gen).toMatch(/if \(!limited\.allowed && !allowanceExhausted\) return NextResponse\.json\(\{ error: limited\.message \}, \{ status: 429 \}\)/)
+    // never over an existing draft (regenerate-from-brief would replace the agency's text with the bare template)
+    expect(gen).toMatch(/if \(allowanceExhausted && draftProbe\) return NextResponse\.json\(\{ error: limited\.message \}, \{ status: 429 \}\)/)
+    // the model loop is skipped, retries record as non-billable, and the response says what happened
+    expect(gen).toMatch(/!aiSections && !allowanceExhausted; attempt\+\+/)
+    expect(gen).toMatch(/'sow\.generate', \{ countsTowardAllowance: false \}/)
+    expect(gen).toMatch(/NextResponse\.json\(\{ sowId, aiGenerated: !usedFallback, allowanceExhausted \}\)/)
+    expect(read('components/projects/ProjectDetail.tsx')).toMatch(/currentSow\.metadata\?\.aiGenerated === false/)
+    // no route creates a blank SOW, which is why this matters
+    expect(() => readFileSync(join(process.cwd(), 'app/api/sow/route.ts'))).toThrow()
   })
 
   it('the Billing tab shows usage against the allowance', () => {
@@ -280,5 +370,37 @@ describe('copy that used to quote old limits', () => {
     const pricing = read('components/marketing/PricingSection.tsx')
     expect(pricing).not.toMatch(/unlimited Guardian monitoring and AI-drafted SOWs/)
     expect(pricing).toMatch(/AI drafting \(with a monthly allowance\)/)
+  })
+})
+
+describe('calculator seeding and plan-allowance wording', () => {
+  it('the in-app calculator pre-ticks approval chains and integrations the workspace already uses', async () => {
+    const mk = (workflows: any[], steps: any[], conns: any[] = [], keys: any[] = [], subs: any[] = []) =>
+      createFakeSupabase({ approval_workflows: workflows, approval_workflow_steps: steps, integration_connections: conns, integration_api_keys: keys, integration_subscriptions: subs }).client
+    const wf = (id: string, active = true) => ({ id, workspace_id: WS, is_active: active })
+    expect(await loadFeatureNeeds(mk([wf('a')], [{ workflow_id: 'a' }, { workflow_id: 'a' }]), WS)).toEqual({ needsApprovalChains: true })
+    expect(await loadFeatureNeeds(mk([wf('a')], [{ workflow_id: 'a' }]), WS)).toEqual({})                       // one approver step needs no chains
+    expect(await loadFeatureNeeds(mk([wf('a', false)], [{ workflow_id: 'a' }, { workflow_id: 'a' }]), WS)).toEqual({}) // inactive workflow
+    expect(await loadFeatureNeeds(mk([], [], [], [], [{ id: 's', workspace_id: WS, active: true }]), WS)).toEqual({ needsIntegrations: true })
+    expect(await loadFeatureNeeds(mk([], [], [{ id: 'c', workspace_id: WS, status: 'active' }]), WS)).toEqual({ needsIntegrations: true })
+    expect(await loadFeatureNeeds(mk([], [], [], [{ id: 'k', workspace_id: WS, revoked_at: '2026-01-01T00:00:00Z' }]), WS)).toEqual({}) // revoked key
+    expect(await loadFeatureNeeds(mk([], [], [{ id: 'c', workspace_id: WS, status: 'disabled' }], [], [{ id: 's', workspace_id: WS, active: false }]), WS)).toEqual({})
+  })
+  it('the calculator page merges them, and the seats figure counts live invites like the seat limit does', () => {
+    expect(read('app/(app)/plan-calculator/page.tsx')).toMatch(/loadFeatureNeeds\(service, session\.workspaceId\)/)
+    const src = read('lib/billing/roi-inputs.ts')
+    expect(src).toMatch(/invite_token_expires_at\.is\.null,invite_token_expires_at\.gt/)
+    expect(src).toMatch(/seatsNeeded: Math\.max\(1, activeMembers \+ pendingInvites\)/)
+  })
+  it('the Terms state the plan allowances, including what does not count and that Guardian is outside the monthly allowance', () => {
+    const t = read('app/legal/terms/page.tsx')
+    expect(t).toMatch(/What a plan includes/)
+    expect(t).toMatch(/allowance of AI drafts/)
+    expect(t).toMatch(/do not count against it/)
+    expect(t).toMatch(/counted separately and does not carry over to your first paid month/)
+    expect(t).toMatch(/Guardian\s+monitoring is not part of the monthly allowance/)
+  })
+  it('the README points at the real plan table', () => {
+    expect(read('README.md')).toMatch(/one table for every plan limit, price and feature: `lib\/billing\/entitlements\.ts`/)
   })
 })

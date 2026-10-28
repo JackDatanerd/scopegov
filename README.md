@@ -401,7 +401,7 @@ nothing is delivered).
   (see its README — pushing it needs your Zapier developer account). Hook URLs are pinned to `hooks.zapier.com`; up to 100
   Zap triggers per workspace (customer webhooks: 10, counted separately).
 - **Signature:** `X-ScopeGov-Signature: v1=hex(HMAC-SHA256(secret, "<X-ScopeGov-Timestamp>.<raw body>"))`.
-- **Plans** (one table, `lib/integrations/plans.ts`): webhooks / Zapier / API keys from Starter; Slack, HubSpot, Drive
+- **Plans** (one table for every plan limit, price and feature: `lib/billing/entitlements.ts`; the integration gates in `lib/integrations/plans.ts` read it): webhooks / Zapier / API keys from Starter; Slack, HubSpot, Drive
   from Pro; trial gets all; Solo and lapsed workspaces get none (and nothing is delivered for them).
 - **Permission:** `MANAGE_WORKSPACE_SETTINGS`. Creating a webhook or key, replacing a secret, or re-pointing a URL needs
   step-up. Every change is in the audit log (`workspace.webhook_*`, `workspace.api_key_*`).

@@ -63,6 +63,9 @@ const DRAFT_INVOICE_TOOL = {
 }
 
 export async function POST(request: NextRequest) {
+  // Set once the monthly AI-draft slot is claimed: called when the model call fails or yields nothing, so a draft the customer
+  // never got does not spend their allowance (lib/utils/rate-limit.ts).
+  let refundDraft: (() => Promise<void>) | undefined
   try {
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -113,6 +116,7 @@ export async function POST(request: NextRequest) {
     // Same fix co/draft and guardian/check already have; see claimAiRateSlot. The slot stays used even if the call fails.
     const limited = await claimAiRateSlot(service, session.workspaceId, session.id, 'invoice.draft')
     if (!limited.allowed) return NextResponse.json({ error: limited.message }, { status: 429 })
+    refundDraft = limited.refund
 
     const billingTypeGuidance: Record<string, string> = {
       fixed:            'This is a flat fixed-fee milestone — one line item is normal.',
@@ -153,6 +157,7 @@ Rules:
     const toolUse = msg.content.find((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use')
     if (!toolUse) {
       console.error('Invoice draft: no tool_use block in response', msg.stop_reason)
+      await refundDraft?.()
       return NextResponse.json({ error: 'AI returned an unusable draft. Please try again or write it manually.' }, { status: 500 })
     }
 
@@ -180,6 +185,7 @@ Rules:
 
     return NextResponse.json({ title, lineItems })
   } catch (err) {
+    await refundDraft?.()
     console.error('Invoice draft error:', err)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }

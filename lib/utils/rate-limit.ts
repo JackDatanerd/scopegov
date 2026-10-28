@@ -20,6 +20,17 @@ import { effectivePlanTier } from '@/lib/billing/plans'
 export interface RateLimitResult {
   allowed: boolean
   message?: string
+  /**
+   * Why a call was refused: 'burst' = too many in a few minutes (retry shortly), 'allowance' = the plan's monthly AI drafts are
+   * used up. Drafting routes that have a no-AI path (SOW generation) use it to carry on without the model instead of refusing.
+   */
+  reason?: 'burst' | 'allowance'
+  /**
+   * AI drafting routes only, on an allowed claim: call it when the model call FAILED or produced nothing usable, so the customer's
+   * monthly allowance is not spent on a draft they never got. The row stays in the log, so the burst limit (the abuse backstop)
+   * still counts the attempt; only the allowance count lets it go.
+   */
+  refund?: () => Promise<void>
 }
 
 // Per-route limits: (max calls, window in minutes). Deliberately generous —
@@ -69,12 +80,23 @@ export async function checkAiRateLimit(
 }
 
 export async function recordAiUsage(
-  service: any, workspaceId: string, userId: string, routeKey: string
+  service: any, workspaceId: string, userId: string, routeKey: string,
+  opts: { countsTowardAllowance?: boolean } = {},
 ): Promise<void> {
-  const { error } = await service
-    .from('ai_usage_log')
-    .insert({ workspace_id: workspaceId, user_id: userId, route_key: routeKey })
+  // An INTERNAL retry (the model's reply failed validation and the route asks again) is real cost and still counts toward the
+  // burst limit, but it is not something the customer asked for, so it must not spend their monthly allowance.
+  const row: Record<string, unknown> = { workspace_id: workspaceId, user_id: userId, route_key: routeKey }
+  if (opts.countsTowardAllowance === false) row.allowance_bucket = 'none'
+  let { error } = await service.from('ai_usage_log').insert(row)
+  if (error && opts.countsTowardAllowance === false && isMissingBucketColumn(error)) {
+    ;({ error } = await service.from('ai_usage_log').insert({ workspace_id: workspaceId, user_id: userId, route_key: routeKey }))
+  }
   if (error) console.error('Failed to record AI usage:', error)
+}
+
+/** Migration 169 not applied yet (code deployed first): Postgres 42703 undefined_column naming allowance_bucket. */
+function isMissingBucketColumn(error: any): boolean {
+  return error?.code === '42703' || /allowance_bucket/i.test(String(error?.message || ''))
 }
 
 
@@ -109,10 +131,14 @@ export interface AiDraftUsage { used: number; limit: number; resetsAt: string }
 /** AI drafts this workspace has used this month against its plan's allowance; null on a failed read (callers fail open). */
 export async function getAiDraftUsage(service: any, workspaceId: string, planTier: string, now: Date = new Date()): Promise<AiDraftUsage | null> {
   const { start, resetsAt } = aiDraftMonthWindow(now)
+  // Each row is tagged with the allowance it belongs to when it is written (migration 169): 'trial' while on the trial, 'paid'
+  // on a paid plan, 'none' for an internal retry or a refunded failure. The trial's usage is its own allowance and does NOT
+  // follow the workspace onto its first paid month (a trialist who used 100 drafts was locked out of Solo's 60 the day they paid).
   const { count, error } = await service
     .from('ai_usage_log')
     .select('id', { count: 'exact', head: true })
     .eq('workspace_id', workspaceId)
+    .eq('allowance_bucket', planTier === 'trial' ? 'trial' : 'paid')
     .in('route_key', [...AI_DRAFT_ROUTE_KEYS])
     .gte('created_at', start.toISOString())
   if (error) { console.error('AI draft usage read failed:', error); return null }
@@ -124,11 +150,8 @@ export async function getAiDraftUsage(service: any, workspaceId: string, planTie
  * count includes the caller's own row, so more than the allowance means this call is the one over it. Fails OPEN on a database
  * error, like every limiter here.
  */
-async function overMonthlyDraftAllowance(service: any, workspaceId: string): Promise<{ over: boolean; message?: string }> {
+async function overMonthlyDraftAllowance(service: any, workspaceId: string, plan: string): Promise<{ over: boolean; message?: string }> {
   try {
-    const { data: ws, error: wsErr } = await service.from('workspaces').select('plan_tier, trial_ends_at').eq('id', workspaceId).maybeSingle()
-    if (wsErr || !ws) { if (wsErr) console.error('Monthly AI allowance: workspace read failed (failing open):', wsErr); return { over: false } }
-    const plan = effectivePlanTier(ws.plan_tier, ws.trial_ends_at)
     const usage = await getAiDraftUsage(service, workspaceId, plan)
     if (!usage) return { over: false }
     if (usage.used <= usage.limit) return { over: false }
@@ -137,6 +160,18 @@ async function overMonthlyDraftAllowance(service: any, workspaceId: string): Pro
     // A broken allowance check must never take drafting down: the burst limit above has already passed.
     console.error('Monthly AI allowance check threw (failing open):', e)
     return { over: false }
+  }
+}
+
+/** The workspace's EFFECTIVE plan for allowance purposes; null on any failure (the allowance then fails open). */
+async function readAllowancePlan(service: any, workspaceId: string): Promise<string | null> {
+  try {
+    const { data: ws, error } = await service.from('workspaces').select('plan_tier, trial_ends_at').eq('id', workspaceId).maybeSingle()
+    if (error || !ws) { if (error) console.error('Monthly AI allowance: workspace read failed (failing open):', error); return null }
+    return effectivePlanTier(ws.plan_tier, ws.trial_ends_at)
+  } catch (e) {
+    console.error('Monthly AI allowance: workspace read threw (failing open):', e)
+    return null
   }
 }
 
@@ -161,11 +196,19 @@ export async function claimAiRateSlot(
   service: any, workspaceId: string, userId: string, routeKey: string
 ): Promise<RateLimitResult> {
   const { max, windowMinutes } = LIMITS[routeKey] || DEFAULT_LIMIT
-  const { data: row, error: insertError } = await service
+  const isDraft = isAiDraftRoute(routeKey)
+  // Drafting routes tag the row with the allowance it spends (see getAiDraftUsage); the plan is read first so the tag is right.
+  const plan = isDraft ? await readAllowancePlan(service, workspaceId) : null
+  const base = { workspace_id: workspaceId, user_id: userId, route_key: routeKey }
+  let { data: row, error: insertError } = await service
     .from('ai_usage_log')
-    .insert({ workspace_id: workspaceId, user_id: userId, route_key: routeKey })
+    .insert(isDraft ? { ...base, allowance_bucket: plan === 'trial' ? 'trial' : 'paid' } : base)
     .select('id')
     .single()
+  if (insertError && isDraft && isMissingBucketColumn(insertError)) {
+    // Code deployed before migration 169: keep the burst limiter working (the monthly count then fails open below).
+    ;({ data: row, error: insertError } = await service.from('ai_usage_log').insert(base).select('id').single())
+  }
   if (insertError || !row) {
     console.error('Rate limit claim failed (failing open):', insertError)
     return { allowed: true }
@@ -189,18 +232,26 @@ export async function claimAiRateSlot(
     if (releaseError) console.error('Failed to release an unused AI rate-limit slot:', releaseError)
     return {
       allowed: false,
+      reason: 'burst',
       message: `Too many requests — please wait a few minutes and try again (limit: ${max} per ${windowMinutes}m).`,
     }
   }
 
   // Monthly allowance for the drafting routes (see above). Over it: withdraw this row so a refused call does not use the
   // allowance, and say when it resets.
-  if (isAiDraftRoute(routeKey)) {
-    const monthly = await overMonthlyDraftAllowance(service, workspaceId)
+  if (isDraft) {
+    const monthly = plan ? await overMonthlyDraftAllowance(service, workspaceId, plan) : { over: false as const }
     if (monthly.over) {
       const { error: releaseError } = await service.from('ai_usage_log').delete().eq('id', row.id)
       if (releaseError) console.error('Failed to release an unused AI allowance slot:', releaseError)
-      return { allowed: false, message: monthly.message }
+      return { allowed: false, reason: 'allowance', message: monthly.message }
+    }
+    return {
+      allowed: true,
+      refund: async () => {
+        const { error: refundError } = await service.from('ai_usage_log').update({ allowance_bucket: 'none' }).eq('id', row.id)
+        if (refundError) console.error('Failed to refund an AI allowance slot:', refundError)
+      },
     }
   }
   return { allowed: true }

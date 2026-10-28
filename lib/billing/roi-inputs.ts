@@ -57,7 +57,8 @@ export async function loadRoiInputs(
   const since = new Date(sinceMs).toISOString()
   const windowDays = Math.max(1, Math.round((now - sinceMs) / DAY))
 
-  const [scope, projects, members] = await Promise.all([
+  const nowIso = new Date().toISOString()
+  const [scope, projects, members, liveInvites] = await Promise.all([
     getScopeReportData(service, wsId, since, null, true),
     fetchPaged<{ contract_value: number | null; currency: string | null; status: string | null; created_at: string }>(
       (from, to) => service.from('projects')
@@ -68,8 +69,14 @@ export async function loadRoiInputs(
     ),
     service.from('workspace_members').select('id', { count: 'exact', head: true })
       .eq('workspace_id', wsId).eq('status', 'active'),
+    // A pending invite holds a seat until it lapses (same rule as lib/utils/seat-limit.ts), so the seats the team needs include them.
+    service.from('workspace_members').select('id', { count: 'exact', head: true })
+      .eq('workspace_id', wsId).eq('status', 'invited')
+      .or(`invite_token_expires_at.is.null,invite_token_expires_at.gt.${nowIso}`),
   ])
   if (members.error) throw new Error(`roi inputs: members read failed: ${members.error.message}`)
+  // A failed invite read only means the seat figure is short by the pending invites; the form is editable, so do not fail the page.
+  const pendingInvites = liveInvites.error ? 0 : (liveInvites.count || 0)
 
   const currency: string = scope.currency || 'USD'
   const inCurrency = (p: { currency: string | null }) => (p.currency || 'USD') === currency
@@ -104,10 +111,46 @@ export async function loadRoiInputs(
   const defaults: Partial<RoiInputs> = {
     currency,
     grantedFreeValue,
-    seatsNeeded: Math.max(1, activeMembers),
+    seatsNeeded: Math.max(1, activeMembers + pendingInvites),
     activeProjectsNeeded: activeProjects,
     ...(startedInWindow.length > 0 ? { projectsPerYear: startedInWindow.length } : {}),
     ...(avgProjectValue > 0 ? { avgProjectValue } : {}),
   }
   return { measured, defaults }
+}
+
+/**
+ * Plan features this workspace is ALREADY USING, as the calculator's "I need ..." flags, so the in-app calculator never
+ * recommends a plan that would switch off something the team relies on (it used to recommend Solo to a workspace running
+ * webhooks). Only what can be measured reliably: multi-step approval chains and connected integrations. Custom roles cannot be told
+ * apart from the seeded ones (roles carry no preset marker), and portfolio / audit-export use is not recorded, so those stay
+ * unticked for the user to set. Best effort: a failed read leaves that flag off rather than failing the page.
+ */
+export async function loadFeatureNeeds(service: any, wsId: string): Promise<Partial<RoiInputs>> {
+  const out: Partial<RoiInputs> = {}
+
+  try {
+    const wf = await service.from('approval_workflows').select('id').eq('workspace_id', wsId).eq('is_active', true).limit(200)
+    const ids: string[] = (wf.data || []).map((w: any) => w.id)
+    if (!wf.error && ids.length) {
+      const st = await service.from('approval_workflow_steps').select('workflow_id').in('workflow_id', ids).limit(5000)
+      if (!st.error) {
+        const per = new Map<string, number>()
+        for (const r of st.data || []) per.set(r.workflow_id, (per.get(r.workflow_id) || 0) + 1)
+        if ([...per.values()].some(n => n > 1)) out.needsApprovalChains = true
+      }
+    }
+  } catch (e) { console.error('[plan-calculator] approval-chain read failed (flag left off):', e) }
+
+  try {
+    const [conn, keys, subs] = await Promise.all([
+      service.from('integration_connections').select('id', { count: 'exact', head: true }).eq('workspace_id', wsId).eq('status', 'active'),
+      service.from('integration_api_keys').select('id', { count: 'exact', head: true }).eq('workspace_id', wsId).is('revoked_at', null),
+      service.from('integration_subscriptions').select('id', { count: 'exact', head: true }).eq('workspace_id', wsId).eq('active', true),
+    ])
+    const used = [conn, keys, subs].some((r: any) => !r.error && (r.count || 0) > 0)
+    if (used) out.needsIntegrations = true
+  } catch (e) { console.error('[plan-calculator] integrations read failed (flag left off):', e) }
+
+  return out
 }

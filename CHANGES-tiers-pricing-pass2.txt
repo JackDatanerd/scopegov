@@ -1,0 +1,48 @@
+TIERS & PRICING, INDEPENDENT PASS 2 (fixes)
+===========================================
+
+Both bugs were in the monthly AI drafting allowance added in the previous round. Both were reproduced with a throwaway test
+against the real helpers before fixing.
+
+B1  One click could spend up to 3 of the monthly allowance
+    sow/generate asks the model again when a reply fails validation (up to 3 attempts) and wrote a usage row per attempt, all
+    counted; a call that failed outright, or fell back to the template, still spent the allowance.
+    Fix: usage rows carry allowance_bucket ('trial' | 'paid' | 'none'). Internal retries are written 'none' (they still count for the
+    10-minute burst limit and the cost trail). claimAiRateSlot returns refund(); the five drafting routes call it when the model
+    call failed or produced nothing usable (500s, truncated replies, empty / over-length / figure-changing section rewrites,
+    unusable CO and invoice drafts, the SOW template fallback), setting the row to 'none'.
+
+B2  Trial usage blocked the first paid month
+    The count was "this calendar month, whatever plan it was on": 100 drafts on the trial (allowance 600) then subscribing to
+    Solo (60) = refused for the rest of the month, with a message telling a customer who had just paid to upgrade.
+    Fix: rows written on the trial are 'trial' and only count against the trial's allowance; paid rows only against paid plans.
+    Moving between paid plans mid-month keeps counting.
+
+Found while tracing the above: an exhausted allowance blocked SOW creation entirely
+    No route creates a blank SOW (api/sow has only generate, parse-brief and regenerate-section), so refusing sow/generate at the
+    allowance meant no new SOW could be created at all, and "write this part by hand" was impossible. sow/generate now carries on
+    from the same deterministic template it already falls back to when every AI attempt fails (no model call, no cost), returns
+    { sowId, aiGenerated, allowanceExhausted }, and NEVER does this over an existing draft (regenerate-from-brief would replace the
+    agency's text with the bare template; it still gets the 429). The SOW tab now says when a draft is the standard template
+    (aiGenerated === false: AI unavailable or allowance used), which used to be silent.
+    claimAiRateSlot's refusal now carries reason: 'allowance' | 'burst'.
+
+Gaps closed
+    - Terms s.7 "What a plan includes": seats, projects and the monthly AI-draft allowance (what counts, what doesn't, trial counted
+      separately, drafting pauses but everything else keeps working, Guardian outside the monthly allowance but under
+      reasonable-use rate limits). This is plain-language drafting, not legal advice: have it reviewed.
+    - In-app plan calculator pre-ticks multi-step approval chains and connected integrations the workspace already uses
+      (loadFeatureNeeds), so it cannot recommend Solo to a workspace running webhooks. Custom roles / portfolio / audit-export use
+      cannot be measured reliably (roles carry no preset marker; use is not recorded) and stay for the user to tick.
+    - The calculator's seat figure counts live pending invites, like the seat limit does.
+    - README points at lib/billing/entitlements.ts as the plan table.
+
+Migration 169 (safe before or after the deploy): ai_usage_log.allowance_bucket, a new index for the monthly count, and drops
+migration 168's index (replaced). Until it runs, the code falls back to the old insert (burst limiter intact) and the monthly
+count fails open instead of erroring.
+
+Deliberately NOT changed (your call): Guardian has no monthly ceiling; every drafting route still counts as 1 draft regardless
+of cost (parse-brief on the cheaper model = full SOW generation); multi-step chains built on the trial stay active after a
+downgrade; Starter has no cap on how many single-step workflows it can create.
+Not testable with the fake database: the expired-invite exclusion in the calculator's seat figure (it ignores .or() filters); it is
+the same PostgREST expression lib/utils/seat-limit.ts uses.

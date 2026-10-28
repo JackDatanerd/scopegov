@@ -2,7 +2,7 @@ import Link from 'next/link'
 import { redirect } from 'next/navigation'
 import { getSessionStrict, hasPermission } from '@/lib/auth/session'
 import { createServiceClient } from '@/lib/supabase/server'
-import { loadRoiInputs } from '@/lib/billing/roi-inputs'
+import { loadRoiInputs, loadFeatureNeeds } from '@/lib/billing/roi-inputs'
 import PlanCalculator from '@/components/calculator/PlanCalculator'
 
 export const metadata = { title: 'What is scope creep costing you? · ScopeGov' }
@@ -38,6 +38,10 @@ export default async function PlanCalculatorPage() {
     console.error('[plan-calculator] loading workspace numbers failed:', e)
     loadFailed = true
   }
+  // Features the workspace already uses (approval chains, connected integrations), pre-ticked so the calculator cannot
+  // recommend a plan that would switch them off. Not money, so it applies to every caller; best effort and never throws.
+  const used = await loadFeatureNeeds(service, session.workspaceId)
+  load = { ...load, defaults: { ...load.defaults, ...used } }
 
   return (
     <div className="page" style={{ maxWidth: 1080 }}>

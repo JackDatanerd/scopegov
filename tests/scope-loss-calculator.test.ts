@@ -313,7 +313,8 @@ describe('loader — workspace numbers', () => {
     expect(m.avgProjectValue).toBe(Math.round((10_000 + 20_000 + 5_000) / 3))
     expect(m.activeMembers).toBe(2)                   // invited and other-workspace members excluded
     expect(m.mixedCurrencies).toBe(true)
-    expect(out.defaults).toMatchObject({ currency: 'USD', grantedFreeValue: 2_000, seatsNeeded: 2, projectsPerYear: 3 })
+    // seats the team NEEDS include the live pending invite (it holds a seat, like lib/utils/seat-limit.ts); activeMembers above does not
+    expect(out.defaults).toMatchObject({ currency: 'USD', grantedFreeValue: 2_000, seatsNeeded: 3, projectsPerYear: 3 })
   })
 
   it('the window is the workspace\'s age when younger than a year — nothing is annualised', async () => {

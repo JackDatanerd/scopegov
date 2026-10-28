@@ -84,6 +84,9 @@ const PAYMENT_STRUCTURE_LABELS: Record<string, string> = {
 }
 
 export async function POST(request: NextRequest) {
+  // Set once the monthly AI-draft slot is claimed: called when the model call fails or yields nothing, so a draft the customer
+  // never got does not spend their allowance (lib/utils/rate-limit.ts).
+  let refundDraft: (() => Promise<void>) | undefined
   try {
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -219,7 +222,14 @@ export async function POST(request: NextRequest) {
     // Same fix co/draft and guardian/check already have; see claimAiRateSlot. The slot stays used even if the call fails.
     // The claim covers the first model call; each retry below records one more, so usage still counts every call.
     const limited = await claimAiRateSlot(service, session.workspaceId, session.id, 'sow.generate')
-    if (!limited.allowed) return NextResponse.json({ error: limited.message }, { status: 429 })
+    // Monthly AI allowance used up: there is no other way to create a SOW (no blank-document route exists), so refusing here would
+    // stop SOW creation altogether. Carry on WITHOUT the model: the same deterministic template the route already falls back to
+    // when every AI attempt fails, flagged to the client so it can say so. Only the short-window burst limit still refuses.
+    const allowanceExhausted = !limited.allowed && limited.reason === 'allowance'
+    if (!limited.allowed && !allowanceExhausted) return NextResponse.json({ error: limited.message }, { status: 429 })
+    // ...but never over an EXISTING draft: "regenerate from brief" would replace the agency's drafted text with the bare template.
+    if (allowanceExhausted && draftProbe) return NextResponse.json({ error: limited.message }, { status: 429 })
+    refundDraft = limited.refund
 
     const agencyName    = project.workspaces?.agency_name || session.agencyName
     // Save a newly supplied contracting company on the client record, so every later document (CO, invoice, PDFs)
@@ -399,11 +409,11 @@ export async function POST(request: NextRequest) {
     let lastAttemptFailed = false
     let conflictingDraft: { sections: Record<string, string>; tables: Record<SowTableSectionId, SowTableRow[]> } | null = null
 
-    for (let attempt = 1; attempt <= MAX_ATTEMPTS && !aiSections; attempt++) {
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS && !aiSections && !allowanceExhausted; attempt++) {
       const prompt = buildSowContentPrompt(contentInput, { emphatic: attempt > 1 && lastAttemptFailed, fixNote: fixNote || undefined })
       lastAttemptFailed = false
       try {
-        if (attempt > 1) await recordAiUsage(service, session.workspaceId, session.id, 'sow.generate')
+        if (attempt > 1) await recordAiUsage(service, session.workspaceId, session.id, 'sow.generate', { countsTowardAllowance: false })
         const msg = await anthropicClient().messages.create({
           model:      MODEL,
           max_tokens: scaleMaxTokens(MODEL, 8000),
@@ -444,9 +454,11 @@ export async function POST(request: NextRequest) {
     }
 
     if (!aiSections) {
-      console.error('SOW content generation: all attempts failed, using deterministic fallback', { projectId })
+      if (!allowanceExhausted) console.error('SOW content generation: all attempts failed, using deterministic fallback', { projectId })
       aiSections = buildFallbackSections(contentInput)
       usedFallback = true
+      await refundDraft?.() // no AI draft was produced: the customer got the plain template, not a draft they should be charged for
+      if (allowanceExhausted) console.log('SOW generate: monthly AI allowance used — created from the standard template', { projectId })
     }
 
     // Tables are parsed leniently and never throw — a table can come back
@@ -718,9 +730,10 @@ export async function POST(request: NextRequest) {
 
     // Note: AI usage is recorded per actual model call inside the retry
     // loop above (accurate cost/rate-limit accounting), not again here.
-    return NextResponse.json({ sowId })
+    return NextResponse.json({ sowId, aiGenerated: !usedFallback, allowanceExhausted })
   } catch (err) {
     console.error('SOW generate error:', err)
+    await refundDraft?.()
     return NextResponse.json({ error: 'Could not generate the SOW. Please try again.' }, { status: 500 })
   }
 }
