@@ -7,10 +7,10 @@ import { parsePermissionMap } from '@/lib/utils/permission-map'
 import { roleNameTaken } from '@/lib/utils/role-names'
 import { sanitizeDisplayName } from '@/lib/utils/sanitize'
 import { diffPermissionMaps } from '@/lib/utils/permission-diff'
+import { hasFeature } from '@/lib/billing/entitlements'
 
-// Mirrors the same constant in components/team/TeamClient.tsx — the
-// allowlist and the copy that describes it must not drift apart again.
-const CUSTOM_ROLE_PLANS = ['pro', 'agency', 'trial']
+// Which plans have custom roles comes from the one plan table (lib/billing/entitlements.ts), the same table TeamClient and the
+// pricing cards read, so the gate and the copy that describes it cannot drift apart again.
 
 export async function POST(request: NextRequest) {
   try {
@@ -24,8 +24,8 @@ export async function POST(request: NextRequest) {
     // telling a trial workspace it can't do the thing it just did. The
     // client copy was corrected in an earlier pass (CUSTOM_ROLE_PLANS in
     // TeamClient.tsx); the server message it mirrors was missed.
-    if (!CUSTOM_ROLE_PLANS.includes(session.planTier))
-      return NextResponse.json({ error: 'Custom roles require Pro, Agency, or an active trial' }, { status: 403 })
+    if (!hasFeature(session.planTier, 'customRoles', !!session.lapsed))
+      return NextResponse.json({ error: 'Custom roles require the Pro or Agency plan, or an active trial' }, { status: 403 })
 
     const body = await request.json().catch(() => null)
     if (!body || typeof body !== 'object' || Array.isArray(body))

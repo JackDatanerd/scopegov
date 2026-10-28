@@ -121,8 +121,8 @@ describe('B2 — a read-only workspace over the target plan can still subscribe 
     const first = await call()
     expect(first.status).toBe(409)
     expect(first.body.overLimitAckRequired).toBe(true)
-    expect(first.body.overLimit.projects).toEqual({ count: 5, limit: 2 })
-    expect(first.body.error).toMatch(/5 active projects \(Solo includes 2\)/)
+    expect(first.body.overLimit.projects).toEqual({ count: 5, limit: 3 })
+    expect(first.body.error).toMatch(/5 active projects \(Solo includes 3\)/)
     expect((await call({ acknowledgeOverLimit: true })).status).toBe(200)
   })
   it('lapsed + both over: one message names both', async () => {

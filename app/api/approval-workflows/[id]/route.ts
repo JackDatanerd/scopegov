@@ -7,6 +7,7 @@ import { logAudit } from '@/lib/utils/audit'
 import { diffFields } from '@/lib/utils/audit-diff'
 import { CURRENCIES } from '@/lib/constants/workspace-options'
 import { parseWorkflowSteps, parseThresholdAmount } from '@/lib/approvals/workflow-input'
+import { approvalPlanGate } from '@/lib/billing/entitlements'
 
 function canManage(session: any) {
   return hasPermission(session, 'MANAGE_WORKSPACE_SETTINGS')
@@ -146,6 +147,14 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     const resultingActive    = 'is_active' in patch ? (patch.is_active as boolean) : existing.is_active
     const resultingThreshold = 'threshold_amount' in patch ? patch.threshold_amount : existing.threshold_amount
     const resultingCurrency  = 'threshold_currency' in patch ? patch.threshold_currency : existing.threshold_currency
+
+    // Plan gate (lib/billing/entitlements.ts). Only changes that EXPAND what the plan allows are gated: switching a workflow on,
+    // or replacing its approver steps. Switching off, renaming, and toggling its flags stay open, so a workspace that
+    // downgraded can still tidy up a chain it can no longer build.
+    if (steps || (resultingActive && !existing.is_active)) {
+      const planGate = approvalPlanGate(session.planTier, steps ? steps.length : (existingStepCount || 0), !!session.lapsed)
+      if (planGate) return NextResponse.json({ error: planGate }, { status: 403 })
+    }
 
     // A workflow with no approvers would let documents through unreviewed.
     if (resultingActive && !steps && (existingStepCount || 0) === 0) {

@@ -8,6 +8,7 @@ import MfaRecommendBanner from '@/components/auth/MfaRecommendBanner'
 import LapsedBanner from '@/components/layout/LapsedBanner'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { mfaIsEnforced, permissionsRequireMfa } from '@/lib/auth/mfa-policy'
+import { hasFeature } from '@/lib/billing/entitlements'
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const session = await getSessionStrict()
@@ -32,7 +33,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         {session.lapsed && <LapsedBanner canManageBilling={session.permissions.includes('MANAGE_BILLING')} />}
         {showMfaNudge && <MfaRecommendBanner />}
         {children}
-        <CommandPalette permissions={session.permissions} />
+        <CommandPalette permissions={session.permissions} portfolio={hasFeature(session.planTier, 'portfolio', !!session.lapsed)} />
         <StepUpHost />
       </main>
     </AppShell>

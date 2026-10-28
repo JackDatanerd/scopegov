@@ -238,6 +238,7 @@ import { fmtUtc, summarizeAdminMetadata, ADMIN_EVENT_TYPES } from '@/lib/admin/f
 import { shapeFinance, estimateMrr, fmtMonth, fmtMoney, currentMonthKey } from '@/lib/admin/finance'
 import { LIST_PRICES_USD, monthlyListPriceUsd } from '@/lib/billing/list-prices'
 import { isAnonymizedEmail, anonymizedEmail } from '@/lib/utils/account-erasure'
+import { PLAN_ENTITLEMENTS } from '@/lib/billing/entitlements'
 
 describe('format helpers', () => {
   it('fmtUtc renders UTC and tolerates junk', () => {
@@ -303,12 +304,14 @@ describe('finance (G5)', () => {
     expect(fmtMoney(5, '?')).toBe('5.00')
     expect(currentMonthKey(new Date('2026-10-03T00:00:00Z'))).toBe('2026-10-01')
   })
-  it('list prices match the plan cards customers see (SettingsClient) — they must not drift', () => {
+  it('list prices ARE the plan table the plan cards render (one source, they cannot drift)', () => {
     const src = fs.readFileSync(path.join(process.cwd(), 'components/settings/SettingsClient.tsx'), 'utf8')
-    const money = (n: number) => `$${n.toLocaleString('en-US')}`
+    // The cards are generated from PLAN_ENTITLEMENTS, and LIST_PRICES_USD is derived from the same table.
+    expect(src).toContain('PLAN_ENTITLEMENTS[key]')
+    expect(src).not.toMatch(/'\$39\/mo'/)
     for (const [plan, p] of Object.entries(LIST_PRICES_USD)) {
-      expect(src).toContain(`${money(p.monthly)}/mo`)
-      expect(src).toContain(`${money(p.annual)}/yr`)
+      expect(p.monthly).toBe(PLAN_ENTITLEMENTS[plan as keyof typeof PLAN_ENTITLEMENTS].prices!.monthly)
+      expect(p.annual).toBe(PLAN_ENTITLEMENTS[plan as keyof typeof PLAN_ENTITLEMENTS].prices!.annual)
       expect(monthlyListPriceUsd(plan, 'monthly')).toBe(p.monthly)
     }
     expect(monthlyListPriceUsd('trial', 'monthly')).toBeNull()

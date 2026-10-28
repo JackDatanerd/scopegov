@@ -9,6 +9,7 @@ import { trialBarPercent } from '@/lib/billing/plans'
 import NotificationBell from './NotificationBell'
 import { SidebarCollapseButton, PageWidthButton, useSidebar } from './AppShell'
 import { useDialogs } from '@/components/ui/Dialogs'
+import { hasFeature } from '@/lib/billing/entitlements'
 
 const NAV_ITEMS = [
   { href: '/dashboard', icon: 'ti-layout-dashboard', label: 'Dashboard' },
@@ -31,7 +32,7 @@ const NAV_ITEMS = [
   { href: '/reports',   icon: 'ti-chart-bar',         label: 'Reports', permission: 'VIEW_ALL_PROJECTS' as const },
   // Workspace-wide by definition — only meaningful (and only shown) for
   // anyone who can actually see the whole portfolio.
-  { href: '/portfolio', icon: 'ti-building-skyscraper', label: 'Portfolio', permission: 'VIEW_PORTFOLIO' as const },
+  { href: '/portfolio', icon: 'ti-building-skyscraper', label: 'Portfolio', permission: 'VIEW_PORTFOLIO' as const, feature: 'portfolio' as const },
 ]
 const BOTTOM_NAV = [
   { href: '/team',     icon: 'ti-user-circle', label: 'Team' },
@@ -399,7 +400,7 @@ export default function Sidebar({ session }: { session: SessionUser }) {
       {/* Primary nav */}
       <nav className="sb-nav">
         <div className="sb-section-lbl">Workspace</div>
-        {NAV_ITEMS.filter(item => !item.permission || session.permissions.includes(item.permission)).map(item => (
+        {NAV_ITEMS.filter(item => (!item.permission || session.permissions.includes(item.permission)) && (!('feature' in item && item.feature) || hasFeature(session.planTier, (item as { feature: 'portfolio' }).feature, !!session.lapsed))).map(item => (
           <Link key={item.href} href={item.href}>
             <button className={`sni${isActive(item.href) ? ' act' : ''}`}>
               <span className="sni-ic"><i className={`ti ${item.icon}`} /></span>

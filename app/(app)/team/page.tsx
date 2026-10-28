@@ -12,6 +12,7 @@ import { permissionsRequireMfa, mfaIsEnforced } from '@/lib/auth/mfa-policy'
 import { roleWithinCeiling } from '@/lib/utils/permission-ceiling'
 import { roleHolderCounts } from '@/lib/utils/role-holders'
 import { inviterGrantAllowed } from '@/lib/utils/invite-authority'
+import { PLAN_ENTITLEMENTS } from '@/lib/billing/entitlements'
 
 export const metadata = { title: 'Team' }
 
@@ -272,11 +273,13 @@ function SoloUpsell() {
         </div>
         <div style={{ padding: '28px 32px' }}>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 14, marginBottom: 24 }}>
-            {[
-              { plan: 'Starter', price: '$99/mo', seats: '2 seats', color: 'var(--blue)' },
-              { plan: 'Pro',     price: '$249/mo', seats: '4 seats', color: 'var(--green)' },
-              { plan: 'Agency',  price: '$399/mo', seats: '10 seats', color: 'var(--gold)' },
-            ].map(p => (
+            {/* Generated from the one plan table (lib/billing/entitlements.ts), so this upsell can never quote stale prices or seats. */}
+            {(['starter', 'pro', 'agency'] as const).map(k => ({
+              plan: PLAN_ENTITLEMENTS[k].name,
+              price: `$${PLAN_ENTITLEMENTS[k].prices!.monthly}/mo`,
+              seats: `${PLAN_ENTITLEMENTS[k].seats} seats`,
+              color: { starter: 'var(--blue)', pro: 'var(--green)', agency: 'var(--gold)' }[k],
+            })).map(p => (
               <div key={p.plan} style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '16px 18px' }}>
                 <div style={{ fontSize: 13, fontWeight: 600, color: p.color, marginBottom: 4 }}>{p.plan}</div>
                 <div style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 20, marginBottom: 4 }}>{p.price}</div>

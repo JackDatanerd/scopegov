@@ -5,6 +5,8 @@ import styles from '@/styles/marketing.module.css'
 import Reveal from './Reveal'
 import { CALC_BOUNDS, HOME_CALC_DEFAULTS, HOME_PLANS, calcScopeLeak, clampField } from './pricing-data'
 import { calculatorHref } from '@/lib/billing/roi-url'
+import { needInputs, type NeedFlags } from '@/lib/billing/roi-model'
+import { FEATURE_NEEDS } from '@/lib/billing/entitlements'
 
 const usd = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 })
 const monthly2 = (n: number) => '$' + (Math.round(n * 100) / 100).toFixed(2).replace(/\.00$/, '')
@@ -15,8 +17,7 @@ export default function PricingSection() {
   const d = HOME_CALC_DEFAULTS
   const [f, setF] = useState({ projects: String(d.projectsPerYear), value: String(d.avgProjectValue), creep: String(d.creepPct), rec: String(d.recoverPct), seats: String(d.seats), active: String(d.activeProjects) })
   const [annual, setAnnual] = useState<boolean>(d.annual)
-  const [needsRoles, setNeedsRoles] = useState(false)
-  const [needsHistory, setNeedsHistory] = useState(false)
+  const [needs, setNeeds] = useState<NeedFlags>({ customRoles: false, approvalChains: false, integrations: false, portfolio: false, auditExport: false })
   const set = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement>) => setF((p) => ({ ...p, [k]: e.target.value }))
 
   const b = CALC_BOUNDS
@@ -29,9 +30,9 @@ export default function PricingSection() {
     activeProjects: clampField(f.active, b.activeProjects.min, b.activeProjects.max),
   }
   const interval = annual ? 'annual' as const : 'monthly' as const
-  const r = calcScopeLeak({ ...inputs, interval, needsCustomRoles: needsRoles, needsFullHistory: needsHistory })
+  const r = calcScopeLeak({ ...inputs, interval, needs })
   // The same numbers, opened in the full calculator (it reads them from the URL).
-  const fullCalcHref = calculatorHref({ ...inputs, interval, needsCustomRoles: needsRoles, needsFullHistory: needsHistory })
+  const fullCalcHref = calculatorHref({ ...inputs, interval, ...needInputs(needs) })
 
   return (
     <div className={styles.wrap}>
@@ -55,8 +56,11 @@ export default function PricingSection() {
             <div className={styles.fld}><label htmlFor="cSeats">Seats needed</label><input id="cSeats" type="number" min={b.seats.min} max={b.seats.max} value={f.seats} onChange={set('seats')} inputMode="numeric" /></div>
             <div className={styles.fld}><label htmlFor="cAct">Active projects at once</label><input id="cAct" type="number" min={b.activeProjects.min} max={b.activeProjects.max} value={f.active} onChange={set('active')} inputMode="numeric" /></div>
           </div>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, marginTop: 4 }}><input type="checkbox" checked={needsRoles} onChange={(e) => setNeedsRoles(e.target.checked)} /> I need custom roles &amp; permissions</label>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, marginTop: 6 }}><input type="checkbox" checked={needsHistory} onChange={(e) => setNeedsHistory(e.target.checked)} /> I need my full invoice &amp; SOW history and exports</label>
+          {FEATURE_NEEDS.map((n, idx) => (
+            <label key={n.key} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, marginTop: idx === 0 ? 4 : 6 }}>
+              <input type="checkbox" checked={needs[n.key]} onChange={(e) => setNeeds((p) => ({ ...p, [n.key]: e.target.checked }))} /> I need {n.label.charAt(0).toLowerCase() + n.label.slice(1)}
+            </label>
+          ))}
         </form>
 
         <div className={styles.result} aria-live="polite">
@@ -97,11 +101,9 @@ export default function PricingSection() {
               <div className={styles.pbill}>{annual ? `Billed ${usd.format(p.annual)} a year` : 'Billed monthly'}</div>
               <p className={styles.pays}>{p.pays}</p>
               <ul>
-                <li><span>Seats</span><span>{p.seats}</span></li>
-                <li><span>Active projects</span><span>{p.projects === null ? 'Unlimited' : p.projects}</span></li>
-                <li><span>Guardian monitoring</span><span className={styles.ck}>&#10003;</span></li>
-                <li><span>Full SOW history</span>{p.fullHistory ? <span className={styles.ck}>&#10003;</span> : <span>Last 10</span>}</li>
-                <li><span>Custom roles</span>{p.customRoles ? <span className={styles.ck}>&#10003;</span> : <span className={styles.ds}>&mdash;</span>}</li>
+                {p.rows.map((row) => (
+                  <li key={row.label}><span>{row.label}</span>{row.included && row.value === 'Included' ? <span className={styles.ck}>&#10003;</span> : row.included ? <span>{row.value}</span> : <span className={styles.ds}>&mdash;</span>}</li>
+                ))}
               </ul>
               <Link className={`${styles.btn} ${featured ? styles.btnPrimary : styles.btnGhost} ${styles.btnFull}`} href={`/signup?plan=${p.key}`}>Start trial</Link>
             </article>
@@ -110,7 +112,7 @@ export default function PricingSection() {
       </Reveal>
 
       <div className={styles.priceNote}>
-        <span>Every plan includes unlimited Guardian monitoring and AI-drafted SOWs</span>
+        <span>Every plan includes Guardian monitoring, AI drafting (with a monthly allowance), full invoice and SOW history and CSV export</span>
         <span>Clients sign without an account</span>
         <span>Cancel anytime: your workspace stays read-only, so you can still view and export everything</span>
         <span>The calculator tells you when a plan doesn&rsquo;t pay off</span>

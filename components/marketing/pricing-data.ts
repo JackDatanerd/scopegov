@@ -9,28 +9,36 @@
 // /calculator and /plan-calculator run), starts from the same defaults (HOME_CALC_DEFAULTS <- BLANK_INPUTS) and hands its
 // numbers to /calculator through the URL (lib/billing/roi-url.ts), so one set of inputs gives one answer everywhere.
 
-import { BLANK_INPUTS, computeRoi } from '@/lib/billing/roi-model'
+import { BLANK_INPUTS, computeRoi, needInputs, type NeedFlags } from '@/lib/billing/roi-model'
+import { PAID_PLAN_ORDER, PLAN_ENTITLEMENTS, planFeatureRows, planMeetsNeed, type PaidPlan, type PlanFeatureRow } from '@/lib/billing/entitlements'
 
 export type HomePlan = {
-  key: 'solo' | 'starter' | 'pro' | 'agency'
+  key: PaidPlan
   name: string
   monthly: number
   annual: number
   seats: number
   /** null = unlimited, same as PLAN_LIMITS. */
   projects: number | null
-  fullHistory: boolean
-  customRoles: boolean
+  /** The rows the plan card lists, generated from the one plan table (lib/billing/entitlements.ts). */
+  rows: PlanFeatureRow[]
   /** One-line payback, based on the average change order the page quotes (~$1,450). */
   pays: string
 }
 
-export const HOME_PLANS: HomePlan[] = [
-  { key: 'solo', name: 'Solo', monthly: 39, annual: 390, seats: 1, projects: 2, fullHistory: false, customRoles: false, pays: 'One average change order (~$1,450) covers about three years.' },
-  { key: 'starter', name: 'Starter', monthly: 99, annual: 990, seats: 2, projects: 5, fullHistory: true, customRoles: false, pays: 'One average change order (~$1,450) covers over a year.' },
-  { key: 'pro', name: 'Pro', monthly: 249, annual: 2490, seats: 4, projects: null, fullHistory: true, customRoles: true, pays: 'One average change order (~$1,450) covers almost six months.' },
-  { key: 'agency', name: 'Agency', monthly: 399, annual: 3990, seats: 10, projects: null, fullHistory: true, customRoles: true, pays: 'One average change order (~$1,450) covers about three and a half months.' },
-]
+// Only the payback copy is written here (it depends on the quoted average change order, not on the plan table). Everything
+// else on a plan card comes from PLAN_ENTITLEMENTS, so a tier edit there changes the pricing page with no second edit.
+const PAYS: Record<PaidPlan, string> = {
+  solo: 'One average change order (~$1,450) covers about three years.',
+  starter: 'One average change order (~$1,450) covers over a year.',
+  pro: 'One average change order (~$1,450) covers almost six months.',
+  agency: 'One average change order (~$1,450) covers about three and a half months.',
+}
+
+export const HOME_PLANS: HomePlan[] = PAID_PLAN_ORDER.map((key) => {
+  const e = PLAN_ENTITLEMENTS[key]
+  return { key, name: e.name, monthly: e.prices!.monthly, annual: e.prices!.annual, seats: e.seats, projects: e.projects, rows: planFeatureRows(key), pays: PAYS[key] }
+})
 
 export type CalcInputs = {
   projectsPerYear: number
@@ -43,8 +51,8 @@ export type CalcInputs = {
   activeProjects: number
   /** Which price the plan cost uses; the full calculator's default (annual) when omitted. */
   interval?: 'monthly' | 'annual'
-  needsCustomRoles?: boolean
-  needsFullHistory?: boolean
+  /** Calculator needs (custom roles, approval chains, integrations, portfolio, audit export); unticked when omitted. */
+  needs?: Partial<NeedFlags>
 }
 
 // Same ranges as the full calculator's normalizeInputs (lib/billing/roi-model.ts), so a number means the same thing in both.
@@ -75,11 +83,11 @@ export function clampField(raw: string, min: number, max: number): number {
   return Math.min(max, Math.max(min, n))
 }
 
-/** Smallest plan whose seat and project caps both cover the need, or null when none does (more than 10 seats). */
-export function fittingPlan(seats: number, activeProjects: number, needs: { customRoles?: boolean; fullHistory?: boolean } = {}): HomePlan | null {
+/** Smallest plan whose seat and project caps and features all cover the need, or null when none does (more than 10 seats). */
+export function fittingPlan(seats: number, activeProjects: number, needs: Partial<NeedFlags> = {}): HomePlan | null {
   return HOME_PLANS.find((p) =>
     seats <= p.seats && (p.projects === null || activeProjects <= p.projects) &&
-    (!needs.customRoles || p.customRoles) && (!needs.fullHistory || p.fullHistory)) ?? null
+    (Object.keys(needs) as Array<keyof NeedFlags>).every((k) => !needs[k] || planMeetsNeed(p.key, k))) ?? null
 }
 
 export type CalcResult = {
@@ -99,7 +107,7 @@ export function calcScopeLeak(i: CalcInputs): CalcResult {
     projectsPerYear: i.projectsPerYear, avgProjectValue: i.avgProjectValue, creepPct: i.creepPct,
     grantedFreeValue: 0, recoveryRate: i.recoverPct / 100,
     seatsNeeded: i.seats, activeProjectsNeeded: i.activeProjects,
-    needsCustomRoles: !!i.needsCustomRoles, needsFullHistory: !!i.needsFullHistory,
+    ...needInputs({ customRoles: false, approvalChains: false, integrations: false, portfolio: false, auditExport: false, ...i.needs }),
     interval: i.interval ?? BLANK_INPUTS.interval, currency: 'USD', fxToUsd: null,
   })
   const { leaked, recoverable } = roi

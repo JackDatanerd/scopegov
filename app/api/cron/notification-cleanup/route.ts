@@ -37,7 +37,9 @@ import { pruneInBatches } from '@/lib/utils/retention'
 const READ_RETENTION_DAYS     = 90
 const ANY_RETENTION_DAYS      = 180
 const EMAIL_LOG_DAYS          = 180
-const AI_USAGE_DAYS           = 30
+// Must outlive a full calendar month: the monthly AI drafting allowance (lib/utils/rate-limit.ts getAiDraftUsage) counts these rows
+// from the 1st, and 30 days dropped the early rows of a 31-day month, undercounting on its last day.
+const AI_USAGE_DAYS           = 62
 const CRON_HISTORY_DAYS       = 60
 const SNAPSHOT_DAILY_KEEP_DAYS = 400
 const INTEGRATION_EVENT_DAYS   = 30

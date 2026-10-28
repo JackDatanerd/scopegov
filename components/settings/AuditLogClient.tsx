@@ -72,8 +72,10 @@ function formatMetaValue(v: unknown): string {
   try { return JSON.stringify(v) } catch { return String(v) }
 }
 
-export default function AuditLogClient({ projects, members, timeZone, projectsComplete = true, membersComplete = true }: {
+export default function AuditLogClient({ projects, members, timeZone, projectsComplete = true, membersComplete = true, canExport = true, exportPlanName = 'Agency' }: {
   projects: Project[]; members: Member[]; timeZone: string
+  /** Whether the plan includes CSV/PDF export of the log (lib/billing/entitlements.ts); the in-app view is open on every plan. */
+  canExport?: boolean; exportPlanName?: string
   // False when the project / member list could not be read in full (a failed read, or past the row cap). The filters
   // then offer only part of the workspace, and a project missing from the list does not mean it was deleted.
   projectsComplete?: boolean; membersComplete?: boolean
@@ -246,6 +248,11 @@ export default function AuditLogClient({ projects, members, timeZone, projectsCo
           <h1 className="page-title">Audit log</h1>
           <p className="page-sub">{totalCount.toLocaleString()} event{totalCount === 1 ? '' : 's'} · immutable record</p>
         </div>
+        {!canExport ? (
+          <div style={{ fontSize: 12, color: 'var(--text-3)', maxWidth: 260, textAlign: 'right' }}>
+            CSV and PDF export is included in the {exportPlanName} plan. <a href="/settings?tab=billing">See plans</a>
+          </div>
+        ) : (
         <div style={{ display: 'flex', gap: 8 }}>
           <button className="btn btn-ghost btn-sm" disabled={exporting !== null || loading || !!dateError} onClick={() => handleExport('csv')}>
             {exporting === 'csv' ? <span className="spin" /> : <><i className="ti ti-file-spreadsheet" style={{ marginRight: 6 }} />CSV</>}
@@ -254,6 +261,7 @@ export default function AuditLogClient({ projects, members, timeZone, projectsCo
             {exporting === 'pdf' ? <span className="spin" /> : <><i className="ti ti-file-type-pdf" style={{ marginRight: 6 }} />PDF</>}
           </button>
         </div>
+        )}
       </div>
 
       <div className="surface surface-p" style={{ marginBottom: 16 }}>
@@ -321,7 +329,7 @@ export default function AuditLogClient({ projects, members, timeZone, projectsCo
       {error && <div className="auth-error" style={{ marginBottom: 14 }}>{error}</div>}
       {truncated && !loading && !hasMore && (
         <div className="auth-error" style={{ background: '#FFFBEB', borderColor: '#FDE68A', color: '#92400E', marginBottom: 14 }}>
-          Showing the first {rows.length.toLocaleString()} of {totalCount.toLocaleString()} matching events — this view caps out here. Export CSV (up to 25,000 rows) or narrow the filters for the rest.
+          Showing the first {rows.length.toLocaleString()} of {totalCount.toLocaleString()} matching events — this view caps out here. {canExport ? 'Export CSV (up to 25,000 rows) or narrow' : 'Narrow'} the filters for the rest.
         </div>
       )}
 

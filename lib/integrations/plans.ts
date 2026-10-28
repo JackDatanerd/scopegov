@@ -8,24 +8,29 @@
 //   • Solo gets none. A LAPSED workspace (no subscription) gets none either: nothing is delivered on its behalf.
 
 import type { Plan } from '@/lib/supabase/types'
+import { cheapestPlanWith, hasFeature, type PlanFeatures } from '@/lib/billing/entitlements'
 
 export type IntegrationKind = 'webhook' | 'zapier' | 'api_keys' | 'slack' | 'hubspot' | 'google_drive'
 
-const RANK: Record<Plan, number> = { solo: 0, starter: 1, trial: 3, pro: 2, agency: 3 }
-
-export const INTEGRATION_MIN_PLAN: Record<IntegrationKind, Plan> = {
-  webhook:      'starter',
-  zapier:       'starter',
-  api_keys:     'starter',
-  slack:        'pro',
-  hubspot:      'pro',
-  google_drive: 'pro',
+// Which plan feature each integration rides on. The plan table itself (lib/billing/entitlements.ts) decides which plans have
+// the feature, so the rule is edited in ONE place and the plan cards, the settings screen and these gates agree.
+const FEATURE_OF: Record<IntegrationKind, Extract<keyof PlanFeatures, 'integrations' | 'nativeIntegrations'>> = {
+  webhook:      'integrations',
+  zapier:       'integrations',
+  api_keys:     'integrations',
+  slack:        'nativeIntegrations',
+  hubspot:      'nativeIntegrations',
+  google_drive: 'nativeIntegrations',
 }
+
+export const INTEGRATION_MIN_PLAN: Record<IntegrationKind, Plan> = Object.fromEntries(
+  (Object.keys(FEATURE_OF) as IntegrationKind[]).map(k => [k, cheapestPlanWith(e => e.features[FEATURE_OF[k]]) ?? 'agency']),
+) as Record<IntegrationKind, Plan>
 
 /** `planTier` must already be the EFFECTIVE tier (session.planTier, or effectivePlanTier(...)). */
 export function integrationAllowed(kind: IntegrationKind, planTier: Plan | null | undefined, lapsed = false): boolean {
   if (lapsed) return false
-  return RANK[planTier || 'solo'] >= RANK[INTEGRATION_MIN_PLAN[kind]]
+  return hasFeature(planTier, FEATURE_OF[kind])
 }
 
 /** The plan to name in an upgrade message. */

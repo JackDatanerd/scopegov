@@ -26,6 +26,7 @@ import { csvCell, CSV_BOM } from '@/lib/utils/csv'
 import { parseRegistryFilters, projectIdsMatching, applyRegistryFilters } from '@/lib/utils/invoice-registry'
 import { getWorkspaceTimeZone } from '@/lib/utils/workspace-time'
 import { isoDateInZone } from '@/lib/utils/timezone'
+import { hasFeature } from '@/lib/billing/entitlements'
 
 export async function GET(request: NextRequest) {
   try {
@@ -33,9 +34,10 @@ export async function GET(request: NextRequest) {
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     if (!hasPermission(session, 'VIEW_FINANCIALS'))
       return NextResponse.json({ error: 'Missing permission: VIEW_FINANCIALS' }, { status: 403 })
-    // The registry itself shows a solo-plan workspace only its 10 latest invoices.
-    if (session.planTier === 'solo')
-      return NextResponse.json({ error: 'Invoice export is available on Starter and above.' }, { status: 403 })
+    // Export depth comes from the plan table (lib/billing/entitlements.ts). A lapsed (read-only) workspace keeps it: it is
+    // stored as Solo, and the read-only promise is "you can still view and export everything".
+    if (!hasFeature(session.planTier, 'invoiceExport', !!session.lapsed))
+      return NextResponse.json({ error: 'Invoice export is not included in your plan.' }, { status: 403 })
 
     const { searchParams } = new URL(request.url)
     const filters = parseRegistryFilters({ status: searchParams.get('status') || '', q: searchParams.get('q') || '' })

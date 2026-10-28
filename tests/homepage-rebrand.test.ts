@@ -9,7 +9,8 @@ import { join } from 'path'
 import { HOME_CALC_DEFAULTS, HOME_PLANS, calcScopeLeak, clampField, fittingPlan, type CalcInputs } from '@/components/marketing/pricing-data'
 import { NAV_GROUPS, NAV_LINKS } from '@/components/marketing/NavMenu'
 import { PLAN_LIMITS } from '@/lib/utils/format'
-import { BLANK_INPUTS, PLAN_FEATURES, computeRoi } from '@/lib/billing/roi-model'
+import { BLANK_INPUTS, PLAN_FEATURES, computeRoi, needInputs } from '@/lib/billing/roi-model'
+import { FEATURE_NEEDS, planFeatureRows, planMeetsNeed } from '@/lib/billing/entitlements'
 import { calculatorHref, parseCalculatorParams } from '@/lib/billing/roi-url'
 import { LIST_PRICES_USD } from '@/lib/billing/list-prices'
 
@@ -20,8 +21,8 @@ describe('homepage plan data mirrors billing config', () => {
     for (const p of HOME_PLANS) {
       expect(p.seats, `${p.key} seats`).toBe(PLAN_LIMITS[p.key].seats)
       expect(p.projects, `${p.key} projects`).toBe(PLAN_LIMITS[p.key].projects)
-      expect(p.fullHistory, `${p.key} history`).toBe(PLAN_FEATURES[p.key].fullHistory)
-      expect(p.customRoles, `${p.key} roles`).toBe(PLAN_FEATURES[p.key].customRoles)
+      expect(p.rows, `${p.key} rows`).toEqual(planFeatureRows(p.key))
+      for (const n of FEATURE_NEEDS) expect(PLAN_FEATURES[p.key][n.key], `${p.key} ${n.key}`).toBe(planMeetsNeed(p.key, n.key))
       expect(p.monthly, `${p.key} monthly`).toBe(LIST_PRICES_USD[p.key].monthly)
       expect(p.annual, `${p.key} annual`).toBe(LIST_PRICES_USD[p.key].annual)
     }
@@ -56,11 +57,13 @@ describe('homepage scope-leak calculator', () => {
   it('no plan above 10 seats; project caps and features respected', () => {
     expect(fittingPlan(11, 1)).toBeNull()
     expect(calcScopeLeak({ ...base, seats: 11 }).plan).toBeNull()
-    expect(fittingPlan(1, 3)?.key).toBe('starter')
-    expect(fittingPlan(2, 6)?.key).toBe('pro')
+    expect(fittingPlan(1, 3)?.key).toBe('solo')
+    expect(fittingPlan(1, 4)?.key).toBe('starter')
+    expect(fittingPlan(2, 9)?.key).toBe('pro')
     expect(fittingPlan(1, 2, { customRoles: true })?.key).toBe('pro')
-    expect(fittingPlan(1, 2, { fullHistory: true })?.key).toBe('starter')
-    expect(calcScopeLeak({ ...base, seats: 1, activeProjects: 1, needsCustomRoles: true }).plan?.key).toBe('pro')
+    expect(fittingPlan(1, 2, { integrations: true })?.key).toBe('starter')
+    expect(fittingPlan(1, 2, { auditExport: true })?.key).toBe('agency')
+    expect(calcScopeLeak({ ...base, seats: 1, activeProjects: 1, needs: { customRoles: true } }).plan?.key).toBe('pro')
   })
   it('blank or junk fields clamp to the minimum, out-of-range values clamp into range', () => {
     expect(clampField('', 1, 500)).toBe(1)
@@ -84,14 +87,14 @@ describe('homepage calculator and the full calculator agree (Billing / trial-end
     const cases = [
       { projectsPerYear: 12, avgProjectValue: 5000, creepPct: 10, recoverPct: 68, seats: 1, activeProjects: 2 },
       { projectsPerYear: 30, avgProjectValue: 8000, creepPct: 25, recoverPct: 50, seats: 3, activeProjects: 9 },
-      { projectsPerYear: 4, avgProjectValue: 1200, creepPct: 5, recoverPct: 40, seats: 2, activeProjects: 3, needsFullHistory: true },
+      { projectsPerYear: 4, avgProjectValue: 1200, creepPct: 5, recoverPct: 40, seats: 2, activeProjects: 3, needs: { integrations: true } },
     ]
     for (const c of cases) for (const interval of ['monthly', 'annual'] as const) {
       const home = calcScopeLeak({ ...c, interval })
       const full = computeRoi({
         projectsPerYear: c.projectsPerYear, avgProjectValue: c.avgProjectValue, creepPct: c.creepPct, grantedFreeValue: 0,
         recoveryRate: c.recoverPct / 100, seatsNeeded: c.seats, activeProjectsNeeded: c.activeProjects,
-        needsCustomRoles: false, needsFullHistory: !!(c as any).needsFullHistory, interval, currency: 'USD', fxToUsd: null,
+        ...needInputs({ customRoles: false, approvalChains: false, integrations: false, portfolio: false, auditExport: false, ...(c as any).needs }), interval, currency: 'USD', fxToUsd: null,
       })
       expect(home.plan?.key).toBe(full.recommended?.plan)
       expect(home.recoverable).toBeCloseTo(full.recoverable)
@@ -105,7 +108,9 @@ describe('homepage calculator and the full calculator agree (Billing / trial-end
     expect(href.startsWith('/calculator?')).toBe(true)
     const parsed = parseCalculatorParams(new URL(href, 'https://x.test').searchParams)
     expect(parsed).toMatchObject({ projectsPerYear: 30, avgProjectValue: 8000, creepPct: 25, recoveryRate: 0.5, seatsNeeded: 3, activeProjectsNeeded: 9, interval: 'monthly', needsCustomRoles: true })
-    expect(parsed.needsFullHistory).toBeUndefined()
+    // A link made when history was a plan feature may still carry history=1: it is ignored, not an error.
+    const legacy = parseCalculatorParams(new URLSearchParams('history=1&roles=1'))
+    expect(legacy).toEqual({ needsCustomRoles: true })
   })
   it('URL values are clamped and junk is ignored', () => {
     const parsed = parseCalculatorParams({ projects: '999999', creep: '500', rec: '-20', seats: 'abc', value: '', interval: 'weekly' })

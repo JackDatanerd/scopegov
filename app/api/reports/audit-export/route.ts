@@ -13,6 +13,7 @@ import { fetchPaged } from '@/lib/utils/paginate'
 import { buildAuditSearchFilter } from '@/lib/audit/search'
 import { AUDIT_CATEGORIES, categoryFilter } from '@/lib/audit/categories'
 import { redactMetadata, redactClientDataRow } from '@/lib/audit/redact'
+import { hasFeature, minPlanNameFor } from '@/lib/billing/entitlements'
 
 // GET /api/reports/audit-export
 //   ?format=json|csv|pdf   (default json — powers the filtered table view)
@@ -87,6 +88,10 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: 'Unsupported format' }, { status: 400 })
     }
     const format = formatRaw as 'json' | 'csv' | 'pdf'
+    // Plan gate (lib/billing/entitlements.ts): only the CSV and PDF DOWNLOADS are a plan feature. The in-app log (format=json)
+    // is a security record and stays open on every plan, and a lapsed (read-only) workspace keeps exporting what it holds.
+    if (format !== 'json' && !hasFeature(session.planTier, 'auditExport', !!session.lapsed))
+      return NextResponse.json({ error: `Audit-log export is included in the ${minPlanNameFor('auditExport')} plan.` }, { status: 403 })
 
     const projectId = sp.get('projectId') || undefined
     if (projectId && !UUID_RE.test(projectId)) {

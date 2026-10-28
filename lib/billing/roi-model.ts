@@ -17,6 +17,7 @@
 
 import { LIST_PRICES_USD } from '@/lib/billing/list-prices'
 import { PLAN_LIMITS } from '@/lib/utils/format'
+import { FEATURE_NEEDS, planMeetsNeed, needGapReason, type NeedKey } from '@/lib/billing/entitlements'
 import { PAID_PLAN_KEYS, type PaidPlanKey, type BillingInterval } from '@/lib/billing/plans'
 
 /** Starting point only — a placeholder the user is expected to adjust, never presented as a benchmark or a promise. */
@@ -25,16 +26,13 @@ export const DEFAULT_RECOVERY_RATE = 0.68
 export const MIN_FLAGS_FOR_OWN_RATE = 5
 
 /**
- * What each paid plan includes beyond its seat/project caps. Mirrors the public pricing table
- * (components/marketing/MarketingHome.tsx PRICING_ROWS) and the enforcement in app/api/team/roles/route.ts and
- * app/api/invoices/export/route.ts — tests/scope-loss-calculator.test.ts fails if they drift apart.
+ * What each paid plan includes beyond its seat/project caps, per calculator "need". Derived from the one plan table
+ * (lib/billing/entitlements.ts) that also drives the pricing cards and the enforcement in the routes, so the plan the
+ * calculator recommends is the plan that actually has what the person ticked.
  */
-export const PLAN_FEATURES: Record<PaidPlanKey, { customRoles: boolean; fullHistory: boolean }> = {
-  solo:    { customRoles: false, fullHistory: false },
-  starter: { customRoles: false, fullHistory: true },
-  pro:     { customRoles: true,  fullHistory: true },
-  agency:  { customRoles: true,  fullHistory: true },
-}
+export const PLAN_FEATURES: Record<PaidPlanKey, Record<NeedKey, boolean>> = Object.fromEntries(
+  PAID_PLAN_KEYS.map(p => [p, Object.fromEntries(FEATURE_NEEDS.map(n => [n.key, planMeetsNeed(p, n.key)]))]),
+) as Record<PaidPlanKey, Record<NeedKey, boolean>>
 
 export interface RoiInputs {
   /** Projects started per year. */
@@ -52,7 +50,10 @@ export interface RoiInputs {
   /** Projects active at the same time. */
   activeProjectsNeeded: number
   needsCustomRoles: boolean
-  needsFullHistory: boolean
+  needsApprovalChains: boolean
+  needsIntegrations: boolean
+  needsPortfolio: boolean
+  needsAuditExport: boolean
   interval: BillingInterval
   /** ISO currency of the monetary inputs above. */
   currency: string
@@ -69,7 +70,10 @@ export const BLANK_INPUTS: RoiInputs = {
   seatsNeeded: 1,
   activeProjectsNeeded: 2,
   needsCustomRoles: false,
-  needsFullHistory: false,
+  needsApprovalChains: false,
+  needsIntegrations: false,
+  needsPortfolio: false,
+  needsAuditExport: false,
   interval: 'annual',
   currency: 'USD',
   fxToUsd: null,
@@ -95,7 +99,10 @@ export function normalizeInputs(raw: Partial<RoiInputs> | null | undefined): Roi
     seatsNeeded: Math.max(1, Math.floor(num(r.seatsNeeded, 1, 1000, 1))),
     activeProjectsNeeded: Math.floor(num(r.activeProjectsNeeded, 0, 100_000, 0)),
     needsCustomRoles: !!r.needsCustomRoles,
-    needsFullHistory: !!r.needsFullHistory,
+    needsApprovalChains: !!r.needsApprovalChains,
+    needsIntegrations: !!r.needsIntegrations,
+    needsPortfolio: !!r.needsPortfolio,
+    needsAuditExport: !!r.needsAuditExport,
     interval: r.interval === 'monthly' ? 'monthly' : 'annual',
     currency,
     fxToUsd: currency === 'USD' ? null : (fx && fx > 0 ? fx : null),
@@ -144,13 +151,30 @@ function annualCostUsd(plan: PaidPlanKey, interval: BillingInterval): number {
   return interval === 'annual' ? p.annual : p.monthly * 12
 }
 
+/** The RoiInputs flag behind each calculator need (the forms and the URL both go through this one map). */
+export const NEED_INPUT_KEY = {
+  customRoles: 'needsCustomRoles', approvalChains: 'needsApprovalChains', integrations: 'needsIntegrations',
+  portfolio: 'needsPortfolio', auditExport: 'needsAuditExport',
+} as const satisfies Record<NeedKey, keyof RoiInputs>
+
+export type NeedFlags = Record<NeedKey, boolean>
+
+/** The five needs as one object (what the forms hold in state). */
+export function needsOf(i: Partial<RoiInputs>): NeedFlags {
+  return Object.fromEntries(FEATURE_NEEDS.map(n => [n.key, !!i[NEED_INPUT_KEY[n.key]]])) as NeedFlags
+}
+
+/** The inverse: needs object -> the RoiInputs flags, to spread into computeRoi(...). */
+export function needInputs(needs: NeedFlags): Pick<RoiInputs, (typeof NEED_INPUT_KEY)[NeedKey]> {
+  return Object.fromEntries(FEATURE_NEEDS.map(n => [NEED_INPUT_KEY[n.key], !!needs[n.key]])) as Pick<RoiInputs, (typeof NEED_INPUT_KEY)[NeedKey]>
+}
+
 function fitReasons(plan: PaidPlanKey, i: RoiInputs): string[] {
   const limits = PLAN_LIMITS[plan]
   const out: string[] = []
   if (i.seatsNeeded > limits.seats) out.push(`${limits.seats} seat${limits.seats === 1 ? '' : 's'} (you need ${i.seatsNeeded})`)
   if (limits.projects !== null && i.activeProjectsNeeded > limits.projects) out.push(`${limits.projects} active projects (you need ${i.activeProjectsNeeded})`)
-  if (i.needsCustomRoles && !PLAN_FEATURES[plan].customRoles) out.push('no custom roles')
-  if (i.needsFullHistory && !PLAN_FEATURES[plan].fullHistory) out.push('only the last 10 invoices and SOWs, no export')
+  for (const n of FEATURE_NEEDS) if (i[NEED_INPUT_KEY[n.key]] && !PLAN_FEATURES[plan][n.key]) out.push(needGapReason(n.key))
   return out
 }
 

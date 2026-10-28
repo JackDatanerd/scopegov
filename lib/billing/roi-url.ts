@@ -5,7 +5,8 @@
 // Everything coming back out of a URL is untrusted: it is parsed field by field and clamped by normalizeInputs, and a
 // key that is absent or not a number is simply left out (the calculator's own default applies).
 
-import { BLANK_INPUTS, normalizeInputs, type RoiInputs } from '@/lib/billing/roi-model'
+import { BLANK_INPUTS, NEED_INPUT_KEY, normalizeInputs, type RoiInputs } from '@/lib/billing/roi-model'
+import { FEATURE_NEEDS } from '@/lib/billing/entitlements'
 
 type Query = Record<string, string | string[] | undefined> | URLSearchParams
 
@@ -26,8 +27,12 @@ export interface CalculatorLinkInputs {
   activeProjects: number
   interval?: 'monthly' | 'annual'
   needsCustomRoles?: boolean
-  needsFullHistory?: boolean
+  needsApprovalChains?: boolean
+  needsIntegrations?: boolean
+  needsPortfolio?: boolean
+  needsAuditExport?: boolean
 }
+
 
 export function calculatorHref(i: CalculatorLinkInputs, base = '/calculator'): string {
   const p = new URLSearchParams({
@@ -39,8 +44,7 @@ export function calculatorHref(i: CalculatorLinkInputs, base = '/calculator'): s
     active: String(i.activeProjects),
   })
   if (i.interval) p.set('interval', i.interval)
-  if (i.needsCustomRoles) p.set('roles', '1')
-  if (i.needsFullHistory) p.set('history', '1')
+  for (const n of FEATURE_NEEDS) if (i[NEED_INPUT_KEY[n.key]]) p.set(n.urlKey, '1')
   return `${base}?${p.toString()}`
 }
 
@@ -60,8 +64,8 @@ export function parseCalculatorParams(q: Query): Partial<RoiInputs> {
   const active = num('active');     if (active !== undefined) raw.activeProjectsNeeded = active
   const interval = read(q, 'interval')
   if (interval === 'monthly' || interval === 'annual') raw.interval = interval
-  if (read(q, 'roles') === '1') raw.needsCustomRoles = true
-  if (read(q, 'history') === '1') raw.needsFullHistory = true
+  // A link made before full history became part of every plan may still carry history=1; it is simply ignored.
+  for (const n of FEATURE_NEEDS) if (read(q, n.urlKey) === '1') raw[NEED_INPUT_KEY[n.key]] = true
 
   // Clamp through the model's own normaliser, then keep only the fields the URL actually carried.
   const clamped = normalizeInputs({ ...BLANK_INPUTS, ...raw })

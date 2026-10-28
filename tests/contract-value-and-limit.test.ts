@@ -110,26 +110,26 @@ function countingService(count: number) {
 }
 
 describe('plan project limit — shared by create AND reopen', () => {
-  it('solo is capped at 2; trial/pro/agency are unlimited', () => {
-    expect(projectLimitFor('solo')).toBe(2)
+  it('solo is capped at 3; trial/pro/agency are unlimited', () => {
+    expect(projectLimitFor('solo')).toBe(3)
     expect(projectLimitFor('pro')).toBeNull()
     expect(projectLimitFor('trial')).toBeNull()
   })
 
-  it('blocks when the workspace is already at its allowance (reopen would be the 3rd live project)', async () => {
-    expect(await wouldExceedLimit(countingService(2), 'w', 'solo')).toBe(true)
-    expect(await wouldExceedLimit(countingService(1), 'w', 'solo')).toBe(false)
+  it('blocks when the workspace is already at its allowance (reopen would be the 4th live project)', async () => {
+    expect(await wouldExceedLimit(countingService(3), 'w', 'solo')).toBe(true)
+    expect(await wouldExceedLimit(countingService(2), 'w', 'solo')).toBe(false)
     expect(await wouldExceedLimit(countingService(99), 'w', 'pro')).toBe(false)
   })
 
   it('post-write race check trips only when the count went PAST the allowance', async () => {
-    expect(await isOverLimit(countingService(3), 'w', 'solo')).toBe(true)
-    expect(await isOverLimit(countingService(2), 'w', 'solo')).toBe(false)
+    expect(await isOverLimit(countingService(4), 'w', 'solo')).toBe(true)
+    expect(await isOverLimit(countingService(3), 'w', 'solo')).toBe(false)
   })
 
   it('the error names the actions that actually work (a Draft can be deleted, not completed)', () => {
     const create = projectLimitMessage('solo', 'create')
-    expect(create).toMatch(/limited to 2 active projects/)
+    expect(create).toMatch(/limited to 3 active projects/)
     expect(create).toMatch(/delete a draft/i)
     expect(create).not.toMatch(/archive one/i)
     expect(projectLimitMessage('solo', 'reopen')).toMatch(/Reopening this project would put you over/)

@@ -10,6 +10,7 @@ import Link from 'next/link'
 import { formatDate, formatCurrency, formatCurrencyExact, invoiceStatusLabel, invoicePill } from '@/lib/utils/format'
 import { fetchAll } from '@/lib/utils/fetch-all'
 import { computeContractPositions } from '@/lib/reports/contract-position'
+import { hasFeature } from '@/lib/billing/entitlements'
 import {
   REGISTRY_STATUS_FILTERS, AGING_BUCKETS, agingBucket,
   parseRegistryFilters, projectIdsMatching, applyRegistryFilters, isPaymentClaimOpen,
@@ -30,7 +31,10 @@ export default async function InvoicesPage({ searchParams }: {
   if (!hasPermission(session, 'VIEW_FINANCIALS')) redirect('/dashboard')
 
   const service = createServiceClient()
-  const isSoloCapped = session.planTier === 'solo'
+  // Registry depth comes from the plan table (lib/billing/entitlements.ts). A lapsed workspace keeps full history: the read-only
+  // promise is "you can still view and export everything", and a lapsed workspace is stored as Solo.
+  const isSoloCapped = !hasFeature(session.planTier, 'fullHistory', !!session.lapsed)
+  const canExport    = hasFeature(session.planTier, 'invoiceExport', !!session.lapsed)
   // Solo plans see only their 10 most recent invoices; everyone else pages through all of them.
   const pageSize = isSoloCapped ? 10 : PAGE_SIZE
 
@@ -223,7 +227,7 @@ export default async function InvoicesPage({ searchParams }: {
           <h1 className="page-title">Invoices</h1>
           <p className="page-sub">Client invoicing across your workspace — ScopeGov tracks status, your agency collects the payment</p>
         </div>
-        {!isSoloCapped && (
+        {canExport && (
           <a href={`/api/invoices/export${exportQuery.toString() ? `?${exportQuery.toString()}` : ''}`}>
             <button className="btn btn-ghost btn-sm"><i className="ti ti-download" style={{ fontSize: 12 }} /> Export CSV</button>
           </a>
@@ -232,7 +236,7 @@ export default async function InvoicesPage({ searchParams }: {
 
       {isSoloCapped && (
         <div className="banner banner-info" style={{ marginBottom: 20 }}>
-          <span>Showing the 10 most recent invoices. <strong>Upgrade to Starter or above</strong> to see the full history.</span>
+          <span>Showing the 10 most recent invoices. <strong>Upgrade your plan</strong> to see the full history.</span>
           <Link href="/settings?tab=billing">
             <button className="btn btn-primary btn-sm">Upgrade</button>
           </Link>

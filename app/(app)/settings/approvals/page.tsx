@@ -180,6 +180,8 @@ export default async function ApprovalWorkflowsPage() {
         workspaceCurrency={workspaceCurrency}
         workspaceId={session.workspaceId}
         projectCurrencies={projectCurrencies}
+        planTier={session.planTier}
+        lapsed={!!session.lapsed}
       />
     </div>
   )

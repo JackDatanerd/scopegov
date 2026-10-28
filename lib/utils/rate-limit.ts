@@ -14,6 +14,9 @@
 //   ... make the AI call ...
 //   await recordAiUsage(service, session.workspaceId, session.id, 'sow.generate')
 
+import { AI_DRAFT_ROUTE_KEYS, entitlementsFor, planDisplayName } from '@/lib/billing/entitlements'
+import { effectivePlanTier } from '@/lib/billing/plans'
+
 export interface RateLimitResult {
   allowed: boolean
   message?: string
@@ -74,6 +77,69 @@ export async function recordAiUsage(
   if (error) console.error('Failed to record AI usage:', error)
 }
 
+
+// ── Monthly AI drafting allowance ─────────────────────────────────────────────────────────────────────────────────────
+// Each plan includes a number of AI drafts per calendar month (UTC): PLAN_ENTITLEMENTS[plan].aiDraftsPerMonth, counted across
+// the five drafting routes in AI_DRAFT_ROUTE_KEYS. This sits behind the burst limits above (which stop a loop) and answers a
+// different question (what a plan includes), so a Solo workspace can no longer run an open-ended model bill at $39 a month.
+// Guardian is deliberately NOT metered monthly: a refused check is a scope flag that never gets raised, which is the one
+// failure the product exists to prevent. It keeps only its burst limits.
+
+const DRAFT_ROUTES: ReadonlySet<string> = new Set(AI_DRAFT_ROUTE_KEYS)
+
+export function isAiDraftRoute(routeKey: string): boolean {
+  return DRAFT_ROUTES.has(routeKey)
+}
+
+/** The current calendar month in UTC: [start, nextStart). The allowance resets at nextStart. */
+export function aiDraftMonthWindow(now: Date = new Date()): { start: Date; resetsAt: Date } {
+  return {
+    start: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)),
+    resetsAt: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1)),
+  }
+}
+
+export function aiDraftQuotaMessage(planName: string, limit: number, resetsAt: Date): string {
+  const when = resetsAt.toLocaleDateString('en-US', { month: 'long', day: 'numeric', timeZone: 'UTC' })
+  return `This workspace has used the ${limit.toLocaleString('en-US')} AI drafts included in the ${planName} plan this month. The allowance resets on ${when} (UTC). Upgrade in Settings \u2192 Billing for more, or write this part by hand.`
+}
+
+export interface AiDraftUsage { used: number; limit: number; resetsAt: string }
+
+/** AI drafts this workspace has used this month against its plan's allowance; null on a failed read (callers fail open). */
+export async function getAiDraftUsage(service: any, workspaceId: string, planTier: string, now: Date = new Date()): Promise<AiDraftUsage | null> {
+  const { start, resetsAt } = aiDraftMonthWindow(now)
+  const { count, error } = await service
+    .from('ai_usage_log')
+    .select('id', { count: 'exact', head: true })
+    .eq('workspace_id', workspaceId)
+    .in('route_key', [...AI_DRAFT_ROUTE_KEYS])
+    .gte('created_at', start.toISOString())
+  if (error) { console.error('AI draft usage read failed:', error); return null }
+  return { used: count || 0, limit: entitlementsFor(planTier).aiDraftsPerMonth, resetsAt: resetsAt.toISOString() }
+}
+
+/**
+ * Verifies the monthly allowance AFTER the caller's usage row is inserted (claim first, verify after, like the burst limit): the
+ * count includes the caller's own row, so more than the allowance means this call is the one over it. Fails OPEN on a database
+ * error, like every limiter here.
+ */
+async function overMonthlyDraftAllowance(service: any, workspaceId: string): Promise<{ over: boolean; message?: string }> {
+  try {
+    const { data: ws, error: wsErr } = await service.from('workspaces').select('plan_tier, trial_ends_at').eq('id', workspaceId).maybeSingle()
+    if (wsErr || !ws) { if (wsErr) console.error('Monthly AI allowance: workspace read failed (failing open):', wsErr); return { over: false } }
+    const plan = effectivePlanTier(ws.plan_tier, ws.trial_ends_at)
+    const usage = await getAiDraftUsage(service, workspaceId, plan)
+    if (!usage) return { over: false }
+    if (usage.used <= usage.limit) return { over: false }
+    return { over: true, message: aiDraftQuotaMessage(planDisplayName(plan), usage.limit, new Date(usage.resetsAt)) }
+  } catch (e) {
+    // A broken allowance check must never take drafting down: the burst limit above has already passed.
+    console.error('Monthly AI allowance check threw (failing open):', e)
+    return { over: false }
+  }
+}
+
 /**
  * FIX (CO logic, independent pass 6): claim a rate-limit slot ATOMICALLY instead of check-then-record.
  *
@@ -124,6 +190,17 @@ export async function claimAiRateSlot(
     return {
       allowed: false,
       message: `Too many requests — please wait a few minutes and try again (limit: ${max} per ${windowMinutes}m).`,
+    }
+  }
+
+  // Monthly allowance for the drafting routes (see above). Over it: withdraw this row so a refused call does not use the
+  // allowance, and say when it resets.
+  if (isAiDraftRoute(routeKey)) {
+    const monthly = await overMonthlyDraftAllowance(service, workspaceId)
+    if (monthly.over) {
+      const { error: releaseError } = await service.from('ai_usage_log').delete().eq('id', row.id)
+      if (releaseError) console.error('Failed to release an unused AI allowance slot:', releaseError)
+      return { allowed: false, message: monthly.message }
     }
   }
   return { allowed: true }

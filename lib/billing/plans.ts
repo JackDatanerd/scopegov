@@ -13,9 +13,10 @@
 // allowlist, and normalised before any lookup.
 
 import type { Plan } from '@/lib/supabase/types'
+import { PAID_PLAN_ORDER, type PaidPlan } from '@/lib/billing/entitlements'
 
-export const PAID_PLAN_KEYS = ['solo', 'starter', 'pro', 'agency'] as const
-export type PaidPlanKey = (typeof PAID_PLAN_KEYS)[number]
+export const PAID_PLAN_KEYS = PAID_PLAN_ORDER
+export type PaidPlanKey = PaidPlan
 export const BILLING_INTERVALS = ['monthly', 'annual'] as const
 export type BillingInterval = (typeof BILLING_INTERVALS)[number]
 

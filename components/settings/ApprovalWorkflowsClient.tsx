@@ -2,6 +2,8 @@
 'use client'
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
+import Link from 'next/link'
+import { approvalMaxSteps, approvalPlanGate } from '@/lib/billing/entitlements'
 import { formatCurrency } from '@/lib/utils/format'
 // FIX (section-11 audit): this file hardcoded its own 8-currency list,
 // missing CAD/AUD — both valid per this single source of truth (already
@@ -62,8 +64,10 @@ function newStep(): StepDraft {
   return { key: Math.random().toString(36).slice(2), kind: '', id: '' }
 }
 
-export default function ApprovalWorkflowsClient({ initialWorkflows, roles, members, workspaceCurrency, projectCurrencies = [], workspaceId }: {
+export default function ApprovalWorkflowsClient({ initialWorkflows, roles, members, workspaceCurrency, projectCurrencies = [], workspaceId, planTier, lapsed = false }: {
   initialWorkflows: Workflow[]; roles: Role[]; members: Member[]; workspaceCurrency?: string; projectCurrencies?: string[]; workspaceId?: string
+  /** The workspace's EFFECTIVE plan and read-only state, so the screen says what the server will enforce (lib/billing/entitlements.ts). */
+  planTier?: string; lapsed?: boolean
 }) {
   const dialogs = useDialogs()
   const router = useRouter()
@@ -74,6 +78,10 @@ export default function ApprovalWorkflowsClient({ initialWorkflows, roles, membe
   const [editing, setEditing] = useState<Workflow | 'new' | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
   const [error, setError] = useState('')
+  // Plan limits on approval workflows: Solo none, Starter one approver step, Pro and up chains.
+  const maxSteps = approvalMaxSteps(planTier, lapsed)
+  const noWorkflowsOnPlan = maxSteps === 0
+  const planNote = noWorkflowsOnPlan ? approvalPlanGate(planTier, 1, lapsed) : null
 
   function refresh() { router.refresh() }
 
@@ -115,12 +123,24 @@ export default function ApprovalWorkflowsClient({ initialWorkflows, roles, membe
   return (
     <div>
       {error && <div className="auth-error" style={{ marginBottom: 14 }}>{error}</div>}
+      {planNote && (
+        <div className="banner banner-info" style={{ marginBottom: 20 }}>
+          <span>{planNote}</span>
+          {!lapsed && <Link href="/settings?tab=billing"><button className="btn btn-primary btn-sm">See plans</button></Link>}
+        </div>
+      )}
+      {!noWorkflowsOnPlan && maxSteps !== null && (
+        <div className="banner banner-info" style={{ marginBottom: 20 }}>
+          <span>Your plan allows {maxSteps} approver step{maxSteps === 1 ? '' : 's'} per workflow. Multi-step chains are on the Pro plan and above.</span>
+          <Link href="/settings?tab=billing"><button className="btn btn-primary btn-sm">See plans</button></Link>
+        </div>
+      )}
 
       {(['sow', 'co', 'invoice'] as const).map(type => (
         <div key={type} style={{ marginBottom: 28 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
             <h3 className="sec-title" style={{ margin: 0 }}>{TYPE_LABEL[type].singular === 'SOW' ? 'SOW workflows' : `${TYPE_LABEL[type].singular[0].toUpperCase()}${TYPE_LABEL[type].singular.slice(1)} workflows`}</h3>
-            <button className="btn btn-ghost btn-sm" onClick={() => setEditing('new-' + type as any)}>
+            <button className="btn btn-ghost btn-sm" disabled={noWorkflowsOnPlan} title={planNote || undefined} onClick={() => setEditing('new-' + type as any)}>
               <i className="ti ti-plus" style={{ fontSize: 12 }} /> New workflow
             </button>
           </div>
@@ -201,6 +221,7 @@ export default function ApprovalWorkflowsClient({ initialWorkflows, roles, membe
           workspaceCurrency={workspaceCurrency}
           projectCurrencies={projectCurrencies}
           workspaceId={workspaceId}
+          maxSteps={maxSteps}
           onClose={() => setEditing(null)}
           onSaved={() => { setEditing(null); refresh() }}
         />
@@ -209,10 +230,12 @@ export default function ApprovalWorkflowsClient({ initialWorkflows, roles, membe
   )
 }
 
-function WorkflowEditorModal({ workflow, defaultType, roles, members, workspaceCurrency, projectCurrencies, workspaceId, onClose, onSaved }: {
+function WorkflowEditorModal({ workflow, defaultType, roles, members, workspaceCurrency, projectCurrencies, workspaceId, maxSteps, onClose, onSaved }: {
   workflow: Workflow | null
   defaultType: 'sow' | 'co' | 'invoice'
   roles: Role[]; members: Member[]; workspaceCurrency?: string; projectCurrencies: string[]; workspaceId?: string
+  /** Approver steps the plan allows in one workflow (null = unlimited). */
+  maxSteps: number | null
   onClose: () => void; onSaved: () => void
 }) {
   const isEdit = !!workflow
@@ -427,7 +450,9 @@ function WorkflowEditorModal({ workflow, defaultType, roles, members, workspaceC
               </div>
             </div>
           ))}
-          <button className="btn btn-ghost btn-sm" onClick={addStep}>
+          <button className="btn btn-ghost btn-sm" onClick={addStep}
+            disabled={maxSteps !== null && steps.length >= maxSteps}
+            title={maxSteps !== null && steps.length >= maxSteps ? 'Multi-step chains are on the Pro plan and above.' : undefined}>
             <i className="ti ti-plus" style={{ fontSize: 12 }} /> Add step
           </button>
         </div>

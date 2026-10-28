@@ -39,6 +39,7 @@ import IntegrationsSection from '@/components/settings/IntegrationsSection'
 import { CURRENCIES, INDUSTRIES } from '@/lib/constants/workspace-options'
 import DocumentNumberingSection from '@/components/settings/DocumentNumberingSection'
 import { GRACE_DAYS } from '@/lib/billing/plans'
+import { PAID_PLAN_ORDER, PLAN_ENTITLEMENTS, planFeatureRows } from '@/lib/billing/entitlements'
 import { isValidTimeZone, formatDateInZone } from '@/lib/utils/timezone'
 import { sameValue } from '@/lib/utils/audit-diff'
 import { isBlankText } from '@/lib/utils/client-input'
@@ -292,6 +293,8 @@ interface Props {
   billing:     any
   // Active members / live projects right now (null when it could not be read) — drives the plan cards' fit hints.
   planUsage?:  { seats: number; projects: number } | null
+  // AI drafts used this calendar month vs the plan's allowance (null when it could not be read).
+  aiDraftUsage?: { used: number; limit: number; resetsAt: string } | null
   defaults:    any
   logoUrl:     string | null
   // Which of the page's initial reads failed (see settings/page.tsx). A failed read renders placeholders, and
@@ -303,7 +306,7 @@ interface Props {
   mfaRecommended?: boolean
 }
 
-export default function SettingsClient({ workspace, billing, planUsage = null, defaults, logoUrl, loadFailed = { workspace: false, defaults: false, billing: false }, session, permissions, mfaMandatory, mfaRecommended = false }: Props) {
+export default function SettingsClient({ workspace, billing, planUsage = null, aiDraftUsage = null, defaults, logoUrl, loadFailed = { workspace: false, defaults: false, billing: false }, session, permissions, mfaMandatory, mfaRecommended = false }: Props) {
   const searchParams = useSearchParams()
   const router       = useRouter()
   const supabase     = createClient()
@@ -586,7 +589,7 @@ export default function SettingsClient({ workspace, billing, planUsage = null, d
           <GuardianTab form={guardianForm} setForm={setGuardianForm} permissions={permissions} onSave={patchWorkspace} saving={saving} currency={workspace?.currency || 'USD'} />
         )}
 
-        {tab === 'billing' && <BillingTab workspace={workspace} billing={billing} planUsage={planUsage} billingLoadFailed={!!loadFailed.billing} session={session} permissions={permissions} />}
+        {tab === 'billing' && <BillingTab workspace={workspace} billing={billing} planUsage={planUsage} aiDraftUsage={aiDraftUsage} billingLoadFailed={!!loadFailed.billing} session={session} permissions={permissions} />}
 
         {tab === 'notifications' && <NotificationsTab permissions={permissions} workspaceId={workspace?.id} />}
 
@@ -1904,7 +1907,7 @@ function loadPaystackScript(): Promise<void> {
   })
 }
 
-function BillingTab({ workspace, billing, planUsage = null, billingLoadFailed = false, session, permissions }: any) {
+function BillingTab({ workspace, billing, planUsage = null, aiDraftUsage = null, billingLoadFailed = false, session, permissions }: any) {
   const dialogs = useDialogs()
   const planTier  = workspace?.plan_tier || 'trial'
   const planLabel = PLAN_LABELS[planTier] || planTier
@@ -2155,12 +2158,17 @@ function BillingTab({ workspace, billing, planUsage = null, billingLoadFailed = 
     } finally { setUpgrading(null) }
   }
 
-  const plans = [
-    { key: 'solo',    name: 'Solo',    price: { monthly: '$39/mo',  annual: '$390/yr'  }, seats: 1,  projects: 2    },
-    { key: 'starter', name: 'Starter', price: { monthly: '$99/mo',  annual: '$990/yr'  }, seats: 2,  projects: 5    },
-    { key: 'pro',     name: 'Pro',     price: { monthly: '$249/mo', annual: '$2,490/yr'}, seats: 4,  projects: null },
-    { key: 'agency',  name: 'Agency',  price: { monthly: '$399/mo', annual: '$3,990/yr'}, seats: 10, projects: null },
-  ]
+  // The plan cards are generated from the one plan table (lib/billing/entitlements.ts), the same table the pricing page, the
+  // calculator and the gates read, so what a card promises is what the plan enforces.
+  const usd = (n: number) => '$' + n.toLocaleString('en-US')
+  const plans = PAID_PLAN_ORDER.map(key => {
+    const e = PLAN_ENTITLEMENTS[key]
+    return {
+      key, name: e.name,
+      price: { monthly: `${usd(e.prices!.monthly)}/mo`, annual: `${usd(e.prices!.annual)}/yr` },
+      seats: e.seats, projects: e.projects, rows: planFeatureRows(key),
+    }
+  })
 
   // FIX (deep audit, Billing re-pass — feature gap): grace_period_started_at
   // is set by the webhook on invoice.payment_failed and enforced 5 days
@@ -2223,6 +2231,12 @@ function BillingTab({ workspace, billing, planUsage = null, billingLoadFailed = 
             )}
             {planTier === 'trial' && daysLeft !== null && (
               <div style={{ fontSize: 13, color: 'var(--amber)' }}>{daysLeft} trial days remaining</div>
+            )}
+            {aiDraftUsage && (
+              <div style={{ fontSize: 12, color: aiDraftUsage.used >= aiDraftUsage.limit ? 'var(--amber)' : 'var(--text-3)' }}>
+                AI drafts this month: {Math.min(aiDraftUsage.used, aiDraftUsage.limit).toLocaleString('en-US')} of {aiDraftUsage.limit.toLocaleString('en-US')}
+                {' '}· resets {new Date(aiDraftUsage.resetsAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })}
+              </div>
             )}
             {hasSubscription && billing?.current_period_end && (
               <div style={{ fontSize: 12, color: 'var(--text-3)' }}>
@@ -2365,7 +2379,12 @@ function BillingTab({ workspace, billing, planUsage = null, billingLoadFailed = 
                 <div className="tier-card-name">{plan.name}</div>
                 <div className="tier-card-price">{plan.price[planInterval]}</div>
                 <div className="tier-card-desc">
-                  {plan.seats} seat{plan.seats > 1 ? 's' : ''} · {plan.projects ? `${plan.projects} active projects` : 'Unlimited projects'}
+                  {plan.rows.map(row => (
+                    <div key={row.label} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, padding: '2px 0', color: row.included ? undefined : 'var(--text-4)' }}>
+                      <span>{row.label}</span>
+                      <span>{row.included && row.value === 'Included' ? '\u2713' : row.included ? row.value : '\u2014'}</span>
+                    </div>
+                  ))}
                 </div>
                 {!isExactCurrentPlan && overBits.length > 0 && (
                   <div style={{ marginTop: 8, fontSize: 11, lineHeight: 1.5, color: 'var(--amber)' }}>

@@ -3,6 +3,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { parsePeriod } from '@/lib/reports/period'
 import { getPortfolioData } from '@/lib/reports/portfolio-data'
+import { hasFeature, minPlanNameFor } from '@/lib/billing/entitlements'
 
 // Portfolio dashboard is workspace-wide by definition — it has no
 // per-project scoping, so it requires its own VIEW_PORTFOLIO permission
@@ -35,6 +36,9 @@ export async function GET(request: NextRequest) {
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     if (!hasPermission(session, 'VIEW_PORTFOLIO'))
       return NextResponse.json({ error: 'Missing permission: VIEW_PORTFOLIO' }, { status: 403 })
+    // Plan gate (lib/billing/entitlements.ts). A lapsed (read-only) workspace keeps viewing and exporting what it already has.
+    if (!hasFeature(session.planTier, 'portfolio', !!session.lapsed))
+      return NextResponse.json({ error: `The portfolio view is included in the ${minPlanNameFor('portfolio')} plan and above.` }, { status: 403 })
 
     const canViewFinancials = hasPermission(session, 'VIEW_FINANCIALS')
     const canViewClients = hasPermission(session, 'VIEW_CLIENT_DATA')

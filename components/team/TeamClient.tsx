@@ -11,14 +11,11 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import type { SessionUser } from '@/lib/supabase/types'
 import { initials, avatarColour, formatDate, ALL_PERMISSIONS, PLAN_LIMITS } from '@/lib/utils/format'
 import { roleHolderCounts } from '@/lib/utils/role-holders'
+import { hasFeature } from '@/lib/billing/entitlements'
 import { useDialogs } from '@/components/ui/Dialogs'
 
-// FIX (deep audit, section 6 — feature gap): mirrors the exact allowlist
-// api/team/roles POST enforces server-side. Kept as one shared constant
-// so the "which plans get custom roles" answer can't drift between the
-// two again the way it already had (this file previously hardcoded a
-// second, narrower ['pro','agency'] copy that silently excluded trial).
-const CUSTOM_ROLE_PLANS = ['pro', 'agency', 'trial']
+// Which plans get custom roles is answered by hasFeature() on the one plan table (lib/billing/entitlements.ts), the same
+// call api/team/roles POST makes server-side, so the UI and the gate cannot drift.
 
 interface Props {
   members:            any[]
@@ -841,11 +838,11 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
                  otherwise ("Custom roles require Pro or Agency"). Mirror
                  the server's own allowlist exactly instead of a second,
                  drifted copy of it. */}
-              {CUSTOM_ROLE_PLANS.includes(session.planTier)
+              {hasFeature(session.planTier, 'customRoles', !!session.lapsed)
                 ? 'Create custom roles for fine-grained access control.'
-                : 'Preset roles are available on all plans. Custom roles require Pro, Agency, or an active trial.'}
+                : 'Preset roles are available on all plans. Custom roles require the Pro or Agency plan, or an active trial.'}
             </p>
-            {canManageRoles && CUSTOM_ROLE_PLANS.includes(session.planTier) && (
+            {canManageRoles && hasFeature(session.planTier, 'customRoles', !!session.lapsed) && (
               <button className="btn btn-primary btn-sm" onClick={() => openModal('role')}>
                 <i className="ti ti-plus" style={{ fontSize: 12 }} /> New role
               </button>

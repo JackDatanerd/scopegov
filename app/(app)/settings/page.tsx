@@ -10,6 +10,7 @@ import { redirect } from 'next/navigation'
 import { mfaIsEnforced } from '@/lib/auth/mfa-policy'
 import SettingsClient from '@/components/settings/SettingsClient'
 import { measurePlanFit } from '@/lib/billing/limits'
+import { getAiDraftUsage, type AiDraftUsage } from '@/lib/utils/rate-limit'
 
 export const metadata = { title: 'Settings' }
 
@@ -265,11 +266,19 @@ export default async function SettingsPage() {
     } catch (e) { console.error('[settings] plan usage read failed (hints hidden):', e) }
   }
 
+  // AI drafts used this month against the plan's allowance (lib/utils/rate-limit.ts), shown in Billing. Best-effort like the above.
+  let aiDraftUsage: AiDraftUsage | null = null
+  if (canManageBilling) {
+    try { aiDraftUsage = await getAiDraftUsage(service, session.workspaceId, session.planTier) }
+    catch (e) { console.error('[settings] AI draft usage read failed (hidden):', e) }
+  }
+
   return (
     <SettingsClient
       workspace={workspaceForClient}
       billing={billing}
       planUsage={planUsage}
+      aiDraftUsage={aiDraftUsage}
       defaults={canManageWorkspace ? (defaultsRes.data?.[0] ?? null) : null}
       logoUrl={logoUrl}
       loadFailed={loadFailed}

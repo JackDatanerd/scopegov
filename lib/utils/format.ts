@@ -1,6 +1,7 @@
 // lib/utils/format.ts
 // Re-export ALL_PERMISSIONS so components can import from one place
 export { ALL_PERMISSIONS } from '@/lib/supabase/types'
+import { PLAN_ENTITLEMENTS } from '@/lib/billing/entitlements'
 
 // ── ADDRESS ───────────────────────────────────────────────────────────────────
 // FIX (bug — React error #31 "Objects are not valid as a React child"): the
@@ -364,13 +365,11 @@ export const PROJECT_TYPE_ICONS: Record<string, string> = {
 export const PLAN_LABELS: Record<string, string> = {
   trial: 'Trial', solo: 'Solo', starter: 'Starter', pro: 'Pro', agency: 'Agency',
 }
-export const PLAN_LIMITS: Record<string, { projects: number | null; seats: number; name: string }> = {
-  trial:   { projects: null, seats: 10, name: 'Trial (14 days)' },
-  solo:    { projects: 2, seats: 1, name: 'Solo' },
-  starter: { projects: 5, seats: 2, name: 'Starter' },
-  pro:     { projects: null, seats: 4, name: 'Pro' },
-  agency:  { projects: null, seats: 10, name: 'Agency' },
-}
+// Derived from the one plan table (lib/billing/entitlements.ts) so seats, projects and names cannot drift from the prices,
+// the plan cards or the gates. The shape is unchanged for the callers that already import it.
+export const PLAN_LIMITS: Record<string, { projects: number | null; seats: number; name: string }> = Object.fromEntries(
+  Object.entries(PLAN_ENTITLEMENTS).map(([k, e]) => [k, { projects: e.projects, seats: e.seats, name: e.name }]),
+)
 
 // ── AVATAR INITIALS ───────────────────────────────────────────────────────────
 export function initials(name: string): string {

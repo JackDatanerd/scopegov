@@ -33,18 +33,18 @@ describe('checkSeatLimit', () => {
   })
 
   it('allows activation when the counted total is strictly below the seat limit', async () => {
-    // starter = 2 seats
-    const { service } = mockService(1)
+    // starter = 3 seats
+    const { service } = mockService(2)
     const result = await checkSeatLimit(service, 'ws-1', 'starter', ['active'])
     expect(result.ok).toBe(true)
   })
 
   it('blocks activation when the counted total already equals the seat limit', async () => {
-    const { service } = mockService(2)
+    const { service } = mockService(3)
     const result = await checkSeatLimit(service, 'ws-1', 'starter', ['active'])
     expect(result.ok).toBe(false)
     if (!result.ok) {
-      expect(result.message).toContain('2-seat')
+      expect(result.message).toContain('3-seat')
       expect(result.message).toContain('Starter')
     }
   })
@@ -77,8 +77,8 @@ describe('checkSeatLimit', () => {
   })
 
   it('adds active members and live invites together against the limit', async () => {
-    // starter = 2 seats; each of the two queries reports 1 → 2 in use → full
-    const { service } = mockService(1)
+    // starter = 3 seats; each of the two queries reports 2 → 4 in use → over
+    const { service } = mockService(2)
     const result = await checkSeatLimit(service, 'ws-1', 'starter', ['active', 'invited'])
     expect(result.ok).toBe(false)
   })

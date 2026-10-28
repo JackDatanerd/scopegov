@@ -20,17 +20,18 @@ describe('isProjectBeyondLimit — exactly one of two racing creates loses (B4)'
   const rows = [
     { id: 'a', created_at: '2026-01-01T00:00:00Z' },
     { id: 'b', created_at: '2026-02-01T00:00:00Z' },
-    { id: 'c', created_at: '2026-02-01T00:00:01Z' }, // the two racers for the last slot of a 2-project plan: b and c
+    { id: 'c', created_at: '2026-02-01T00:00:01Z' }, // the two racers for the last slot of a 3-project plan: c and d
+    { id: 'd', created_at: '2026-02-01T00:00:02Z' },
   ]
-  it('solo (limit 2): the earlier racer keeps its slot, the later one is beyond the limit', async () => {
-    expect(await isProjectBeyondLimit(fakeService(rows), 'ws', 'solo', 'b')).toBe(false)
-    expect(await isProjectBeyondLimit(fakeService(rows), 'ws', 'solo', 'c')).toBe(true)
+  it('solo (limit 3): the earlier racer keeps its slot, the later one is beyond the limit', async () => {
+    expect(await isProjectBeyondLimit(fakeService(rows), 'ws', 'solo', 'c')).toBe(false)
+    expect(await isProjectBeyondLimit(fakeService(rows), 'ws', 'solo', 'd')).toBe(true)
   })
   it('a project inside the limit is never beyond it', async () => {
     expect(await isProjectBeyondLimit(fakeService(rows), 'ws', 'solo', 'a')).toBe(false)
   })
   it('unlimited plans never roll back', async () => {
-    expect(await isProjectBeyondLimit(fakeService(rows), 'ws', 'pro', 'c')).toBe(false)
+    expect(await isProjectBeyondLimit(fakeService(rows), 'ws', 'pro', 'd')).toBe(false)
   })
   it('a read error throws instead of silently keeping the project', async () => {
     await expect(isProjectBeyondLimit(fakeService(rows, { message: 'boom' }), 'ws', 'solo', 'c')).rejects.toThrow(/plan limit check failed/)

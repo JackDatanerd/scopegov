@@ -99,11 +99,11 @@ describe('B5 — usage that outgrew the new plan during the checkout window', ()
   })
 
   it('the payment is applied as normal, the overage is recorded in history and ops is paged', async () => {
-    h.db = seed(3, 4) // Solo = 1 seat, 2 projects
+    h.db = seed(3, 4) // Solo = 1 seat, 3 projects
     expect(await send(subCreate)).toBe(200)
     expect(h.db.tables.workspaces[0].plan_tier).toBe('solo')
     expect(bill().paystack_subscription_code).toBe('SUB_NEW')
-    expect(h.audits[0].metadata.over_limit).toEqual({ active_members: 3, seat_limit: 1, active_projects: 4, project_limit: 2 })
+    expect(h.audits[0].metadata.over_limit).toEqual({ active_members: 3, seat_limit: 1, active_projects: 4, project_limit: 3 })
     expect(h.alerts.some(a => a.key.startsWith('billing:over-limit'))).toBe(true)
   })
   it('usage within the limits adds nothing', async () => {

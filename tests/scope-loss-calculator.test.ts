@@ -13,6 +13,7 @@ import {
 } from '@/lib/billing/roi-model'
 import { LIST_PRICES_USD } from '@/lib/billing/list-prices'
 import { PLAN_LIMITS } from '@/lib/utils/format'
+import { PAID_PLAN_ORDER, FEATURE_NEEDS, planFeatureRows, planMeetsNeed } from '@/lib/billing/entitlements'
 import { loadRoiInputs } from '@/lib/billing/roi-inputs'
 import { createFakeSupabase, type Row } from './helpers/fake-supabase'
 
@@ -87,14 +88,19 @@ describe('model — plan fit comes before price', () => {
   it('recommends the cheapest plan that fits', () => {
     expect(rec({})).toBe('solo')
     expect(rec({ seatsNeeded: 2 })).toBe('starter')
-    expect(rec({ activeProjectsNeeded: 3 })).toBe('starter')
-    expect(rec({ activeProjectsNeeded: 6 })).toBe('pro')     // Starter caps at 5
-    expect(rec({ seatsNeeded: 5 })).toBe('agency')           // Pro caps at 4 seats
+    expect(rec({ activeProjectsNeeded: 3 })).toBe('solo')    // Solo allows 3 active projects
+    expect(rec({ activeProjectsNeeded: 4 })).toBe('starter')
+    expect(rec({ activeProjectsNeeded: 9 })).toBe('pro')     // Starter caps at 8
+    expect(rec({ seatsNeeded: 3 })).toBe('starter')          // Starter has 3 seats
+    expect(rec({ seatsNeeded: 6 })).toBe('agency')           // Pro caps at 5 seats
   })
 
   it('features gate the fit', () => {
-    expect(rec({ needsFullHistory: true })).toBe('starter')  // Solo shows only the last 10 and blocks export
+    expect(rec({ needsIntegrations: true })).toBe('starter') // webhooks, Zapier and API keys start at Starter
     expect(rec({ needsCustomRoles: true })).toBe('pro')
+    expect(rec({ needsApprovalChains: true })).toBe('pro')
+    expect(rec({ needsPortfolio: true })).toBe('pro')
+    expect(rec({ needsAuditExport: true })).toBe('agency')
   })
 
   it('a team beyond every plan gets "no plan fits", not a wrong recommendation', () => {
@@ -240,22 +246,26 @@ describe('ownRecoveryRate', () => {
 describe('drift guards — the model must say what the product really does', () => {
 
   it('seat and project caps come from PLAN_LIMITS, which the pricing table mirrors', () => {
-    expect(HOME_PLANS.map(p => p.seats)).toEqual([1, 2, 4, 10])
-    expect(HOME_PLANS.map(p => p.projects)).toEqual([2, 5, null, null])
-    expect([PLAN_LIMITS.solo.seats, PLAN_LIMITS.starter.seats, PLAN_LIMITS.pro.seats, PLAN_LIMITS.agency.seats]).toEqual([1, 2, 4, 10])
-    expect([PLAN_LIMITS.solo.projects, PLAN_LIMITS.starter.projects, PLAN_LIMITS.pro.projects, PLAN_LIMITS.agency.projects]).toEqual([2, 5, null, null])
+    expect(HOME_PLANS.map(p => p.seats)).toEqual([1, 3, 5, 10])
+    expect(HOME_PLANS.map(p => p.projects)).toEqual([3, 8, null, null])
+    expect([PLAN_LIMITS.solo.seats, PLAN_LIMITS.starter.seats, PLAN_LIMITS.pro.seats, PLAN_LIMITS.agency.seats]).toEqual([1, 3, 5, 10])
+    expect([PLAN_LIMITS.solo.projects, PLAN_LIMITS.starter.projects, PLAN_LIMITS.pro.projects, PLAN_LIMITS.agency.projects]).toEqual([3, 8, null, null])
   })
 
   it('PLAN_FEATURES match the pricing table rows', () => {
-    expect(HOME_PLANS.map(p => p.fullHistory)).toEqual([false, true, true, true])
-    expect(HOME_PLANS.map(p => p.customRoles)).toEqual([false, false, true, true])
-    expect(Object.values(PLAN_FEATURES).map(f => f.fullHistory)).toEqual([false, true, true, true])
+    expect(HOME_PLANS.map(p => p.rows)).toEqual(PAID_PLAN_ORDER.map(k => planFeatureRows(k)))
+    for (const k of PAID_PLAN_ORDER) for (const n of FEATURE_NEEDS) expect(PLAN_FEATURES[k][n.key], `${k} ${n.key}`).toBe(planMeetsNeed(k, n.key))
     expect(Object.values(PLAN_FEATURES).map(f => f.customRoles)).toEqual([false, false, true, true])
+    expect(Object.values(PLAN_FEATURES).map(f => f.integrations)).toEqual([false, true, true, true])
+    expect(Object.values(PLAN_FEATURES).map(f => f.auditExport)).toEqual([false, false, false, true])
   })
 
-  it('custom-role and export enforcement still agree with the model', () => {
-    expect(read('app/api/team/roles/route.ts')).toMatch(/CUSTOM_ROLE_PLANS = \['pro', 'agency', 'trial'\]/)
-    expect(read('app/api/invoices/export/route.ts')).toMatch(/solo/)
+  it('custom-role, export and portfolio enforcement read the one plan table, not a private copy', () => {
+    expect(read('app/api/team/roles/route.ts')).toMatch(/hasFeature\(session\.planTier, 'customRoles'/)
+    expect(read('app/api/team/roles/route.ts')).not.toMatch(/const CUSTOM_ROLE_PLANS/)
+    expect(read('components/team/TeamClient.tsx')).not.toMatch(/const CUSTOM_ROLE_PLANS/)
+    expect(read('app/api/invoices/export/route.ts')).toMatch(/hasFeature\(session\.planTier, 'invoiceExport'/)
+    expect(read('app/api/reports/portfolio/route.ts')).toMatch(/hasFeature\(session\.planTier, 'portfolio'/)
   })
 
   it('prices are the same list prices the admin Finance page and Billing cards use', () => {

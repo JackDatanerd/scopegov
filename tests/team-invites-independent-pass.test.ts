@@ -141,15 +141,15 @@ describe('seatLimitBreachedAfterWrite (real implementation)', () => {
     return { from: () => chainer() }
   }
 
-  it('is fine when the count INCLUDING the caller\'s own row is exactly the limit (starter = 2)', async () => {
+  it('is fine when the count INCLUDING the caller\'s own row is exactly the limit (starter = 3)', async () => {
     const { seatLimitBreachedAfterWrite } = await real()
-    expect((await seatLimitBreachedAfterWrite(countingService(2), 'w', 'starter', ['active'])).ok).toBe(true)
+    expect((await seatLimitBreachedAfterWrite(countingService(3), 'w', 'starter', ['active'])).ok).toBe(true)
   })
   it('reports a breach when the count exceeds the limit — the caller lost the race', async () => {
     const { seatLimitBreachedAfterWrite } = await real()
-    const r = await seatLimitBreachedAfterWrite(countingService(3), 'w', 'starter', ['active'])
+    const r = await seatLimitBreachedAfterWrite(countingService(4), 'w', 'starter', ['active'])
     expect(r.ok).toBe(false)
-    if (!r.ok) expect(r.message).toContain('2-seat')
+    if (!r.ok) expect(r.message).toContain('3-seat')
   })
   it('fails open on a query error, like checkSeatLimit', async () => {
     const { seatLimitBreachedAfterWrite } = await real()

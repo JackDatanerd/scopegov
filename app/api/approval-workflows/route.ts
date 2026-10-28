@@ -7,6 +7,7 @@ import { logAudit } from '@/lib/utils/audit'
 import { staleWorkspaceResponse } from '@/lib/utils/workspace-guard'
 import { CURRENCIES } from '@/lib/constants/workspace-options'
 import { parseWorkflowSteps, parseThresholdAmount } from '@/lib/approvals/workflow-input'
+import { approvalPlanGate } from '@/lib/billing/entitlements'
 
 // Configuring who approves what is treated as a workspace setting rather
 // than minting a new permission — MANAGE_WORKSPACE_SETTINGS already gates
@@ -101,6 +102,9 @@ export async function POST(request: NextRequest) {
     if (!thresholdParsed.ok) return NextResponse.json({ error: thresholdParsed.error }, { status: 400 })
     if (!stepsParsed.ok) return NextResponse.json({ error: stepsParsed.error }, { status: 400 })
     const steps = stepsParsed.steps
+    // Plan gate (lib/billing/entitlements.ts): Solo has no approval workflows, Starter one approver step, Pro and up chains.
+    const planGate = approvalPlanGate(session.planTier, steps.length, !!session.lapsed)
+    if (planGate) return NextResponse.json({ error: planGate }, { status: 403 })
 
     const service = createServiceClient()
 

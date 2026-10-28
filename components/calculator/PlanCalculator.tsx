@@ -3,8 +3,9 @@ import { useMemo, useState } from 'react'
 import Link from 'next/link'
 import styles from '@/styles/calculator.module.css'
 import { formatCurrency, PLAN_LABELS } from '@/lib/utils/format'
-import { computeRoi, BLANK_INPUTS, DEFAULT_RECOVERY_RATE, extrapolateToYear, extrapolationFields, MIN_DAYS_TO_EXTRAPOLATE, type RoiInputs } from '@/lib/billing/roi-model'
+import { computeRoi, needInputs, needsOf, type NeedFlags, BLANK_INPUTS, DEFAULT_RECOVERY_RATE, extrapolateToYear, extrapolationFields, MIN_DAYS_TO_EXTRAPOLATE, type RoiInputs } from '@/lib/billing/roi-model'
 import type { MeasuredNumbers } from '@/lib/billing/roi-inputs'
+import { FEATURE_NEEDS } from '@/lib/billing/entitlements'
 
 interface Props {
   /** 'app' = signed-in, prefilled from the workspace; 'public' = blank, signup CTA. */
@@ -27,8 +28,7 @@ export default function PlanCalculator({ mode, measured, defaults, canManageBill
   const [recoveryPct, setRecoveryPct] = useState(s(Math.round(start.recoveryRate * 100)))
   const [seats, setSeats] = useState(s(start.seatsNeeded))
   const [activeProjects, setActiveProjects] = useState(s(start.activeProjectsNeeded))
-  const [needsRoles, setNeedsRoles] = useState(start.needsCustomRoles)
-  const [needsHistory, setNeedsHistory] = useState(start.needsFullHistory)
+  const [needs, setNeeds] = useState<NeedFlags>(needsOf(start))
   const [interval, setIntervalVal] = useState<'monthly' | 'annual'>(start.interval)
   const [currency, setCurrency] = useState(start.currency)
   const [fx, setFx] = useState('')
@@ -54,9 +54,9 @@ export default function PlanCalculator({ mode, measured, defaults, canManageBill
     projectsPerYear: toNum(projectsPerYear), avgProjectValue: toNum(avgProjectValue), creepPct: toNum(creepPct),
     grantedFreeValue: toNum(grantedFree), recoveryRate: toNum(recoveryPct) / 100,
     seatsNeeded: toNum(seats), activeProjectsNeeded: toNum(activeProjects),
-    needsCustomRoles: needsRoles, needsFullHistory: needsHistory, interval,
+    ...needInputs(needs), interval,
     currency, fxToUsd: fx.trim() === '' ? null : Number(fx),
-  }), [projectsPerYear, avgProjectValue, creepPct, grantedFree, recoveryPct, seats, activeProjects, needsRoles, needsHistory, interval, currency, fx])
+  }), [projectsPerYear, avgProjectValue, creepPct, grantedFree, recoveryPct, seats, activeProjects, needs, interval, currency, fx])
 
   const cur = result.inputs.currency
   const money = (n: number) => formatCurrency(Math.round(n), cur)
@@ -175,8 +175,11 @@ export default function PlanCalculator({ mode, measured, defaults, canManageBill
                 <input id="c-act" className={styles.input} inputMode="numeric" value={activeProjects} onChange={e => setActiveProjects(e.target.value)} />
               </div>
             </div>
-            <label className={styles.check}><input type="checkbox" checked={needsRoles} onChange={e => setNeedsRoles(e.target.checked)} /> I need custom roles &amp; permissions</label>
-            <label className={styles.check}><input type="checkbox" checked={needsHistory} onChange={e => setNeedsHistory(e.target.checked)} /> I need my full invoice &amp; SOW history and exports</label>
+            {FEATURE_NEEDS.map(n => (
+              <label key={n.key} className={styles.check}>
+                <input type="checkbox" checked={needs[n.key]} onChange={e => setNeeds(p => ({ ...p, [n.key]: e.target.checked }))} /> I need {n.label.charAt(0).toLowerCase() + n.label.slice(1)}
+              </label>
+            ))}
             <div className={styles.field} style={{ marginTop: 8 }}>
               <span className={styles.label}>Billing</span>
               <div className={styles.seg} role="group" aria-label="Billing interval">

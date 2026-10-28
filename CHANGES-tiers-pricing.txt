@@ -1,0 +1,48 @@
+TIERS & PRICING ROUND
+=====================
+
+One plan table
+  lib/billing/entitlements.ts is now the only place that says what each plan is, costs and includes. PLAN_LIMITS, LIST_PRICES_USD,
+  PAID_PLAN_KEYS, the homepage plans, the in-app plan cards, the calculator's PLAN_FEATURES, the custom-roles gate (route AND
+  TeamClient), the integrations gate and the Team page's Solo upsell are all derived from it.
+
+Tiers
+  Solo $39    1 seat   3 projects   60 AI drafts/mo
+  Starter $99 3 seats  8 projects   200   (webhooks, Zapier, API keys; one approver step)
+  Pro $249    5 seats  unlimited    600   (+ custom roles, approval chains, portfolio, Slack)
+  Agency $399 10 seats unlimited    1,500 (+ audit-log export)
+  The AI allowances are a first guess: edit aiDraftsPerMonth in PLAN_ENTITLEMENTS.
+
+Bug fixed: lapsed workspaces were capped like Solo
+  A lapsed workspace is stored as Solo, and the invoices page, SOW page and invoice export checked planTier === 'solo' with no lapsed
+  exemption: 10 rows and no export, against the Terms, FAQ and banner ("you can still view and export everything"). They now
+  decide through hasFeature(plan, feature, lapsed); a lapsed workspace keeps history, invoice export, audit export and portfolio.
+  Solo's last-10 history cap is removed (the fullHistory flag stays in the table).
+
+Gates
+  Approval workflows: none on Solo, one approver step on Starter, chains from Pro. Create / activate / replace-steps are gated;
+  switching off, renaming and flag toggles are not, and running workflows are untouched.
+  Portfolio: Pro and up (page, both APIs, sidebar, command palette). VIEW_PORTFOLIO is NOT stripped from the session: that would
+  stop Starter admins editing or assigning roles that hold it.
+  Audit-log export (CSV/PDF): Agency. The in-app audit log (format=json) stays open on every plan.
+  roles/[id] PATCH is left ungated (roles carry no preset flag; gating it could block editing preset roles).
+
+Monthly AI drafting allowance
+  claimAiRateSlot counts sow.parseBrief / sow.generate / sow.regenerateSection / co.draft / invoice.draft per workspace per calendar
+  month (UTC) against the plan's allowance; over it the call is refused (429) with the plan, the limit and the reset date, and its
+  usage row is withdrawn. Guardian is deliberately NOT metered monthly (a refused check is a scope flag never raised). Fails open.
+  Billing tab shows "AI drafts this month: N of M". ai_usage_log retention 30 -> 62 days so a full month is countable.
+  Migration 168 adds the supporting index (safe before or after the code deploy).
+
+Surfaces
+  Pricing page and Settings plan cards render the same rows (seats, projects, Guardian, AI drafts, approvals, integrations,
+  custom roles, portfolio, audit export). Integrations is named as it exists: Slack is built, HubSpot and Drive are not.
+  Calculator: "full history" checkbox replaced by five needs (custom roles, approval chains, integrations, portfolio, audit export);
+  old links with history=1 still load.
+
+Not built (not claimed on any card): enforced MFA, portal branding as a paid feature, priority support, per-seat add-on,
+HubSpot / Google Drive.
+
+Tests: tests/tiers-pricing-entitlements.test.ts (new); tier-number pins updated in seat-limit, contract-value-and-limit,
+projects-dashboard-pass2, team-invites-independent-pass, billing-pass10-webhook, billing-trial-end-upgrade-audit,
+admin-panel-audit, homepage-rebrand, scope-loss-calculator.

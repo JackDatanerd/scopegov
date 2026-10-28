@@ -6,6 +6,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { formatDate, formatCurrency, sowStatusLabel } from '@/lib/utils/format' // C6: removed sowStatusColour
+import { hasFeature } from '@/lib/billing/entitlements'
 
 export const metadata = { title: 'SOW Registry' }
 
@@ -15,7 +16,9 @@ export default async function SowPage() {
 
   const service = createServiceClient()
 
-  const isSoloCapped = session.planTier === 'solo'
+  // Registry depth comes from the plan table (lib/billing/entitlements.ts). A lapsed workspace keeps full history: the read-only
+  // promise is "you can still view and export everything", and a lapsed workspace is stored as Solo.
+  const isSoloCapped = !hasFeature(session.planTier, 'fullHistory', !!session.lapsed)
   const limit        = isSoloCapped ? 10 : 500
 
   // FIX (section-9 audit): this page had no project-membership filtering
@@ -132,7 +135,7 @@ export default async function SowPage() {
       {/* FIX (SOW lifecycle pass, B6): only when older SOWs are actually hidden. */}
       {isSoloCapped && stats.total > safeSows.length && (
         <div className="banner banner-info" style={{ marginBottom: 20 }}>
-          <span>Showing the 10 most recent SOWs. <strong>Upgrade to Starter or above</strong> to see the full history.</span>
+          <span>Showing the 10 most recent SOWs. <strong>Upgrade your plan</strong> to see the full history.</span>
           <Link href="/settings?tab=billing">
             <button className="btn btn-primary btn-sm">Upgrade</button>
           </Link>

@@ -4,6 +4,7 @@ import { redirect } from 'next/navigation'
 import { fetchPaged } from '@/lib/utils/paginate'
 import AuditLogClient from '@/components/settings/AuditLogClient'
 import { getWorkspaceTimeZone } from '@/lib/utils/workspace-time'
+import { hasFeature, minPlanNameFor } from '@/lib/billing/entitlements'
 
 export const metadata = { title: 'Audit Log' }
 
@@ -88,6 +89,7 @@ export default async function AuditLogPage() {
     <AuditLogClient
       projects={projectOptions} members={memberOptions} timeZone={timeZone}
       projectsComplete={listState.projectsComplete} membersComplete={listState.membersComplete}
+      canExport={hasFeature(session.planTier, 'auditExport', !!session.lapsed)} exportPlanName={minPlanNameFor('auditExport')}
     />
   )
 }
