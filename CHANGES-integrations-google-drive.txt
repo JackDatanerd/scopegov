@@ -1,0 +1,80 @@
+Integrations round 5 (Oct 27 2026, base 041d357 = main after "Tiers & pricing pass 2"): Google Drive archive.
+
+APPLY ORDER: 1) migration 170  2) do the Google Cloud setup (integrations/google-drive/README.md): ENABLE THE DRIVE API, OAuth consent
+screen with ONLY drive.file + openid + email, a Web-application OAuth client with the exact redirect URI, then PUBLISH the app ("In
+production" — in "Testing" Google expires refresh tokens after 7 days)  3) set GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET in Vercel
+4) deploy  5) test in your own Google account first. No new cron (the every-minute integration-delivery cron does the work).
+
+MIGRATION NUMBER: this was built as 168, but the "Tiers & pricing" commits added 168_ai_usage_monthly_allowance and 169_ai_usage_allowance_bucket,
+and the repo's own tests require unique migration numbers (they fix apply order), so it is 170. 170 touches only integration_* tables and has
+no dependency on 168/169, so the order between them does not matter.
+
+NOTE ON MAIN: since my last archive, main gained the "Tiers & pricing" commit, which already moved lib/integrations/plans.ts onto the
+central entitlements table (google_drive -> the nativeIntegrations feature: Pro, Agency, trial). Drive uses that gate unchanged.
+This archive was built on that commit; only SettingsClient.tsx overlaps (one removed line, far from the billing edits) — verified.
+
+WHAT IT DOES (Pro and above)
+- Settings -> Integrations -> Google Drive: connect, see the account and a link to the folder, choose which document types to archive
+  (signed SOWs / accepted change orders), turn archiving off, "Archive past documents", disconnect / reconnect.
+- Each executed document is saved as ITS ORIGINAL FROZEN PDF in the agency's own Drive:
+      ScopeGov Archive / Acme Ltd / Website Redesign / SOW-Website-Redesign-v1-signed.pdf
+                                                       CO-0003-Second-landing-page-accepted.pdf
+- Design decisions made for you: COPY not link (the agency keeps a durable record that does not depend on ScopeGov; ScopeGov stays the
+  source of truth); scope drive.file ONLY (the app can see only what it created, never the rest of the Drive); frozen PDFs ONLY (a
+  contract with no stored PDF is skipped with the reason and never re-rendered — the codebase deliberately refuses to re-render an
+  executed document because a fresh render can differ from what was signed); invoices NOT archived (rendered on demand, not stored).
+
+HOW
+- Reuses the 165/167 tables: a connection (the encrypted refresh token) and ONE rule per connection (kind 'google_drive'), so queueing,
+  retries, backoff, plan gate, lapsed handling and the cron are shared. delivery.ts gains a Drive branch using the same settle().
+- lib/integrations/drive-archive.ts: resolves the document (must be this workspace's and executed), stops if already archived, reads the
+  frozen PDF, mints an access token, ensures root/client/project folders, finds-or-uploads (resumable) the PDF, records it.
+- Idempotent: migration 170 adds integration_external_refs (unique per connection/type/key). A retry or duplicate event is a no-op; a
+  file or folder created just before a crash is re-found by its Drive-side appProperties marker instead of duplicated.
+- Self-healing: the leaf folder is verified each time (a trashed folder still accepts uploads — invisibly); if it is gone or trashed
+  the folders are rebuilt once. A parent's trashing marks children trashed, so checking the leaf covers the chain.
+- Connect creates the root folder immediately, so the commonest setup mistake (Drive API not enabled) shows on day one ("Drive could
+  not be used"), not when the first contract is signed. The OAuth callback additionally requires the Drive scope to have been left ticked
+  (Google lets people untick it) and a refresh token (without one archiving would stop within the hour).
+- A shared lib/integrations/oauth-state.ts now serves Slack AND Google (purpose mixed into the signature: a Slack state cannot be used
+  for Google). Slack delegates to it with the same signature domain, so in-flight Slack states still verify; all Slack tests pass.
+- Outcome mapping: Drive full -> rule off + reason; revoked grant / 401 / refused -> connection flagged, rules off, "Reconnect";
+  rate limit / 5xx / timeouts -> retry; folder gone -> rebuild; a document that cannot be archived (no frozen PDF, not executed,
+  over 25 MB) -> dead for that delivery ONLY and it does NOT count toward the rule's 10-failures auto-disable (otherwise a backfill
+  over old contracts would switch archiving off).
+- Only Google hosts are ever contacted; the resumable-upload URL Google returns is checked against the allow-list before any bytes go.
+
+TESTS (tests/integrations-drive.test.ts, 80; tests/helpers/fake-drive.ts is an in-memory Drive/OAuth faithful where it matters)
+- Config/state (offline + consent, narrow scopes, Slack/Google state separation), URL allow-list incl. the REAL caller refusing before
+  fetch, error classification, token minting/caching, names.
+- Archiver: byte-for-byte upload, folder tree, no-op repeat, reuse of folders, crash recovery (file and folders), trashed / deleted /
+  trashed-root folders, every refusal without touching Google, every Google failure mapping, 401 refresh-once, token reuse.
+- Worker end to end (incl. exactly-once archive under at-least-once delivery), the no-streak rule, plan gate / skips.
+- Routes: connect, callback (state, person, permission, plan, Cancel, unticked scope, no refresh token, bad code, Drive API disabled,
+  same-account reconnect, different-account), disconnect, rule edit, backfill (bounded, rate-limited, permission-scoped), overview.
+- Mutation-checked: removing the already-archived record, the tenant check, the executed-state check, the trashed-folder check, the
+  crash-heal lookup, the no-streak rule, the OAuth user binding, the scope check, token encryption, the URL allow-list, or widening
+  the scope each make a test fail.
+- Migration 170 verified on real Postgres 16 after 165+166+167 (and re-run): kind CHECK replaced (constraint name confirmed), secret
+  stays mandatory for webhook/zapier, Drive needs a connection, one Drive rule per connection, Slack rules unaffected, ref uniqueness
+  (the idempotency guard), bad ref_type rejected, cascade on disconnect, RLS lockdown, fan-out to a Drive rule.
+
+NOT VERIFIED (cannot be from my sandbox — Google is unreachable)
+1. Any real call to Google. The request shapes (token refresh/exchange, files.list with appProperties, files.create, resumable
+   upload, files.get fields=trashed, revoke) follow Google's documented v3 API but have only run against my fake. FIRST REAL TEST:
+   connect your own Google account, press "Archive past documents" (or sign a test SOW), open the folder link in Settings.
+2. Google's verification outcome for your consent screen. I expect drive.file + openid + email (non-sensitive) to need no security
+   assessment, but only your console's "Verification status" is authoritative; it may still ask for brand/domain verification.
+3. The exact wording of Google's consent checkbox (the UI message quotes it).
+
+NOT BUILT: attaching Drive files to SOWs/change orders (the old placeholder text) — needs Google Picker in the browser and a
+copy-vs-link decision for evidence; archiving invoices; a different Google account per folder; shared drives.
+
+KNOWN LIMITS: access tokens are cached per server instance only (a cold instance mints a new one — one cheap call).
+Concurrent deliveries for the SAME document are serialised by the queue's claim; the Drive-side marker is the backstop.
+
+Apply
+-----
+  tar -xzf ~/Downloads/scopegov-integrations-google-drive.tar.gz --strip-components=1 -C .
+  Run migration 170 in the Supabase SQL editor.
+  git add -A && git commit -m "Integrations: Google Drive archive of executed contracts" && git push

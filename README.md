@@ -195,6 +195,9 @@ INTEGRATIONS_ENCRYPTION_KEY=         ← openssl rand -base64 32 (exactly 32 byt
 SLACK_CLIENT_ID=                     ← from the Slack app you create with integrations/slack/manifest.json (see
 SLACK_CLIENT_SECRET=                   integrations/slack/README.md). Without them the Slack card says it is not set up.
                                        NEXT_PUBLIC_APP_URL must be the exact origin registered as the Slack redirect URL.
+GOOGLE_CLIENT_ID=                    ← an OAuth client (type: Web application) in a Google Cloud project with the Drive API
+GOOGLE_CLIENT_SECRET=                  ENABLED; redirect URI ${NEXT_PUBLIC_APP_URL}/api/integrations/google/callback. Publish the consent screen
+                                       ("In production") or refresh tokens expire after 7 days. See integrations/google-drive/README.md.
 INTEGRATIONS_ENCRYPTION_KEY_PREVIOUS=  ← optional. To rotate: move the current value here, set a new
                                        INTEGRATIONS_ENCRYPTION_KEY, deploy, then re-save/rotate each webhook secret and
                                        only afterwards remove this. Dropping it early makes those secrets undecryptable
@@ -397,6 +400,15 @@ nothing is delivered).
   ("Reconnect"); channel gone / archived / app not invited -> that rule off with the reason; rate limit -> retry with
   Retry-After; malformed message -> dead, rule stays on. Client-written text is escaped so it cannot `@channel`. Messages
   link back to the project tab with "Open in ScopeGov". OAuth `state` is signed, expiring and bound to the starting person.
+- **Google Drive** (Pro+; migration **170**; setup in `integrations/google-drive/README.md`): copies each EXECUTED contract (signed SOW,
+  accepted change order) — the stored, frozen PDF, byte for byte — into the agency's own Drive as
+  `ScopeGov Archive / <Client> / <Project> /`. Scope is `drive.file` only (the app can touch only what it created). The refresh token is
+  stored encrypted; access tokens are minted on demand. A document with no stored PDF is skipped with the reason (never re-rendered). One
+  rule per connection; `integration_external_refs` records each Drive folder/file so retries, duplicate events and repeat backfills never
+  create a second copy, and a file or folder lost in a crash is re-found by its Drive-side marker. Deleted/trashed folders are recreated.
+  Drive full -> the rule turns itself off with the reason; revoked access -> the connection is flagged (Reconnect). "Archive past
+  documents" backfills (200 per type per click, once per 10 min). Documents that cannot be archived never count toward the rule's
+  auto-disable. Invoices are not archived (rendered on demand, not stored).
 - **Zapier:** `app/api/integrations/v1/{me,hooks,hooks/[id],events/[type]/sample}` + the Zapier app in `integrations/zapier`
   (see its README — pushing it needs your Zapier developer account). Hook URLs are pinned to `hooks.zapier.com`; up to 100
   Zap triggers per workspace (customer webhooks: 10, counted separately).

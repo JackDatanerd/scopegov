@@ -7,6 +7,8 @@ import { integrationAllowed, minPlanLabel, INTEGRATION_MIN_PLAN, MAX_SUBSCRIPTIO
 import { integrationCryptoConfigured } from '@/lib/integrations/crypto'
 import { INTEGRATION_EVENT_TYPES } from '@/lib/integrations/events'
 import { slackConfigured } from '@/lib/integrations/slack-config'
+import { googleConfigured, driveFolderUrl } from '@/lib/integrations/google-config'
+import { DRIVE_EVENT_LABELS } from '@/lib/integrations/drive-config'
 
 // Everything the Integrations tab needs in one read: the webhooks (never their secrets), their recent delivery
 // health, the API keys (never the key material), and what this plan allows. Read-only, so a lapsed workspace and a
@@ -18,7 +20,7 @@ export async function GET() {
     const { session } = auth
     const service = createServiceClient() as any
 
-    const [subsRes, keysRes, connRes] = await Promise.all([
+    const [subsRes, keysRes, connRes, driveConnRes] = await Promise.all([
       service.from('integration_subscriptions')
         .select('id, kind, name, target_url, event_types, config, active, consecutive_failures, disabled_reason, last_success_at, last_failure_at, created_at')
         .eq('workspace_id', session.workspaceId).order('created_at', { ascending: true }),
@@ -26,9 +28,21 @@ export async function GET() {
         .select('id, name, key_prefix, created_at, last_used_at, expires_at, revoked_at')
         .eq('workspace_id', session.workspaceId).is('revoked_at', null).order('created_at', { ascending: true }),
       service.from('integration_connections').select('status, display_name, config, last_error, created_at').eq('workspace_id', session.workspaceId).eq('provider', 'slack').maybeSingle(),
+      service.from('integration_connections').select('id, status, display_name, config, last_error, created_at').eq('workspace_id', session.workspaceId).eq('provider', 'google_drive').maybeSingle(),
     ])
-    if (subsRes.error || keysRes.error || connRes.error) throw new Error(subsRes.error?.message || keysRes.error?.message || connRes.error?.message)
+    if (subsRes.error || keysRes.error || connRes.error || driveConnRes.error) throw new Error(subsRes.error?.message || keysRes.error?.message || connRes.error?.message || driveConnRes.error?.message)
     const slackConn = connRes.data
+    const driveConn = driveConnRes.data
+    let driveRoot: string | null = null, driveArchived = 0
+    if (driveConn) {
+      const [rootRes, countRes] = await Promise.all([
+        service.from('integration_external_refs').select('remote_id').eq('connection_id', driveConn.id).eq('ref_type', 'folder').eq('local_key', `root:${session.workspaceId}`).maybeSingle(),
+        service.from('integration_external_refs').select('id', { count: 'exact', head: true }).eq('connection_id', driveConn.id).eq('ref_type', 'file'),
+      ])
+      driveRoot = rootRes.data?.remote_id || null
+      driveArchived = countRes.count ?? 0
+    }
+    const driveRule = (driveConn ? subsRes.data || [] : []).find((s: any) => s.kind === 'google_drive')
 
     const subs: any[] = subsRes.data || []
     let recent: Record<string, { pending: number; succeeded: number; dead: number; last?: { status: string; code: number | null; error: string | null; at: string } }> = {}
@@ -55,8 +69,16 @@ export async function GET() {
       limits: { subscriptions: MAX_SUBSCRIPTIONS_PER_WORKSPACE, apiKeys: MAX_API_KEYS_PER_WORKSPACE },
       eventTypes: INTEGRATION_EVENT_TYPES,
       planGates: INTEGRATION_MIN_PLAN,
-      subscriptions: subs.filter(s => s.kind !== 'slack').map(({ config: _c, ...s }) => ({ ...s, health: recent[s.id] || { pending: 0, succeeded: 0, dead: 0 } })),
+      subscriptions: subs.filter(s => s.kind !== 'slack' && s.kind !== 'google_drive').map(({ config: _c, ...s }) => ({ ...s, health: recent[s.id] || { pending: 0, succeeded: 0, dead: 0 } })),
       apiKeys: keysRes.data || [],
+      drive: {
+        configured: googleConfigured(),
+        allowed: integrationAllowed('google_drive', session.planTier, !!session.lapsed),
+        eventLabels: DRIVE_EVENT_LABELS,
+        archived: driveArchived,
+        connection: driveConn ? { account_email: driveConn.config?.account_email || driveConn.display_name || null, status: driveConn.status, last_error: driveConn.last_error, connected_at: driveConn.created_at, folder_url: driveRoot ? driveFolderUrl(driveRoot) : null } : null,
+        rule: driveRule ? { event_types: driveRule.event_types, active: driveRule.active, disabled_reason: driveRule.disabled_reason, last_success_at: driveRule.last_success_at, health: recent[driveRule.id] || { pending: 0, succeeded: 0, dead: 0 } } : null,
+      },
       slack: {
         configured: slackConfigured(),
         allowed: integrationAllowed('slack', session.planTier, !!session.lapsed),

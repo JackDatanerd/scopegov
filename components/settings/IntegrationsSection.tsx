@@ -13,6 +13,20 @@ interface Sub { id: string; kind: 'webhook' | 'zapier' | 'slack'; name: string; 
 interface Key { id: string; name: string; key_prefix: string; created_at: string; last_used_at: string | null }
 interface SlackRule { id: string; channel: string; is_private: boolean; event_types: string[]; active: boolean; disabled_reason: string | null; last_success_at: string | null; health: Health }
 interface SlackInfo { configured: boolean; allowed: boolean; connection: { team_name: string | null; status: string; last_error: string | null; connected_at: string } | null; rules: SlackRule[] }
+interface DriveInfo {
+  configured: boolean; allowed: boolean; eventLabels: Record<string, string>; archived: number
+  connection: { account_email: string | null; status: string; last_error: string | null; connected_at: string; folder_url: string | null } | null
+  rule: { event_types: string[]; active: boolean; disabled_reason: string | null; last_success_at: string | null; health: Health } | null
+}
+const DRIVE_RESULT: Record<string, { text: string; bad?: boolean }> = {
+  connected: { text: 'Google Drive is connected. Executed documents will now be copied to the “ScopeGov Archive” folder.' },
+  denied: { text: 'Google Drive connection cancelled.', bad: true },
+  expired: { text: 'That Google link expired. Please try connecting again.', bad: true },
+  forbidden: { text: 'Your account or plan cannot connect Google Drive.', bad: true },
+  scope: { text: 'Google Drive was not connected because the Drive permission was unticked. Connect again and leave “See, edit, create and delete only the specific Google Drive files you use with this app” ticked.', bad: true },
+  api: { text: 'Google accepted the sign-in but Drive could not be used. Ask the server operator to check that the Google Drive API is enabled for the Google Cloud project.', bad: true },
+  failed: { text: 'Google Drive could not be connected. Please try again.', bad: true },
+}
 interface Channel { id: string; name: string; is_private: boolean; is_member: boolean }
 const SLACK_RESULT: Record<string, { text: string; bad?: boolean }> = {
   connected: { text: 'Slack is connected. Choose a channel below to start receiving events.' },
@@ -23,7 +37,7 @@ const SLACK_RESULT: Record<string, { text: string; bad?: boolean }> = {
 }
 interface Overview {
   encryptionConfigured: boolean; allowed: boolean; lapsed: boolean; minPlan: string; nativeMinPlan: string
-  limits: { subscriptions: number; apiKeys: number }; eventTypes: string[]; subscriptions: Sub[]; apiKeys: Key[]; slack: SlackInfo
+  limits: { subscriptions: number; apiKeys: number }; eventTypes: string[]; subscriptions: Sub[]; apiKeys: Key[]; slack: SlackInfo; drive: DriveInfo
 }
 
 const when = (iso: string | null) => (iso ? new Date(iso).toLocaleString() : 'never')
@@ -42,13 +56,15 @@ export default function IntegrationsSection() {
   const [slackForm, setSlackForm] = useState<{ channel: string; events: string[] } | null>(null)
   const [channels, setChannels] = useState<Channel[] | null>(null)
   const [slackResult, setSlackResult] = useState<string | null>(null)
+  const [driveResult, setDriveResult] = useState<string | null>(null)
 
   // Slack sends the browser back to ?tab=integrations&slack=<result>; show it once and tidy the address bar.
   useEffect(() => {
     const p = new URLSearchParams(window.location.search)
-    const r = p.get('slack')
-    if (r) {
-      setSlackResult(r); p.delete('slack')
+    const r = p.get('slack'), d = p.get('drive')
+    if (r || d) {
+      if (r) { setSlackResult(r); p.delete('slack') }
+      if (d) { setDriveResult(d); p.delete('drive') }
       window.history.replaceState(null, '', `${window.location.pathname}${p.toString() ? '?' + p : ''}`)
     }
   }, [])
@@ -87,6 +103,19 @@ export default function IntegrationsSection() {
   async function connectSlack() {
     const json = await call('/api/workspace/integrations/slack/connect', 'POST')
     if (json?.url) window.location.href = json.url
+  }
+  async function connectDrive() {
+    const json = await call('/api/workspace/integrations/google-drive/connect', 'POST')
+    if (json?.url) window.location.href = json.url
+  }
+  async function backfillDrive() {
+    const json = await call('/api/workspace/integrations/google-drive/backfill', 'POST')
+    if (json) {
+      setNote(json.queued
+        ? `Queued ${json.queued} earlier document${json.queued === 1 ? '' : 's'} for Drive${json.alreadyArchived ? ` (${json.alreadyArchived} already there)` : ''}${json.capped ? ' — the most recent 200 of each type; run it again later for older ones' : ''}. They arrive over the next few minutes.`
+        : json.alreadyArchived ? 'Everything with a stored executed PDF is already in Drive.' : 'No earlier executed documents with a stored PDF were found.')
+      load()
+    }
   }
   async function openSlackForm() {
     setSlackForm({ channel: '', events: [] })
@@ -142,6 +171,9 @@ export default function IntegrationsSection() {
         </div>
       )}
 
+      {driveResult && DRIVE_RESULT[driveResult] && (
+        <p style={{ ...subtle, color: DRIVE_RESULT[driveResult].bad ? 'var(--red)' : 'var(--green, #1A5C3A)', marginBottom: 12 }}>{DRIVE_RESULT[driveResult].text}</p>
+      )}
       {slackResult && SLACK_RESULT[slackResult] && (
         <p style={{ ...subtle, color: SLACK_RESULT[slackResult].bad ? 'var(--red)' : 'var(--green, #1A5C3A)', marginBottom: 12 }}>{SLACK_RESULT[slackResult].text}</p>
       )}
@@ -206,6 +238,63 @@ export default function IntegrationsSection() {
               </form>
             ) : (
               <button type="button" className="btn btn-secondary btn-sm" style={{ marginTop: 12 }} disabled={busy || !canWrite || data.slack.connection.status !== 'active' || data.slack.rules.length >= 10} onClick={openSlackForm}>Add channel</button>
+            )}
+          </>
+        )}
+      </div>
+
+      <div className="settings-section" style={{ marginBottom: 16 }}>
+        <div className="settings-section-title">Google Drive</div>
+        {!data.drive.allowed ? (
+          <div style={subtle}>{data.lapsed ? 'Reactivate your subscription to use Google Drive.' : `Google Drive needs the ${data.nativeMinPlan} plan or above.`}</div>
+        ) : !data.drive.configured ? (
+          <div style={subtle}>Google Drive is not set up on this server yet. The operator needs GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET (see integrations/google-drive/README.md).</div>
+        ) : !data.drive.connection ? (
+          <>
+            <div style={{ ...subtle, marginBottom: 10 }}>
+              Keep your own copy of every signed SOW and accepted change order: each is saved as its original signed PDF in your Google Drive, in
+              <strong> ScopeGov Archive / Client / Project</strong>. ScopeGov can only see the files and folders it creates there, nothing else in your Drive.
+            </div>
+            <button type="button" className="btn btn-primary btn-sm" disabled={busy || !data.encryptionConfigured} onClick={connectDrive}>Connect Google Drive</button>
+          </>
+        ) : (
+          <>
+            <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 6 }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 600 }}>
+                  Connected{data.drive.connection.account_email ? ` as ${data.drive.connection.account_email}` : ''}
+                  {data.drive.connection.status !== 'active' && <span style={{ ...subtle, color: 'var(--red)' }}> · needs reconnecting</span>}
+                </div>
+                <div style={subtle}>
+                  {data.drive.archived} document{data.drive.archived === 1 ? '' : 's'} archived
+                  {data.drive.connection.folder_url && <> · <a href={data.drive.connection.folder_url} target="_blank" rel="noopener noreferrer">Open the folder</a></>}
+                </div>
+                {data.drive.connection.status !== 'active' && <div style={{ ...subtle, color: 'var(--red)' }}>{data.drive.connection.last_error || 'The connection stopped working.'} Reconnect to switch archiving back on.</div>}
+              </div>
+              {data.drive.connection.status !== 'active' && <button type="button" className="btn btn-primary btn-sm" disabled={busy} onClick={connectDrive}>Reconnect</button>}
+              <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={async () => { if (await dialogs.confirm('Disconnect Google Drive? Archiving stops and ScopeGov’s access is revoked. The PDFs already in your Drive stay where they are.')) act('/api/workspace/integrations/google-drive', 'DELETE', undefined, 'Google Drive disconnected.') }}>Disconnect</button>
+            </div>
+            {data.drive.rule && (
+              <div style={{ marginTop: 8 }}>
+                <div className="flbl" style={{ marginBottom: 6 }}>Archive</div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 16px', marginBottom: 8 }}>
+                  {Object.entries(data.drive.eventLabels).map(([ev, label]) => (
+                    <label key={ev} style={{ fontSize: 12 }}>
+                      <input type="checkbox" disabled={busy || !canWrite} checked={data.drive.rule!.event_types.includes(ev)}
+                        onChange={e => act('/api/workspace/integrations/google-drive', 'PATCH', { events: e.target.checked ? [...data.drive.rule!.event_types, ev] : data.drive.rule!.event_types.filter(x => x !== ev) }, 'Saved.')} /> {label}
+                    </label>
+                  ))}
+                </div>
+                <div style={subtle}>
+                  {data.drive.rule.active ? 'On' : <span style={{ color: 'var(--red)' }}>Off</span>} · last archived {when(data.drive.rule.last_success_at)} · {data.drive.rule.health.pending} waiting, {data.drive.rule.health.dead} skipped or failed
+                </div>
+                {data.drive.rule.disabled_reason && <div style={{ ...subtle, color: 'var(--red)' }}>{data.drive.rule.disabled_reason}</div>}
+                {data.drive.rule.health.last?.error && data.drive.rule.health.last.status !== 'succeeded' && <div style={{ ...subtle, color: 'var(--red)' }}>Last problem: {data.drive.rule.health.last.error}</div>}
+                <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                  <button type="button" className="btn btn-secondary btn-sm" disabled={busy || !canWrite || data.drive.connection.status !== 'active' || !data.drive.rule.active} onClick={backfillDrive}>Archive past documents</button>
+                  <button type="button" className="btn btn-ghost btn-sm" disabled={busy || !canWrite} onClick={() => act('/api/workspace/integrations/google-drive', 'PATCH', { active: !data.drive.rule!.active }, data.drive.rule!.active ? 'Archiving turned off.' : 'Archiving turned on.')}>{data.drive.rule.active ? 'Turn off' : 'Turn on'}</button>
+                </div>
+              </div>
             )}
           </>
         )}
@@ -304,7 +393,7 @@ export default function IntegrationsSection() {
         </form>
       </div>
 
-      <div style={{ ...subtle, marginTop: 10 }}>HubSpot and Google Drive connections will need the {data.nativeMinPlan} plan or above.</div>
+      <div style={{ ...subtle, marginTop: 10 }}>HubSpot connections will need the {data.nativeMinPlan} plan or above.</div>
     </div>
   )
 }

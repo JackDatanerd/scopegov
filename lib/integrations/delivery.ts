@@ -18,6 +18,8 @@ import { integrationAllowed, type IntegrationKind } from './plans'
 import { loadDocuments, withDocument } from './enrich'
 import { classifySlack, slackCall, type SlackCaller } from './slack'
 import { buildSlackMessage } from './slack-message'
+import { archiveExecutedDocument, type ArchiveInput, type ArchiveOutcome } from './drive-archive'
+import { googleCall } from './google'
 
 export const MAX_ATTEMPTS = 8
 export const REQUEST_TIMEOUT_MS = 8_000
@@ -76,10 +78,11 @@ export interface ProcessResult { claimed: number; succeeded: number; retried: nu
 
 export async function processDeliveries(
   service: any,
-  opts: { limit?: number; now?: () => number; send?: Sender; slack?: SlackCaller } = {},
+  opts: { limit?: number; now?: () => number; send?: Sender; slack?: SlackCaller; drive?: (i: ArchiveInput) => Promise<ArchiveOutcome> } = {},
 ): Promise<ProcessResult> {
   const send: Sender = opts.send || ((u, r) => pinnedPost(u, r))
   const slack: SlackCaller = opts.slack || slackCall
+  const drive = opts.drive || ((i: ArchiveInput) => archiveExecutedDocument(i))
   const nowMs = opts.now || Date.now
   const result: ProcessResult = { claimed: 0, succeeded: 0, retried: 0, dead: 0, skipped: 0 }
 
@@ -108,7 +111,7 @@ export async function processDeliveries(
   // Document details (number, status, amounts, dates) for the document each event refers to — see enrich.ts.
   const documents = await loadDocuments(service, eventsRes.data || [], pid => (pid ? projects.get(pid)?.currency ?? null : null))
   // Slack rules post with their connection's token: load those connections (one query) alongside.
-  const connectionIds = Array.from(new Set((subsRes.data || []).filter((s: any) => s.kind === 'slack' && s.connection_id).map((s: any) => s.connection_id)))
+  const connectionIds = Array.from(new Set((subsRes.data || []).filter((s: any) => (s.kind === 'slack' || s.kind === 'google_drive') && s.connection_id).map((s: any) => s.connection_id)))
   const connections = new Map<string, any>()
   if (connectionIds.length) {
     const { data: crows, error: cerr } = await service.from('integration_connections').select('id, workspace_id, status, credentials_enc').in('id', connectionIds)
@@ -135,13 +138,14 @@ export async function processDeliveries(
     if (!event) return skip(row, 'event no longer exists')
     if (!ws || ws.deleted_at) return skip(row, 'workspace is deleted or suspended')
     const tier = effectivePlanTier(ws.plan_tier, ws.trial_ends_at, nowMs())
-    const kind: IntegrationKind = sub.kind === 'zapier' ? 'zapier' : sub.kind === 'slack' ? 'slack' : 'webhook'
+    const kind: IntegrationKind = sub.kind === 'zapier' ? 'zapier' : sub.kind === 'slack' ? 'slack' : sub.kind === 'google_drive' ? 'google_drive' : 'webhook'
     if (!integrationAllowed(kind, tier, isWorkspaceLapsed(ws.plan_tier, ws.trial_ends_at, ws.lapsed_at, nowMs())))
       return skip(row, 'the workspace plan does not include this integration')
 
     const proj = event.project_id ? projects.get(event.project_id) : null
     const envelope = buildEnvelope(event, { project: proj, client: proj?.clients, data: withDocument(event, documents) })
     if (sub.kind === 'slack') return handleSlack(row, sub, envelope)
+    if (sub.kind === 'google_drive') return handleDrive(row, sub, event, proj)
 
     let secret: string
     try { secret = decryptSecret(sub.secret_enc, `${sub.workspace_id}:${sub.id}`) }
@@ -180,7 +184,7 @@ export async function processDeliveries(
    * Record what happened to one delivery and keep the subscription's health in step. Shared by every transport so a
    * webhook, a Zap and a Slack rule retry, die and switch off by exactly the same rules.
    */
-  const settle = async (a: { row: any; sub: any; outcome: Outcome; status: number; errorText: string | null; retryAfter: number | null; disableReason?: string; connectionFault?: boolean }) => {
+  const settle = async (a: { row: any; sub: any; outcome: Outcome; status: number; errorText: string | null; retryAfter: number | null; disableReason?: string; connectionFault?: boolean; noStreak?: boolean }) => {
     const { row, sub, outcome, status, errorText, retryAfter } = a
     const at = new Date(nowMs()).toISOString()
 
@@ -196,6 +200,9 @@ export async function processDeliveries(
     if (outcome === 'gone' || outcome === 'permanent' || row.attempts >= MAX_ATTEMPTS) {
       result.dead++
       await finish(row, { status: 'dead', last_status: status || null, last_error: msg, claimed_at: null })
+      // A fault in ONE document (e.g. no frozen PDF for an old contract) says nothing about the destination's health, so it
+      // must not count toward switching the whole rule off.
+      if (a.noStreak && outcome === 'permanent') return
       const failures = (sub.consecutive_failures || 0) + 1
       const disable = outcome === 'gone' || failures >= AUTO_DISABLE_AFTER_DEAD
       await service.from('integration_subscriptions').update({
@@ -216,6 +223,27 @@ export async function processDeliveries(
       next_attempt_at: new Date(nowMs() + retryDelayMs(row.attempts, retryAfter)).toISOString(),
     })
     await service.from('integration_subscriptions').update({ last_failure_at: at }).eq('id', sub.id)
+  }
+
+  const handleDrive = async (row: any, sub: any, event: any, proj: any) => {
+    const conn = connections.get(sub.connection_id)
+    if (!conn) return skip(row, 'Google Drive is not connected')
+    if (conn.status !== 'active') return skip(row, 'Google Drive needs to be reconnected')
+    let out: ArchiveOutcome
+    try {
+      out = await drive({ service, connection: conn, event, project: proj, call: googleCall })
+    } catch (e: any) {
+      return settle({ row, sub, outcome: 'retry', status: 0, errorText: `Drive archive failed: ${e?.message || e}`, retryAfter: null })
+    }
+    const v = out.verdict
+    switch (v.outcome) {
+      case 'ok': return settle({ row, sub, outcome: 'ok', status: 200, errorText: null, retryAfter: null })
+      case 'retry': return settle({ row, sub, outcome: 'retry', status: 0, errorText: v.error, retryAfter: null })
+      case 'permanent': return settle({ row, sub, outcome: 'permanent', status: 0, errorText: v.error, retryAfter: null, noStreak: true })
+      case 'rule_off': return settle({ row, sub, outcome: 'gone', status: 0, errorText: v.error, retryAfter: null, disableReason: v.reason })
+      case 'connection_off': return settle({ row, sub, outcome: 'gone', status: 0, errorText: v.error, retryAfter: null, disableReason: v.reason, connectionFault: true })
+      case 'folder_gone': return settle({ row, sub, outcome: 'retry', status: 0, errorText: v.error, retryAfter: null })
+    }
   }
 
   const handleSlack = async (row: any, sub: any, envelope: Record<string, unknown>) => {

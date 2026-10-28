@@ -10,13 +10,13 @@
 // bound to the workspace AND the user who started the flow. The callback re-checks all three against the live session, so a
 // link started by one person cannot be completed by another, replayed later, or pointed at a different workspace.
 
-import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
+import { signOAuthState, verifyOAuthState, STATE_TTL_MS as TTL, type OAuthState, type StateCheck as Check } from './oauth-state'
 
 export const SLACK_API = 'https://slack.com/api'
 export const SLACK_POST_URL = `${SLACK_API}/chat.postMessage`
 /** chat:write(.public) post; channels/groups:read list the channels to pick from. Nothing that reads message history. */
 export const SLACK_SCOPES = ['chat:write', 'chat:write.public', 'channels:read', 'groups:read'] as const
-export const STATE_TTL_MS = 10 * 60 * 1000
+export const STATE_TTL_MS = TTL
 
 export function slackConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
   return !!(env.SLACK_CLIENT_ID && env.SLACK_CLIENT_SECRET)
@@ -34,32 +34,8 @@ export function slackAuthorizeUrl(state: string, env: NodeJS.ProcessEnv = proces
   return `https://slack.com/oauth/v2/authorize?${q}`
 }
 
-function stateKey(env: NodeJS.ProcessEnv): Buffer {
-  const raw = env.INTEGRATIONS_ENCRYPTION_KEY
-  const key = raw ? Buffer.from(raw.trim(), 'base64') : Buffer.alloc(0)
-  if (key.length !== 32) throw new Error('INTEGRATIONS_ENCRYPTION_KEY is not configured')
-  return key
-}
-const mac = (payload: string, env: NodeJS.ProcessEnv) => createHmac('sha256', stateKey(env)).update('slack-oauth-state.v1:' + payload).digest('base64url')
+export type SlackState = OAuthState
+export type StateCheck = Check
 
-export interface SlackState { ws: string; uid: string }
-
-export function signState(s: SlackState, nowMs: number = Date.now(), env: NodeJS.ProcessEnv = process.env): string {
-  const payload = Buffer.from(JSON.stringify({ ws: s.ws, uid: s.uid, exp: nowMs + STATE_TTL_MS, n: randomBytes(12).toString('base64url') })).toString('base64url')
-  return `${payload}.${mac(payload, env)}`
-}
-
-export type StateCheck = { ok: true; state: SlackState } | { ok: false; reason: 'malformed' | 'bad_signature' | 'expired' }
-
-export function verifyState(token: string | null | undefined, nowMs: number = Date.now(), env: NodeJS.ProcessEnv = process.env): StateCheck {
-  const [payload, sig, extra] = String(token || '').split('.')
-  if (!payload || !sig || extra !== undefined) return { ok: false, reason: 'malformed' }
-  const want = Buffer.from(mac(payload, env)), got = Buffer.from(sig)
-  if (got.length !== want.length || !timingSafeEqual(got, want)) return { ok: false, reason: 'bad_signature' }
-  try {
-    const p = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'))
-    if (typeof p.ws !== 'string' || typeof p.uid !== 'string' || typeof p.exp !== 'number') return { ok: false, reason: 'malformed' }
-    if (p.exp < nowMs) return { ok: false, reason: 'expired' }
-    return { ok: true, state: { ws: p.ws, uid: p.uid } }
-  } catch { return { ok: false, reason: 'malformed' } }
-}
+export const signState = (s: SlackState, nowMs: number = Date.now(), env: NodeJS.ProcessEnv = process.env): string => signOAuthState('slack', s, nowMs, env)
+export const verifyState = (token: string | null | undefined, nowMs: number = Date.now(), env: NodeJS.ProcessEnv = process.env): StateCheck => verifyOAuthState('slack', token, nowMs, env)
