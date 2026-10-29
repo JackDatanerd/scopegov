@@ -32,6 +32,11 @@ import { reviewSowBeforeSending } from './articles/review-sow-before-sending'
 import { whatYourClientSeesSow } from './articles/what-your-client-sees-sow'
 import { clientChangesDeclineOrSilenceSow } from './articles/client-changes-decline-or-silence-sow'
 import { withdrawReviseResendSow } from './articles/withdraw-revise-resend-sow'
+import { createAnInvoice } from './articles/create-an-invoice'
+import { paymentsAndOverContract } from './articles/payments-and-over-contract'
+import { taxInclusiveOrExclusive } from './articles/tax-inclusive-or-exclusive'
+import { invoiceStatuses } from './articles/invoice-statuses'
+import { exportInvoices } from './articles/export-invoices'
 import type { HelpArticle, HelpCategory } from './types'
 
 export const ARTICLES: HelpArticle[] = [
@@ -64,6 +69,11 @@ export const ARTICLES: HelpArticle[] = [
   guardianGoodBadInputs,
   flagToChangeOrder,
   permissionsDecoder,
+  createAnInvoice,
+  paymentsAndOverContract,
+  taxInclusiveOrExclusive,
+  invoiceStatuses,
+  exportInvoices,
 ]
 
 export function getArticle(slug: string): HelpArticle | null {

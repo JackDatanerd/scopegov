@@ -5,6 +5,7 @@
 import type { Permission } from '@/lib/supabase/types'
 
 const LABELS: Partial<Record<Permission, string>> = {
+  SEND_INVOICES: 'Send invoices',
   CREATE_PROJECTS: 'Create projects',
   EDIT_SOW: 'Edit SOWs',
   SEND_SOW: 'Send SOWs',

@@ -1,0 +1,14 @@
+Help centre: "Invoicing" category (5 articles). Base: 4531a9f. Content only, no product behaviour changed.
+
+NEW (lib/help/articles/)
+- create-an-invoice.ts              Creating an invoice from a milestone, the SOW or a change order
+- payments-and-over-contract.ts     Recording partial payments, the payment ledger and "over contract" warnings
+- tax-inclusive-or-exclusive.ts     Tax-inclusive or tax-exclusive: how to set it and what the client sees
+- invoice-statuses.ts               Overdue, disputed and paid: what each invoice status means
+- export-invoices.ts                Exporting your invoices to a spreadsheet
+
+CHANGED
+- lib/help/index.ts: 5 imports + 5 ARTICLES entries. Other sessions edit this file often; if it moved since 4531a9f, add those lines by hand.
+- lib/help/permission-labels.ts: SEND_INVOICES / VIEW_FINANCIALS labels (only added if absent). Same merge note.
+
+VERIFIED: every **bold** UI label grepped against the code (remaining misses are apostrophe escaping and a worked example); tsc clean; help tests 213/213.
