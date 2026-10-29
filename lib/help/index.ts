@@ -45,6 +45,10 @@ import { defaultRoles } from './articles/default-roles'
 import { customRolesAndMfa } from './articles/custom-roles-and-mfa'
 import { perProjectAccess } from './articles/per-project-access'
 import { removeMemberAndReassign } from './articles/remove-member-and-reassign'
+import { planLimits } from './articles/plan-limits'
+import { changeOrCancelPlan } from './articles/change-or-cancel-plan'
+import { readOnlyWorkspace } from './articles/read-only-workspace'
+import { exportBeforeYouLeave } from './articles/export-before-you-leave'
 import type { HelpArticle, HelpCategory } from './types'
 
 export const ARTICLES: HelpArticle[] = [
@@ -90,6 +94,10 @@ export const ARTICLES: HelpArticle[] = [
   customRolesAndMfa,
   perProjectAccess,
   removeMemberAndReassign,
+  planLimits,
+  changeOrCancelPlan,
+  readOnlyWorkspace,
+  exportBeforeYouLeave,
 ]
 
 export function getArticle(slug: string): HelpArticle | null {

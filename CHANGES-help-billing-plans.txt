@@ -1,0 +1,10 @@
+Help articles: Billing, plans and limits (category: billing-plans). Base: 134469d. Content only; no product code touched.
+
+NEW   lib/help/articles/plan-limits.ts           (what seats, active projects and AI drafts count; messages at each limit)
+NEW   lib/help/articles/change-or-cancel-plan.ts (switch plan, update card, cancel, resume, failed payment and the 5-day grace)
+NEW   lib/help/articles/read-only-workspace.ts   (why it happens, what still works, what stops, how to restore)
+NEW   lib/help/articles/export-before-you-leave.ts (the exports that exist, what cancelling vs deleting does; no single export-all exists)
+EDIT  lib/help/index.ts  (+4 imports, +4 registry entries; if this file changed since 134469d, add those lines by hand instead of overwriting)
+
+All numbers, labels and messages traced to the code; checked 2026-10-29.
+VERIFIED: tsc clean; full vitest suite passing.
