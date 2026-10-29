@@ -8,6 +8,9 @@ const LABELS: Partial<Record<Permission, string>> = {
   CREATE_PROJECTS: 'Create projects',
   EDIT_SOW: 'Edit SOWs',
   SEND_SOW: 'Send SOWs',
+  INVITE_MEMBERS: 'Invite members',
+  MANAGE_BILLING: 'Manage billing',
+  MANAGE_WORKSPACE_SETTINGS: 'Manage workspace settings',
 }
 
 export function helpPermissionLabel(p: Permission): string {

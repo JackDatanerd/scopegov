@@ -4,10 +4,18 @@
 
 import { HELP_CATEGORIES } from './categories'
 import { firstProject } from './articles/first-project'
+import { pmToolFit } from './articles/pm-tool-fit'
+import { workspaceSetup } from './articles/workspace-setup'
+import { inviteTeamAndRoles } from './articles/invite-team-and-roles'
+import { trialAndSubscribing } from './articles/trial-and-subscribing'
 import type { HelpArticle, HelpCategory } from './types'
 
 export const ARTICLES: HelpArticle[] = [
   firstProject,
+  pmToolFit,
+  workspaceSetup,
+  inviteTeamAndRoles,
+  trialAndSubscribing,
 ]
 
 export function getArticle(slug: string): HelpArticle | null {

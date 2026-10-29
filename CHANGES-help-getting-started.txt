@@ -1,0 +1,14 @@
+Help centre: remaining "Getting started" articles. Base: 410e237. Content only, no product behaviour changed.
+
+NEW (lib/help/articles/)
+- pm-tool-fit.ts              "How ScopeGov fits beside your project-management tool"  (/help/beside-your-pm-tool)
+- workspace-setup.ts          "Setting up your workspace: branding, numbering, defaults and currency"
+- invite-team-and-roles.ts    "Inviting your team and picking roles"  (/help/invite-team-and-roles)
+- trial-and-subscribing.ts    "Understanding your trial: what you get, what happens on day 14, how to subscribe"
+
+CHANGED
+- lib/help/index.ts: the four articles registered.
+- lib/help/permission-labels.ts: labels for INVITE_MEMBERS, MANAGE_BILLING, MANAGE_WORKSPACE_SETTINGS.
+
+VERIFIED: every **bold** UI label was grepped against the code (only "Project Coordinator" is DB-seeded, migration 133).
+Plan numbers come from lib/billing/entitlements.ts. tsc --noEmit clean; tests/help-articles + help-render 39/39.
