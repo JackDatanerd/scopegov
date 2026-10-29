@@ -2671,15 +2671,14 @@ function IntegrationsTab({ session, permissions }: { session: SessionUser; permi
   return (
     <div>
       <h2 style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 22, fontWeight: 400, marginBottom: 20 }}>Integrations</h2>
-      {/* Webhooks and API keys are live (migration 165); the native connectors below are still to come. The section
-          itself explains the plan / server-setup state, so it renders for everyone who can open this tab. */}
+      {/* Webhooks, API keys, Slack, Google Drive and HubSpot are all live in IntegrationsSection (which explains the plan /
+          server-setup state itself); the list below only reports the Zapier app's marketplace listing status. */}
       {permissions.manageWorkspace
         ? <IntegrationsSection />
         : <p style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 20 }}>Ask a workspace admin to manage webhooks and API keys.</p>}
       <div className="settings-section">
         {[
           { name: 'Zapier',       icon: 'ti-bolt',               desc: 'Connect ScopeGov to 5,000+ apps via Zapier', status: 'App listing pending' },
-          { name: 'HubSpot',      icon: 'ti-circle-dashed',      desc: 'Sync clients and project status with HubSpot CRM' },
         ].map(int => (
           <div key={int.name} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '14px 0', borderBottom: '1px solid var(--surface-2)' }}>
             <div style={{ width: 36, height: 36, background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>

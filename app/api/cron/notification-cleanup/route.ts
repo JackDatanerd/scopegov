@@ -93,6 +93,12 @@ export async function POST(request: NextRequest) {
       run.result.integrationEventsPurged = r.deleted
       if (r.truncated) remaining.push('integration_events')
     })
+    // CRM sync note records only have to outlive that one event's retries (hours). Companies, contacts and deals are kept for good.
+    await run.step('prune hubspot note refs', async () => {
+      const r = await pruneInBatches(service, 'integration_external_refs', q => q.eq('ref_type', 'note').lt('created_at', iso(INTEGRATION_EVENT_DAYS)))
+      run.result.hubspotNoteRefsPurged = r.deleted
+      if (r.truncated) remaining.push('integration_external_refs')
+    })
     await run.step('downsample snapshot history', async () => {
       const { data, error } = await service.rpc('prune_snapshot_history', { p_keep_daily_days: SNAPSHOT_DAILY_KEEP_DAYS })
       if (error) throw new Error(error.message)

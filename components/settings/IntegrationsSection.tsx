@@ -27,6 +27,20 @@ const DRIVE_RESULT: Record<string, { text: string; bad?: boolean }> = {
   api: { text: 'Google accepted the sign-in but Drive could not be used. Ask the server operator to check that the Google Drive API is enabled for the Google Cloud project.', bad: true },
   failed: { text: 'Google Drive could not be connected. Please try again.', bad: true },
 }
+interface HubspotInfo {
+  configured: boolean; allowed: boolean; eventLabels: Record<string, string>; deals: number
+  connection: { portal: string | null; user_email: string | null; status: string; last_error: string | null; connected_at: string; open_url: string | null } | null
+  rule: { event_types: string[]; active: boolean; disabled_reason: string | null; last_success_at: string | null; pipeline_id: string | null; include_amounts: boolean; health: Health } | null
+}
+const HUBSPOT_RESULT: Record<string, { text: string; bad?: boolean }> = {
+  connected: { text: 'HubSpot is connected. Signed SOWs will now create companies, contacts and Closed-won deals.' },
+  denied: { text: 'HubSpot connection cancelled.', bad: true },
+  expired: { text: 'That HubSpot link expired. Please try connecting again.', bad: true },
+  forbidden: { text: 'Your account or plan cannot connect HubSpot (it also needs permission to view client data).', bad: true },
+  scope: { text: 'HubSpot was not connected because not every requested permission was granted. Connect again and accept them all.', bad: true },
+  api: { text: 'HubSpot accepted the sign-in but its deals could not be read. Check that your HubSpot account has Deals.', bad: true },
+  failed: { text: 'HubSpot could not be connected. Please try again.', bad: true },
+}
 interface Channel { id: string; name: string; is_private: boolean; is_member: boolean }
 const SLACK_RESULT: Record<string, { text: string; bad?: boolean }> = {
   connected: { text: 'Slack is connected. Choose a channel below to start receiving events.' },
@@ -37,7 +51,7 @@ const SLACK_RESULT: Record<string, { text: string; bad?: boolean }> = {
 }
 interface Overview {
   encryptionConfigured: boolean; allowed: boolean; lapsed: boolean; minPlan: string; nativeMinPlan: string
-  limits: { subscriptions: number; apiKeys: number }; eventTypes: string[]; subscriptions: Sub[]; apiKeys: Key[]; slack: SlackInfo; drive: DriveInfo
+  limits: { subscriptions: number; apiKeys: number }; eventTypes: string[]; subscriptions: Sub[]; apiKeys: Key[]; slack: SlackInfo; drive: DriveInfo; hubspot: HubspotInfo
 }
 
 const when = (iso: string | null) => (iso ? new Date(iso).toLocaleString() : 'never')
@@ -57,14 +71,17 @@ export default function IntegrationsSection() {
   const [channels, setChannels] = useState<Channel[] | null>(null)
   const [slackResult, setSlackResult] = useState<string | null>(null)
   const [driveResult, setDriveResult] = useState<string | null>(null)
+  const [hubspotResult, setHubspotResult] = useState<string | null>(null)
+  const [pipelines, setPipelines] = useState<Array<{ id: string; label: string }> | null>(null)
 
   // Slack sends the browser back to ?tab=integrations&slack=<result>; show it once and tidy the address bar.
   useEffect(() => {
     const p = new URLSearchParams(window.location.search)
-    const r = p.get('slack'), d = p.get('drive')
-    if (r || d) {
+    const r = p.get('slack'), d = p.get('drive'), hs = p.get('hubspot')
+    if (r || d || hs) {
       if (r) { setSlackResult(r); p.delete('slack') }
       if (d) { setDriveResult(d); p.delete('drive') }
+      if (hs) { setHubspotResult(hs); p.delete('hubspot') }
       window.history.replaceState(null, '', `${window.location.pathname}${p.toString() ? '?' + p : ''}`)
     }
   }, [])
@@ -103,6 +120,27 @@ export default function IntegrationsSection() {
   async function connectSlack() {
     const json = await call('/api/workspace/integrations/slack/connect', 'POST')
     if (json?.url) window.location.href = json.url
+  }
+  async function connectHubspot() {
+    const json = await call('/api/workspace/integrations/hubspot/connect', 'POST')
+    if (json?.url) window.location.href = json.url
+  }
+  async function loadPipelines() {
+    if (pipelines) return
+    try {
+      const res = await fetch('/api/workspace/integrations/hubspot/pipelines', { cache: 'no-store' })
+      const json = await res.json().catch(() => ({}))
+      if (res.ok) setPipelines(json.pipelines)
+    } catch { /* the select simply shows the current pipeline id */ }
+  }
+  async function backfillHubspot() {
+    const json = await call('/api/workspace/integrations/hubspot/backfill', 'POST')
+    if (json) {
+      setNote(json.queued
+        ? `Queued ${json.queued} earlier project${json.queued === 1 ? '' : 's'} for HubSpot${json.alreadySynced ? ` (${json.alreadySynced} already there)` : ''}${json.capped ? ' — the most recent 200; run it again later for older ones' : ''}. They arrive over the next few minutes.`
+        : json.alreadySynced ? 'Every signed project is already in HubSpot.' : 'No earlier signed projects were found.')
+      load()
+    }
   }
   async function connectDrive() {
     const json = await call('/api/workspace/integrations/google-drive/connect', 'POST')
@@ -171,6 +209,9 @@ export default function IntegrationsSection() {
         </div>
       )}
 
+      {hubspotResult && HUBSPOT_RESULT[hubspotResult] && (
+        <p style={{ ...subtle, color: HUBSPOT_RESULT[hubspotResult].bad ? 'var(--red)' : 'var(--green, #1A5C3A)', marginBottom: 12 }}>{HUBSPOT_RESULT[hubspotResult].text}</p>
+      )}
       {driveResult && DRIVE_RESULT[driveResult] && (
         <p style={{ ...subtle, color: DRIVE_RESULT[driveResult].bad ? 'var(--red)' : 'var(--green, #1A5C3A)', marginBottom: 12 }}>{DRIVE_RESULT[driveResult].text}</p>
       )}
@@ -238,6 +279,76 @@ export default function IntegrationsSection() {
               </form>
             ) : (
               <button type="button" className="btn btn-secondary btn-sm" style={{ marginTop: 12 }} disabled={busy || !canWrite || data.slack.connection.status !== 'active' || data.slack.rules.length >= 10} onClick={openSlackForm}>Add channel</button>
+            )}
+          </>
+        )}
+      </div>
+
+      <div className="settings-section" style={{ marginBottom: 16 }}>
+        <div className="settings-section-title">HubSpot</div>
+        {!data.hubspot.allowed ? (
+          <div style={subtle}>{data.lapsed ? 'Reactivate your subscription to use HubSpot.' : `HubSpot needs the ${data.nativeMinPlan} plan or above.`}</div>
+        ) : !data.hubspot.configured ? (
+          <div style={subtle}>HubSpot is not set up on this server yet. The operator needs HUBSPOT_CLIENT_ID and HUBSPOT_CLIENT_SECRET (see integrations/hubspot/README.md).</div>
+        ) : !data.hubspot.connection ? (
+          <>
+            <div style={{ ...subtle, marginBottom: 10 }}>
+              Keep your CRM in step without retyping. When a SOW is signed, ScopeGov creates the company and contact (or links to the ones you already have) and a
+              <strong> Closed-won deal</strong>, then adds the change orders, scope flags and payments to the deal’s timeline. It only ever <em>adds</em> records; it never edits your existing contacts or companies.
+              Connecting needs permission to view client data.
+            </div>
+            <button type="button" className="btn btn-primary btn-sm" disabled={busy || !data.encryptionConfigured} onClick={connectHubspot}>Connect HubSpot</button>
+          </>
+        ) : (
+          <>
+            <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 6 }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 600 }}>
+                  Connected to {data.hubspot.connection.portal || 'HubSpot'}
+                  {data.hubspot.connection.status !== 'active' && <span style={{ ...subtle, color: 'var(--red)' }}> · needs reconnecting</span>}
+                </div>
+                <div style={subtle}>
+                  {data.hubspot.deals} deal{data.hubspot.deals === 1 ? '' : 's'} synced
+                  {data.hubspot.connection.open_url && <> · <a href={data.hubspot.connection.open_url} target="_blank" rel="noopener noreferrer">Open deals in HubSpot</a></>}
+                </div>
+                {data.hubspot.connection.status !== 'active' && <div style={{ ...subtle, color: 'var(--red)' }}>{data.hubspot.connection.last_error || 'The connection stopped working.'} Reconnect to switch the sync back on.</div>}
+              </div>
+              {data.hubspot.connection.status !== 'active' && <button type="button" className="btn btn-primary btn-sm" disabled={busy} onClick={connectHubspot}>Reconnect</button>}
+              <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={async () => { if (await dialogs.confirm('Disconnect HubSpot? Syncing stops and ScopeGov’s access is revoked. Everything already in HubSpot stays there.')) act('/api/workspace/integrations/hubspot', 'DELETE', undefined, 'HubSpot disconnected.') }}>Disconnect</button>
+            </div>
+            {data.hubspot.rule && (
+              <div style={{ marginTop: 8 }}>
+                <div className="flbl" style={{ marginBottom: 6 }}>Sync</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 10 }}>
+                  {Object.entries(data.hubspot.eventLabels).map(([ev, label]) => (
+                    <label key={ev} style={{ fontSize: 12 }}>
+                      <input type="checkbox" disabled={busy || !canWrite} checked={data.hubspot.rule!.event_types.includes(ev)}
+                        onChange={e => act('/api/workspace/integrations/hubspot', 'PATCH', { events: e.target.checked ? [...data.hubspot.rule!.event_types, ev] : data.hubspot.rule!.event_types.filter(x => x !== ev) }, 'Saved.')} /> {label}
+                    </label>
+                  ))}
+                </div>
+                <div className="fgrp" style={{ marginBottom: 10 }}>
+                  <label className="flbl">Deal pipeline</label>
+                  <select className="finp" disabled={busy || !canWrite || data.hubspot.connection.status !== 'active'} value={data.hubspot.rule.pipeline_id || ''} onFocus={loadPipelines}
+                    onChange={e => act('/api/workspace/integrations/hubspot', 'PATCH', { pipeline_id: e.target.value }, 'Pipeline saved.')}>
+                    {(pipelines || (data.hubspot.rule.pipeline_id ? [{ id: data.hubspot.rule.pipeline_id, label: data.hubspot.rule.pipeline_id === 'default' ? 'Sales Pipeline (default)' : data.hubspot.rule.pipeline_id }] : [])).map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
+                  </select>
+                  <div style={subtle}>Won and lost deals use that pipeline’s “Closed won” and “Closed lost” stages.</div>
+                </div>
+                <label style={{ fontSize: 12, display: 'block', marginBottom: 6 }}>
+                  <input type="checkbox" disabled={busy || !canWrite} checked={data.hubspot.rule.include_amounts}
+                    onChange={e => act('/api/workspace/integrations/hubspot', 'PATCH', { include_amounts: e.target.checked }, e.target.checked ? 'Deal amounts will be sent.' : 'Deal amounts will not be sent.')} /> Send the contract value as the deal amount <span style={subtle}>(needs permission to view financials)</span>
+                </label>
+                <div style={subtle}>
+                  {data.hubspot.rule.active ? 'On' : <span style={{ color: 'var(--red)' }}>Off</span>} · last synced {when(data.hubspot.rule.last_success_at)} · {data.hubspot.rule.health.pending} waiting, {data.hubspot.rule.health.dead} skipped or failed
+                </div>
+                {data.hubspot.rule.disabled_reason && <div style={{ ...subtle, color: 'var(--red)' }}>{data.hubspot.rule.disabled_reason}</div>}
+                {data.hubspot.rule.health.last?.error && data.hubspot.rule.health.last.status !== 'succeeded' && <div style={{ ...subtle, color: 'var(--red)' }}>Last problem: {data.hubspot.rule.health.last.error}</div>}
+                <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                  <button type="button" className="btn btn-secondary btn-sm" disabled={busy || !canWrite || data.hubspot.connection.status !== 'active' || !data.hubspot.rule.active} onClick={backfillHubspot}>Sync existing projects</button>
+                  <button type="button" className="btn btn-ghost btn-sm" disabled={busy || !canWrite} onClick={() => act('/api/workspace/integrations/hubspot', 'PATCH', { active: !data.hubspot.rule!.active }, data.hubspot.rule!.active ? 'HubSpot sync turned off.' : 'HubSpot sync turned on.')}>{data.hubspot.rule.active ? 'Turn off' : 'Turn on'}</button>
+                </div>
+              </div>
             )}
           </>
         )}
@@ -393,7 +504,6 @@ export default function IntegrationsSection() {
         </form>
       </div>
 
-      <div style={{ ...subtle, marginTop: 10 }}>HubSpot connections will need the {data.nativeMinPlan} plan or above.</div>
     </div>
   )
 }

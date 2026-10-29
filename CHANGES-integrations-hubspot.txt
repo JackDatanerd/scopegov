@@ -1,0 +1,83 @@
+Integrations round 6 (Oct 27 2026, base 3c8b8ef = main after the Google Drive archive): HubSpot CRM sync — the last integration placeholder.
+
+APPLY ORDER: 1) migration 171  2) HubSpot developer-portal setup (integrations/hubspot/README.md): a public app, redirect URL exactly
+${NEXT_PUBLIC_APP_URL}/api/integrations/hubspot/callback, the SIX scopes crm.objects.{contacts,companies,deals}.{read,write} and nothing more
+3) set HUBSPOT_CLIENT_ID + HUBSPOT_CLIENT_SECRET in Vercel  4) deploy  5) test with a free HubSpot TEST ACCOUNT first.
+No new cron (the every-minute integration-delivery cron does the work).
+
+!! BEFORE YOU APPLY — READ THIS (I could not verify main this round)
+Midway through this round the repository stopped being readable to me (an anonymous `git clone`/`fetch` of
+github.com/JackDatanerd/scopegov now asks for a username — it looks private). Everything below was built and tested against
+3c8b8ef, the last state I saw, and I could NOT check whether main has moved since or whether migration number 171 is still free
+(the repo's own tests require unique migration numbers; I collided on 168 once already). In your local clone, before extracting:
+
+    git log --oneline 3c8b8ef..HEAD          (empty  = nothing new, safe to extract as-is)
+    dir supabase\migrations\17*              (must NOT already contain a 171_...; if it does, rename mine to the next free number)
+
+If main HAS moved, check whether anyone changed the 7 shared files I modified (the other 15 files in the archive are new):
+    git diff --stat 3c8b8ef HEAD -- .env.local.example README.md app/api/cron/notification-cleanup/route.ts app/api/workspace/integrations/route.ts components/settings/IntegrationsSection.tsx components/settings/SettingsClient.tsx lib/integrations/delivery.ts
+(empty = safe). If any are listed, tell me and I will rebuild this on top of them rather than overwrite them; the archive ships whole
+files for those 7, so extracting over newer edits would revert them (this is how round 1 went wrong).
+
+DECISIONS MADE FOR YOU
+- ONE-WAY (ScopeGov -> HubSpot). Two-way needs conflict rules and loop prevention, which is where CRM syncs go wrong; prove one-way first.
+- NEVER OVERWRITE their CRM. An existing contact (same email) or company (same name, oldest) is LINKED to and left exactly as it is; only
+  the deals ScopeGov created are ever edited. Nothing is ever deleted (disconnecting leaves everything in HubSpot).
+- NO custom HubSpot properties, so no schema scopes. Idempotency lives in our own integration_external_refs; a deal created just before
+  a crash is re-found by name + "created in the last hour".
+- Deal pipeline = the account's default (chosen at connect, changeable); stages are found from HubSpot's own metadata (isClosed +
+  probability), so custom stage ids work. A pipeline lacking Closed-won / Closed-lost is refused.
+- PRIVACY: connecting needs VIEW_CLIENT_DATA (the sync shares client names, emails and phones); each event needs the same permission as
+  everywhere else; the deal AMOUNT (contract value) is OFF by default and switching it on needs VIEW_FINANCIALS. Notes are escaped plain
+  text. No contract values, emails or phone numbers go into notes or descriptions.
+
+WHAT IT DOES (Pro and above)
+  client (company name)  -> Company       client (email) -> Contact       project -> Deal (associated to both)
+  SOW signed -> deal Closed-won (+ closedate)    SOW declined -> Closed-lost    change order accepted -> note (+ refreshed amount if enabled)
+  scope flag raised / payment received -> note on the deal timeline
+  Settings -> Integrations -> HubSpot: connect, portal, deals synced, event toggles, pipeline picker, amounts switch, "Sync existing
+  projects", on/off, disconnect / reconnect. This removes the last "Coming soon" row (only Zapier's marketplace-listing status remains).
+
+HOW
+- Same pattern as Slack/Drive: a connection (encrypted refresh token; access tokens, ~30 min, are minted on demand) + ONE rule per
+  connection (kind 'hubspot', config {pipeline_id, include_amounts}); queueing, retries, plan gate, lapsed handling, the 10-failure auto-
+  disable and the cron are shared. delivery.ts gains a HubSpot branch on the same settle().
+- lib/integrations/hubspot-sync.ts is the engine; external-refs.ts is a small shared helper (find/save/drop) for it.
+- Self-healing: a 404 on a remembered deal/company/contact drops that record and rebuilds it (up to three heals in one run, since all
+  three may have been deleted). Found while testing: a fresh company/contact is now ALWAYS re-associated to an existing deal.
+- Outcome mapping: revoked / MISSING_SCOPES / 401 -> connection flagged, rules off, "Reconnect"; pipeline or stage rejected -> rule off with
+  the fix; 429 / 5xx / 409 / timeouts -> retry; a problem with ONE project (deleted, nothing to link) -> dead for that delivery only, never
+  counted toward auto-disable.
+- Only https://api.hubapi.com/crm|oauth is ever contacted (allow-list enforced before any fetch). The shared OAuth-state module serves
+  Slack, Google and HubSpot; a state minted for one is rejected by the others.
+- Connect verifies every scope was granted (else revokes and says so) and reads the deal pipelines, so a setup problem shows immediately.
+- Migration 171: kind 'hubspot' (no signing secret, needs a connection, one rule per connection); ref types company/contact/deal/note;
+  an index so the nightly cleanup can prune note refs (30 days).
+
+TESTS (tests/integrations-hubspot.test.ts, 92; tests/helpers/fake-hubspot.ts)
+- Config/state/URL allow-list/classification/token caching; the engine end to end (create, link-not-overwrite, amounts opt-in, stages,
+  later events, idempotency, backfill, escaping, orphan adoption, all three heals, every refusal without touching HubSpot, every HubSpot
+  failure); the worker (incl. no-streak); every route (connect, callback in 14 variants, disconnect, rule edit, pipelines, backfill, overview).
+- Mutation-checked, 16 mutants all caught: ignoring an existing company, PATCHing an existing contact, no note de-dup, no tenant check,
+  amounts always sent, unescaped notes, no orphan adoption, no heal, bad docs counting toward auto-disable, ignoring the OAuth user, skipping the
+  scope check, dropping the VIEW_CLIENT_DATA requirement, plaintext token, amounts without VIEW_FINANCIALS, open URL allow-list, widened scope.
+- Migration 171 verified on real Postgres 16 after 165+166+167+170 (and re-run): constraint names confirmed, hubspot rule rules, earlier
+  kinds unaffected, six ref types, bad type rejected, the per-project deal uniqueness guard, cascade on disconnect, note-age index.
+  (My first SQL check script had a bug that silently rolled back a block; I caught it, fixed it, and re-ran on a clean database.)
+
+NOT VERIFIED (HubSpot is unreachable from my sandbox)
+1. ANY real call to HubSpot. The request shapes (token + refresh, access-token introspection, deal pipelines, company/contact/deal search
+   with EQ/GTE filters, create, PATCH, v4 "default" associations, notes, refresh-token revoke) follow HubSpot's documented v3/v4 APIs but have
+   only run against my fake. FIRST REAL TEST: a free HubSpot test account -> connect -> "Sync existing projects" -> open the deals link.
+2. HubSpot's own enforcement details I could not check: that "default" association labels work between every pair used (deal<->company,
+   deal<->contact, contact<->company, note->deal); the search API's eventual consistency (a just-created company may not be searchable for
+   a few seconds — worst case a duplicate company, which the ref record then prevents from repeating); app install/review requirements.
+3. A deal's `closedate` / `hs_timestamp` formats (ISO 8601 per docs).
+
+NOT BUILT: two-way sync; syncing client EDITS after the first link; owners; line items / quotes; custom properties; multiple HubSpot portals.
+
+Apply
+-----
+  tar -xzf ~/Downloads/scopegov-integrations-hubspot.tar.gz --strip-components=1 -C .
+  Run migration 171 in the Supabase SQL editor.
+  git add -A && git commit -m "Integrations: HubSpot CRM sync (companies, contacts, Closed-won deals, timeline notes)" && git push

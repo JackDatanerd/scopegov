@@ -198,6 +198,8 @@ SLACK_CLIENT_SECRET=                   integrations/slack/README.md). Without th
 GOOGLE_CLIENT_ID=                    ← an OAuth client (type: Web application) in a Google Cloud project with the Drive API
 GOOGLE_CLIENT_SECRET=                  ENABLED; redirect URI ${NEXT_PUBLIC_APP_URL}/api/integrations/google/callback. Publish the consent screen
                                        ("In production") or refresh tokens expire after 7 days. See integrations/google-drive/README.md.
+HUBSPOT_CLIENT_ID=                   ← from a HubSpot developer-portal public app: redirect URL ${NEXT_PUBLIC_APP_URL}/api/integrations/hubspot/callback,
+HUBSPOT_CLIENT_SECRET=                 scopes exactly the six crm.objects.{contacts,companies,deals}.{read,write} (see integrations/hubspot/README.md).
 INTEGRATIONS_ENCRYPTION_KEY_PREVIOUS=  ← optional. To rotate: move the current value here, set a new
                                        INTEGRATIONS_ENCRYPTION_KEY, deploy, then re-save/rotate each webhook secret and
                                        only afterwards remove this. Dropping it early makes those secrets undecryptable
@@ -409,6 +411,14 @@ nothing is delivered).
   Drive full -> the rule turns itself off with the reason; revoked access -> the connection is flagged (Reconnect). "Archive past
   documents" backfills (200 per type per click, once per 10 min). Documents that cannot be archived never count toward the rule's
   auto-disable. Invoices are not archived (rendered on demand, not stored).
+- **HubSpot** (Pro+; migration **171**; setup in `integrations/hubspot/README.md`): ONE-WAY CRM sync. A signed SOW creates — or LINKS to — the
+  client's Company (exact name, oldest wins) and Contact (same email) and a Closed-won Deal in the chosen pipeline (a declined SOW: Closed-lost);
+  change orders, scope flags and payments become timeline Notes. It never overwrites existing HubSpot records (only deals it created are
+  edited) and adds no custom properties (no schema scopes). Deal amounts are opt-in and need `VIEW_FINANCIALS`; connecting needs
+  `VIEW_CLIENT_DATA`. `integration_external_refs` makes it idempotent; an orphan deal from a crash is re-found (same name, last hour);
+  records deleted in HubSpot are recreated (up to three heals per run). Revoked access flags the connection (Reconnect); a bad pipeline
+  turns the rule off with the reason; a bad single project never counts toward auto-disable. "Sync existing projects" backfills
+  (200 per click, once per 10 min, no timeline noise). Note idempotency records are pruned after 30 days by `notification-cleanup`.
 - **Zapier:** `app/api/integrations/v1/{me,hooks,hooks/[id],events/[type]/sample}` + the Zapier app in `integrations/zapier`
   (see its README — pushing it needs your Zapier developer account). Hook URLs are pinned to `hooks.zapier.com`; up to 100
   Zap triggers per workspace (customer webhooks: 10, counted separately).

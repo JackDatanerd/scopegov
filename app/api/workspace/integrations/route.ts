@@ -9,6 +9,7 @@ import { INTEGRATION_EVENT_TYPES } from '@/lib/integrations/events'
 import { slackConfigured } from '@/lib/integrations/slack-config'
 import { googleConfigured, driveFolderUrl } from '@/lib/integrations/google-config'
 import { DRIVE_EVENT_LABELS } from '@/lib/integrations/drive-config'
+import { hubspotConfigured, HUBSPOT_EVENT_LABELS } from '@/lib/integrations/hubspot-config'
 
 // Everything the Integrations tab needs in one read: the webhooks (never their secrets), their recent delivery
 // health, the API keys (never the key material), and what this plan allows. Read-only, so a lapsed workspace and a
@@ -20,7 +21,7 @@ export async function GET() {
     const { session } = auth
     const service = createServiceClient() as any
 
-    const [subsRes, keysRes, connRes, driveConnRes] = await Promise.all([
+    const [subsRes, keysRes, connRes, driveConnRes, hubspotConnRes] = await Promise.all([
       service.from('integration_subscriptions')
         .select('id, kind, name, target_url, event_types, config, active, consecutive_failures, disabled_reason, last_success_at, last_failure_at, created_at')
         .eq('workspace_id', session.workspaceId).order('created_at', { ascending: true }),
@@ -29,8 +30,9 @@ export async function GET() {
         .eq('workspace_id', session.workspaceId).is('revoked_at', null).order('created_at', { ascending: true }),
       service.from('integration_connections').select('status, display_name, config, last_error, created_at').eq('workspace_id', session.workspaceId).eq('provider', 'slack').maybeSingle(),
       service.from('integration_connections').select('id, status, display_name, config, last_error, created_at').eq('workspace_id', session.workspaceId).eq('provider', 'google_drive').maybeSingle(),
+      service.from('integration_connections').select('id, status, display_name, config, last_error, created_at').eq('workspace_id', session.workspaceId).eq('provider', 'hubspot').maybeSingle(),
     ])
-    if (subsRes.error || keysRes.error || connRes.error || driveConnRes.error) throw new Error(subsRes.error?.message || keysRes.error?.message || connRes.error?.message || driveConnRes.error?.message)
+    if (subsRes.error || keysRes.error || connRes.error || driveConnRes.error || hubspotConnRes.error) throw new Error(subsRes.error?.message || keysRes.error?.message || connRes.error?.message || driveConnRes.error?.message || hubspotConnRes.error?.message)
     const slackConn = connRes.data
     const driveConn = driveConnRes.data
     let driveRoot: string | null = null, driveArchived = 0
@@ -42,6 +44,13 @@ export async function GET() {
       driveRoot = rootRes.data?.remote_id || null
       driveArchived = countRes.count ?? 0
     }
+    const hubspotConn = hubspotConnRes.data
+    let hubspotDeals = 0
+    if (hubspotConn) {
+      const countRes = await service.from('integration_external_refs').select('id', { count: 'exact', head: true }).eq('connection_id', hubspotConn.id).eq('ref_type', 'deal')
+      hubspotDeals = countRes.count ?? 0
+    }
+    const hubspotRule = (hubspotConn ? subsRes.data || [] : []).find((s: any) => s.kind === 'hubspot')
     const driveRule = (driveConn ? subsRes.data || [] : []).find((s: any) => s.kind === 'google_drive')
 
     const subs: any[] = subsRes.data || []
@@ -69,8 +78,16 @@ export async function GET() {
       limits: { subscriptions: MAX_SUBSCRIPTIONS_PER_WORKSPACE, apiKeys: MAX_API_KEYS_PER_WORKSPACE },
       eventTypes: INTEGRATION_EVENT_TYPES,
       planGates: INTEGRATION_MIN_PLAN,
-      subscriptions: subs.filter(s => s.kind !== 'slack' && s.kind !== 'google_drive').map(({ config: _c, ...s }) => ({ ...s, health: recent[s.id] || { pending: 0, succeeded: 0, dead: 0 } })),
+      subscriptions: subs.filter(s => s.kind !== 'slack' && s.kind !== 'google_drive' && s.kind !== 'hubspot').map(({ config: _c, ...s }) => ({ ...s, health: recent[s.id] || { pending: 0, succeeded: 0, dead: 0 } })),
       apiKeys: keysRes.data || [],
+      hubspot: {
+        configured: hubspotConfigured(),
+        allowed: integrationAllowed('hubspot', session.planTier, !!session.lapsed),
+        eventLabels: HUBSPOT_EVENT_LABELS,
+        deals: hubspotDeals,
+        connection: hubspotConn ? { portal: hubspotConn.config?.hub_domain || hubspotConn.display_name || null, user_email: hubspotConn.config?.user_email || null, status: hubspotConn.status, last_error: hubspotConn.last_error, connected_at: hubspotConn.created_at, open_url: hubspotConn.config?.hub_id ? `https://app.hubspot.com/contacts/${encodeURIComponent(String(hubspotConn.config.hub_id))}/objects/0-3/views/all/list` : null } : null,
+        rule: hubspotRule ? { event_types: hubspotRule.event_types, active: hubspotRule.active, disabled_reason: hubspotRule.disabled_reason, last_success_at: hubspotRule.last_success_at, pipeline_id: hubspotRule.config?.pipeline_id || null, include_amounts: hubspotRule.config?.include_amounts === true, health: recent[hubspotRule.id] || { pending: 0, succeeded: 0, dead: 0 } } : null,
+      },
       drive: {
         configured: googleConfigured(),
         allowed: integrationAllowed('google_drive', session.planTier, !!session.lapsed),
