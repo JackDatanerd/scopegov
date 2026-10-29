@@ -1,0 +1,8 @@
+Help article: "Can't see a button, or got 'Missing permission'? Find the permission behind it" (category: team-permissions).
+Base: 482fb2c. Content only; no product code touched.
+
+NEW   lib/help/articles/permissions-decoder.ts  (all 24 permissions mapped to the actions, pages and settings they control;
+      labels and gates traced to the routes, sidebar, Team page and read-only logic; checked 2026-10-29)
+EDIT  lib/help/index.ts  (+1 import, +1 registry entry; if this file changed since 482fb2c, add those two lines by hand instead of overwriting)
+
+VERIFIED: tsc clean; full vitest suite passing.

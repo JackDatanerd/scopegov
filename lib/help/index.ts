@@ -25,6 +25,7 @@ import { understandFlagStatuses } from './articles/understand-flag-statuses'
 import { forwardClientEmailsToGuardian } from './articles/forward-client-emails-to-guardian'
 import { guardianGoodBadInputs } from './articles/guardian-good-bad-inputs'
 import { flagToChangeOrder } from './articles/flag-to-change-order'
+import { permissionsDecoder } from './articles/permissions-decoder'
 import type { HelpArticle, HelpCategory } from './types'
 
 export const ARTICLES: HelpArticle[] = [
@@ -50,6 +51,7 @@ export const ARTICLES: HelpArticle[] = [
   forwardClientEmailsToGuardian,
   guardianGoodBadInputs,
   flagToChangeOrder,
+  permissionsDecoder,
 ]
 
 export function getArticle(slug: string): HelpArticle | null {
