@@ -14,6 +14,11 @@ import { createAndSendCo } from './articles/create-and-send-co'
 import { clientCountersCo } from './articles/client-counters-co'
 import { retainerRenewalCo } from './articles/retainer-renewal-co'
 import { cantCreateCoClosedProject } from './articles/cant-create-co-closed-project'
+import { addingAClient } from './articles/adding-a-client'
+import { fixedFeeOrRetainer } from './articles/fixed-fee-or-retainer'
+import { editProjectBeforeAndAfterSow } from './articles/edit-project-before-and-after-sow'
+import { completeArchiveReopenProject } from './articles/complete-archive-reopen-project'
+import { assignTeamMembers } from './articles/assign-team-members'
 import type { HelpArticle, HelpCategory } from './types'
 
 export const ARTICLES: HelpArticle[] = [
@@ -28,6 +33,11 @@ export const ARTICLES: HelpArticle[] = [
   clientCountersCo,
   retainerRenewalCo,
   cantCreateCoClosedProject,
+  addingAClient,
+  fixedFeeOrRetainer,
+  editProjectBeforeAndAfterSow,
+  completeArchiveReopenProject,
+  assignTeamMembers,
 ]
 
 export function getArticle(slug: string): HelpArticle | null {
