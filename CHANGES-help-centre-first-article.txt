@@ -1,0 +1,16 @@
+Help centre foundation + first article ("Your first project, end to end in 30 minutes")
+Base: a52b955. New feature, no existing behaviour changed except two nav entries.
+
+NEW
+- /help (Help home, grouped by category) and /help/[slug] (article) inside the signed-in app layout; no middleware change needed
+  because (app) routes are already authenticated.
+- lib/help/*: typed article model (types.ts), 10 categories, registry (index.ts), permission labels, AUTHORING.md guide,
+  and the reference article articles/first-project.ts (every UI label verified against the code).
+- components/help/HelpArticleView.tsx (one shared layout), components/help/inline.tsx (safe **bold** and in-app-link markup).
+- styles/help.module.css.
+- tests/help-articles.test.ts (content rules every article must pass) and tests/help-render.test.ts (renders real HTML).
+
+CHANGED
+- components/layout/Sidebar.tsx: "Help" under Account. components/layout/CommandPalette.tsx: "Help" quick-nav entry.
+
+VERIFIED: tsc --noEmit clean; full vitest suite passing.

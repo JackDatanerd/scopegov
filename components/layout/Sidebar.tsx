@@ -37,6 +37,7 @@ const NAV_ITEMS = [
 const BOTTOM_NAV = [
   { href: '/team',     icon: 'ti-user-circle', label: 'Team' },
   { href: '/settings', icon: 'ti-settings',    label: 'Settings' },
+  { href: '/help',     icon: 'ti-help-circle', label: 'Help' },
 ]
 
 type WorkspaceOption = {

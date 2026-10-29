@@ -301,6 +301,7 @@ export default function CommandPalette({ permissions = [], portfolio = true }: P
                 : []),
               { label: 'Team',        href: '/team',        icon: 'ti-user-circle' },
               { label: 'Settings',    href: '/settings',    icon: 'ti-settings' },
+              { label: 'Help',        href: '/help',        icon: 'ti-help-circle' },
             ].map(item => (
               <button key={item.href} onClick={() => navigate(item.href)}
                 style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%', padding: '8px 10px', border: 'none', background: 'none', cursor: 'pointer', borderRadius: 6, fontSize: 13, color: 'var(--text-2)', textAlign: 'left' }}
