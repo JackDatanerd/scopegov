@@ -26,6 +26,12 @@ import { forwardClientEmailsToGuardian } from './articles/forward-client-emails-
 import { guardianGoodBadInputs } from './articles/guardian-good-bad-inputs'
 import { flagToChangeOrder } from './articles/flag-to-change-order'
 import { permissionsDecoder } from './articles/permissions-decoder'
+import { writeASowAiOrManual } from './articles/write-a-sow-ai-or-manual'
+import { sowWordingTermsExclusionsPayment } from './articles/sow-wording-terms-exclusions-payment'
+import { reviewSowBeforeSending } from './articles/review-sow-before-sending'
+import { whatYourClientSeesSow } from './articles/what-your-client-sees-sow'
+import { clientChangesDeclineOrSilenceSow } from './articles/client-changes-decline-or-silence-sow'
+import { withdrawReviseResendSow } from './articles/withdraw-revise-resend-sow'
 import type { HelpArticle, HelpCategory } from './types'
 
 export const ARTICLES: HelpArticle[] = [
@@ -35,6 +41,12 @@ export const ARTICLES: HelpArticle[] = [
   inviteTeamAndRoles,
   trialAndSubscribing,
   whyCantISendSow,
+  writeASowAiOrManual,
+  sowWordingTermsExclusionsPayment,
+  reviewSowBeforeSending,
+  whatYourClientSeesSow,
+  clientChangesDeclineOrSilenceSow,
+  withdrawReviseResendSow,
   whenToWriteACo,
   createAndSendCo,
   clientCountersCo,

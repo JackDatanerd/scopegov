@@ -1,0 +1,14 @@
+Help centre: Statements of work articles (section 3). Base: b1171cd. Content only; no product code touched.
+
+NEW (lib/help/articles/), category "sow"
+- write-a-sow-ai-or-manual.ts            "Writing a SOW: let AI draft it, or fill it in yourself"          (order 2)
+- sow-wording-terms-exclusions-payment.ts "How do I word defined terms, exclusions and payment terms in a SOW?" (order 3)
+- review-sow-before-sending.ts           "What should I check before I send a SOW?"                          (order 4)
+- what-your-client-sees-sow.ts           "What does my client see when they open my SOW, and how do they sign?" (order 5)
+- client-changes-decline-or-silence-sow.ts "My client asked for changes, declined, or hasn't answered. What now?" (order 6)
+- withdraw-revise-resend-sow.ts          "How do I withdraw, revise and resend a SOW?"                       (order 7)
+
+EDIT lib/help/index.ts: +6 imports, +6 registry entries (after whyCantISendSow). If index.ts changed since b1171cd,
+add those twelve lines by hand instead of overwriting.
+
+VERIFIED: tsc --noEmit clean; full vitest 4374 passed (help tests 183); every **bold** UI label grepped against the code.
