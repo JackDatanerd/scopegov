@@ -18,6 +18,10 @@ const LABELS: Partial<Record<Permission, string>> = {
   VIEW_CLIENT_DATA: 'View client data',
   MARK_PROJECT_COMPLETE: 'Mark project complete',
   ASSIGN_TEAM_MEMBERS: 'Assign team members',
+  SUBMIT_GUARDIAN_CHECKS: 'Submit Guardian checks',
+  APPROVE_FLAGS: 'Approve flags',
+  GRANT_EXCEPTIONS: 'Grant exceptions',
+  ACCESS_GUARDIAN_HISTORY: 'Access Guardian history',
 }
 
 export function helpPermissionLabel(p: Permission): string {

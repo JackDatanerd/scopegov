@@ -19,6 +19,12 @@ import { fixedFeeOrRetainer } from './articles/fixed-fee-or-retainer'
 import { editProjectBeforeAndAfterSow } from './articles/edit-project-before-and-after-sow'
 import { completeArchiveReopenProject } from './articles/complete-archive-reopen-project'
 import { assignTeamMembers } from './articles/assign-team-members'
+import { whatGuardianDoes } from './articles/what-guardian-does'
+import { checkClientMessageVerdict } from './articles/check-client-message-verdict'
+import { understandFlagStatuses } from './articles/understand-flag-statuses'
+import { forwardClientEmailsToGuardian } from './articles/forward-client-emails-to-guardian'
+import { guardianGoodBadInputs } from './articles/guardian-good-bad-inputs'
+import { flagToChangeOrder } from './articles/flag-to-change-order'
 import type { HelpArticle, HelpCategory } from './types'
 
 export const ARTICLES: HelpArticle[] = [
@@ -38,6 +44,12 @@ export const ARTICLES: HelpArticle[] = [
   editProjectBeforeAndAfterSow,
   completeArchiveReopenProject,
   assignTeamMembers,
+  whatGuardianDoes,
+  checkClientMessageVerdict,
+  understandFlagStatuses,
+  forwardClientEmailsToGuardian,
+  guardianGoodBadInputs,
+  flagToChangeOrder,
 ]
 
 export function getArticle(slug: string): HelpArticle | null {
