@@ -1,0 +1,16 @@
+Help centre: "Change orders" category (5 articles). Base: 9585db5. Content only, no product behaviour changed.
+
+NEW (lib/help/articles/)
+- when-to-write-a-co.ts            When to write a change order, and when to just absorb the work
+- create-and-send-co.ts            Creating and sending a change order, with scope and timeline impact
+- client-counters-co.ts            What happens when the client counters a change order
+- retainer-renewal-co.ts           Renewing a retainer or changing its monthly fee with a change order
+- cant-create-co-closed-project.ts Why can't I create a change order on a closed project?
+
+CHANGED
+- lib/help/index.ts: the five articles registered. ALSO registers whyCantISendSow: commit 9585db5 added its import but not its
+  ARTICLES entry (its own CHANGES file says "+1 import, +1 registry entry"), so that article was unpublished. If that was fixed
+  upstream since, drop the extra line when merging.
+- lib/help/permission-labels.ts: CREATE_CHANGE_ORDERS, SEND_CHANGE_ORDERS.
+
+VERIFIED: bold UI labels grepped against the code; tsc clean; help tests 75/75.

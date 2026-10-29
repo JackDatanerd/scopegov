@@ -8,6 +8,8 @@ const LABELS: Partial<Record<Permission, string>> = {
   CREATE_PROJECTS: 'Create projects',
   EDIT_SOW: 'Edit SOWs',
   SEND_SOW: 'Send SOWs',
+  CREATE_CHANGE_ORDERS: 'Create change orders',
+  SEND_CHANGE_ORDERS: 'Send change orders',
   INVITE_MEMBERS: 'Invite members',
   MANAGE_BILLING: 'Manage billing',
   MANAGE_WORKSPACE_SETTINGS: 'Manage workspace settings',

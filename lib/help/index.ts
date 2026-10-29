@@ -9,6 +9,11 @@ import { pmToolFit } from './articles/pm-tool-fit'
 import { workspaceSetup } from './articles/workspace-setup'
 import { inviteTeamAndRoles } from './articles/invite-team-and-roles'
 import { trialAndSubscribing } from './articles/trial-and-subscribing'
+import { whenToWriteACo } from './articles/when-to-write-a-co'
+import { createAndSendCo } from './articles/create-and-send-co'
+import { clientCountersCo } from './articles/client-counters-co'
+import { retainerRenewalCo } from './articles/retainer-renewal-co'
+import { cantCreateCoClosedProject } from './articles/cant-create-co-closed-project'
 import type { HelpArticle, HelpCategory } from './types'
 
 export const ARTICLES: HelpArticle[] = [
@@ -17,6 +22,12 @@ export const ARTICLES: HelpArticle[] = [
   workspaceSetup,
   inviteTeamAndRoles,
   trialAndSubscribing,
+  whyCantISendSow,
+  whenToWriteACo,
+  createAndSendCo,
+  clientCountersCo,
+  retainerRenewalCo,
+  cantCreateCoClosedProject,
 ]
 
 export function getArticle(slug: string): HelpArticle | null {
