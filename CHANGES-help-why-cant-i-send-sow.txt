@@ -1,0 +1,6 @@
+Help article: "Why can't I send this SOW?" (category: sow). Base: 8d4dd86. Content only; no product code touched.
+
+NEW   lib/help/articles/why-cant-i-send-sow.ts  (every message traced to the send path; checked 2026-10-29)
+EDIT  lib/help/index.ts  (+1 import, +1 registry entry; if this file changed since 8d4dd86, add those two lines by hand instead of overwriting)
+
+VERIFIED: tsc clean; full vitest suite passing (help tests: 39).

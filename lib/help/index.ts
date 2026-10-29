@@ -4,6 +4,7 @@
 
 import { HELP_CATEGORIES } from './categories'
 import { firstProject } from './articles/first-project'
+import { whyCantISendSow } from './articles/why-cant-i-send-sow'
 import { pmToolFit } from './articles/pm-tool-fit'
 import { workspaceSetup } from './articles/workspace-setup'
 import { inviteTeamAndRoles } from './articles/invite-team-and-roles'
