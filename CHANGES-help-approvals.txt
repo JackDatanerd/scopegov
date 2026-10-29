@@ -1,0 +1,10 @@
+Help articles: Approvals (category: approvals). Base: 75854b5. Content only; no product code touched.
+
+NEW   lib/help/articles/do-you-need-approvals.ts        (decide if a workflow is worth it; plan limits; small-team trap)
+NEW   lib/help/articles/build-approval-workflow.ts      (Settings > Approvals: threshold, currency, steps, rules, warnings)
+NEW   lib/help/articles/approve-or-reject-document.ts   (approver's view: My queue, Approve, Reject, why you cannot decide)
+NEW   lib/help/articles/send-waiting-on-approval.ts     (requester's view: who has it, reassign, cancel, retry send)
+EDIT  lib/help/index.ts  (+4 imports, +4 registry entries; if this file changed since 75854b5, add those lines by hand instead of overwriting)
+
+All labels and messages traced to the code; checked 2026-10-29.
+VERIFIED: tsc clean; full vitest suite passing.

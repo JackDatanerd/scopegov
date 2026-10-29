@@ -37,6 +37,10 @@ import { paymentsAndOverContract } from './articles/payments-and-over-contract'
 import { taxInclusiveOrExclusive } from './articles/tax-inclusive-or-exclusive'
 import { invoiceStatuses } from './articles/invoice-statuses'
 import { exportInvoices } from './articles/export-invoices'
+import { doYouNeedApprovals } from './articles/do-you-need-approvals'
+import { buildApprovalWorkflow } from './articles/build-approval-workflow'
+import { approveOrRejectDocument } from './articles/approve-or-reject-document'
+import { sendWaitingOnApproval } from './articles/send-waiting-on-approval'
 import type { HelpArticle, HelpCategory } from './types'
 
 export const ARTICLES: HelpArticle[] = [
@@ -74,6 +78,10 @@ export const ARTICLES: HelpArticle[] = [
   taxInclusiveOrExclusive,
   invoiceStatuses,
   exportInvoices,
+  doYouNeedApprovals,
+  buildApprovalWorkflow,
+  approveOrRejectDocument,
+  sendWaitingOnApproval,
 ]
 
 export function getArticle(slug: string): HelpArticle | null {
