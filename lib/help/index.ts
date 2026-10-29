@@ -41,6 +41,10 @@ import { doYouNeedApprovals } from './articles/do-you-need-approvals'
 import { buildApprovalWorkflow } from './articles/build-approval-workflow'
 import { approveOrRejectDocument } from './articles/approve-or-reject-document'
 import { sendWaitingOnApproval } from './articles/send-waiting-on-approval'
+import { defaultRoles } from './articles/default-roles'
+import { customRolesAndMfa } from './articles/custom-roles-and-mfa'
+import { perProjectAccess } from './articles/per-project-access'
+import { removeMemberAndReassign } from './articles/remove-member-and-reassign'
 import type { HelpArticle, HelpCategory } from './types'
 
 export const ARTICLES: HelpArticle[] = [
@@ -82,6 +86,10 @@ export const ARTICLES: HelpArticle[] = [
   buildApprovalWorkflow,
   approveOrRejectDocument,
   sendWaitingOnApproval,
+  defaultRoles,
+  customRolesAndMfa,
+  perProjectAccess,
+  removeMemberAndReassign,
 ]
 
 export function getArticle(slug: string): HelpArticle | null {

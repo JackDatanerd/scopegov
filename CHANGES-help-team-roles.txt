@@ -1,0 +1,16 @@
+Help centre: "Team, roles and permissions" category, remaining articles (4). Base: 0b3a642. Content only.
+
+NEW (lib/help/articles/)
+- default-roles.ts                 What can each starting role do?
+- custom-roles-and-mfa.ts          Creating a custom role, and which permissions call for two-factor
+- per-project-access.ts            Giving someone access to one project, or to all of them
+- remove-member-and-reassign.ts    Removing a team member and handing over their work
+
+CHANGED
+- lib/help/index.ts: 4 imports + 4 ARTICLES entries (other sessions edit this file often; if it moved, add the lines by hand).
+
+NOT WRITTEN, ALREADY PUBLISHED: the permission -> symptom -> fix decoder exists as permissions-decoder (commit b1171cd).
+Related, from the Clients and projects category: assign-team-members.
+
+VERIFIED: role contents from migration 133; MFA list from lib/auth/mfa-policy.ts; icon labels grepped in TeamClient/ProjectDetail;
+tsc clean; help tests 261/261.
