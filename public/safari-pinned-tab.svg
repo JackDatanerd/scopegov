@@ -1,18 +1,3 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
-  <!-- Balance scale mark for Safari pinned tab (must be pure black) -->
-  <!-- Horizontal arm -->
-  <rect x="14" y="36" width="72" height="5" rx="2.5"/>
-  <!-- Pivot -->
-  <circle cx="50" cy="38.5" r="5"/>
-  <!-- Vertical stem -->
-  <rect x="47.5" y="38" width="5" height="34"/>
-  <!-- Base -->
-  <rect x="36" y="70" width="28" height="5" rx="2.5"/>
-  <!-- Left pan rim -->
-  <path d="M17,50 a14,7 0 0,0 28,0 z" fill="none" stroke="black" stroke-width="4"/>
-  <rect x="17" y="53" width="28" height="4" rx="2"/>
-  <!-- Right pan rim -->
-  <path d="M55,50 a14,7 0 0,0 28,0 z" fill="none" stroke="black" stroke-width="4"/>
-  <rect x="55" y="53" width="28" height="4" rx="2"/>
-</svg>
+<!-- Balance scale mark for Safari pinned tab: must stay pure black; Safari recolours it via the mask-icon colour in app/layout.tsx -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><g fill="#000"><rect x="29.5" y="10" width="5" height="38" rx="2.5"/><rect x="18" y="47" width="28" height="5.5" rx="2.75"/><rect x="8" y="19" width="48" height="5" rx="2.5"/><circle cx="32" cy="12" r="4.5"/><path d="M5 35h18a9 9 0 0 1-18 0z"/><path d="M41 35h18a9 9 0 0 1-18 0z"/></g><g stroke="#000" stroke-width="2.6" stroke-linecap="round"><path d="M9 24 6.5 35M9 24l7.5 11M55 24l2.5 11M55 24l-7.5 11"/></g></svg>

@@ -115,7 +115,7 @@ export default function DpaPage() {
           whose subscription has ended is kept read-only, with its data, until it is deleted by an owner or on
           your written instruction, and a deleted workspace is then removed on the schedule described in our{' '}
           <a href="/legal/privacy#retention">Privacy Policy</a>. You can also instruct us in writing (at{' '}
-          <a href="mailto:privacy@scopegov.app">privacy@scopegov.app</a>) to delete your workspace&rsquo;s data
+          <a href="mailto:legal@scopegov.app?subject=Privacy%20request">legal@scopegov.app</a>) to delete your workspace&rsquo;s data
           earlier, and we will do so unless we&rsquo;re required by law to retain a copy.
         </p>
 

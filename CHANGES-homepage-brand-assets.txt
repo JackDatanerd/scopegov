@@ -1,0 +1,25 @@
+CHANGES — homepage brand assets + contact harmonization (Oct 30 2026)
+
+Decision: ONE mark everywhere — the balance scale. The shield is ScopeShield's favicon, so it is not used here.
+
+Brand assets (public/)
+- favicon.ico (16/32/48), favicon-16/32/48, apple-touch-icon (opaque), android-chrome-192/512, mstile-150 regenerated from one
+  heavier, simplified balance-scale master (filled pans, thicker arm) that stays legible at 16px. The old thin scale blurred at tab size.
+- safari-pinned-tab.svg rebuilt from the same shape, pure black.
+- og-image.png remade at 1200x630 with the new mark, Newsreader wordmark, the homepage tagline ("Govern your scope. Keep your
+  revenue.") and no "Amendments" line.
+- Removed public/README.md (a stale setup note that was publicly served at /README.md) and public/.gitkeep.
+
+Code
+- components/marketing/HomeMark.tsx: shield-and-check -> balance scale (header + footer now match the favicon).
+- app/sitemap.ts (new): public pages only. robots.txt already pointed at /sitemap.xml, which 404'd.
+- middleware.ts: matcher now exempts sitemap.xml, otherwise signed-out crawlers were 307'd to /login (same bug class as B6 for
+  the manifest).
+- Contacts: only support@ and legal@ exist. hello@ -> support@; privacy@ -> legal@ (subject "Privacy request");
+  security@ -> support@ (subject "Security report"). Footer: Contact -> support@, "Support" replaced by "Legal enquiries" -> legal@
+  so the two links are not duplicates. Help article legal-pages-in-plain-language updated to match.
+- tests/brand-assets-and-contacts.test.ts (new, 9 tests): icon dimensions, .ico contents, pinned-tab colour, no stray /public
+  files, scale mark, sitemap host/routes/middleware, only support@/legal@ used in legal pages, marketing and help.
+
+Verified: tsc --noEmit clean; full vitest 384 files / 4602 tests pass (1 file skipped as before).
+Not touched (still open from the placeholder list): platform stats, testimonials, company registration details, dates.

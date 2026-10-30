@@ -72,7 +72,7 @@ export default function PricingSection() {
             <div className={styles.rrow}><span>Plan that fits</span><b>{r.plan ? `${r.plan.name} · ${monthly2(annual ? r.plan.annual / 12 : r.plan.monthly)}/mo${annual ? ' billed yearly' : ''}` : 'Talk to us'}</b></div>
             <div className={styles.rrow}><span>Net after the plan, per year</span><b>{r.net === null ? '—' : `${r.net >= 0 ? '+' : '−'}${usd.format(Math.abs(r.net))}`}</b></div>
             {!r.plan ? (
-              <div className={styles.verd}>No standard plan covers more than 10 seats. <a href="mailto:hello@scopegov.app"><strong>Tell us what you need</strong></a> and we&rsquo;ll find a fit.</div>
+              <div className={styles.verd}>No standard plan covers more than 10 seats. <a href="mailto:support@scopegov.app"><strong>Tell us what you need</strong></a> and we&rsquo;ll find a fit.</div>
             ) : r.worthIt ? (
               <div className={`${styles.verd} ${styles.good}`}><strong>Worth it on these numbers.</strong> {r.plan.name} covers its own cost in about {r.paybackWeeks} week{r.paybackWeeks === 1 ? '' : 's'}, then the rest is margin you were giving away.</div>
             ) : (

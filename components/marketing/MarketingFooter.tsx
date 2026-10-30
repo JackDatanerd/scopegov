@@ -30,8 +30,8 @@ export default function MarketingFooter() {
           <div className={styles.footerCol}>
             <div className={styles.footerColTitle}>Company</div>
             <Link href="/legal/security">Security</Link>
-            <a href="mailto:hello@scopegov.app">Contact</a>
-            <a href="mailto:support@scopegov.app">Support</a>
+            <a href="mailto:support@scopegov.app">Contact</a>
+            <a href="mailto:legal@scopegov.app">Legal enquiries</a>
           </div>
           <div className={styles.footerCol}>
             <div className={styles.footerColTitle}>Legal</div>

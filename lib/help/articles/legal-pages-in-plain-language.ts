@@ -80,7 +80,7 @@ export const legalPagesInPlainLanguage: HelpArticle = {
         'Only what a request needs is sent, such as one project\u2019s SOW and the message being checked, not your whole workspace.',
         'The subprocessors named are Supabase (database, sign-in, files), Vercel (hosting), Anthropic, OpenAI, Resend (outgoing email and receiving forwarded email for Guardian), Paystack (billing), Google (only if you use Google sign-in), and Cloudflare and GitHub (they trigger scheduled jobs and see no customer content).',
         'Data is stored with Supabase in the EU (Ireland), the app runs on Vercel in the United States, and ScopeGov is operated from Kenya. Transfers rely on the providers\u2019 standard contractual clauses or equivalent.',
-        'Questions and rights requests go to privacy@scopegov.app. If a client\u2019s data was entered by your agency, requests are generally sent back to you first.',
+        'Questions and rights requests go to legal@scopegov.app. If a client\u2019s data was entered by your agency, requests are generally sent back to you first.',
       ],
     },
     {
@@ -113,7 +113,7 @@ export const legalPagesInPlainLanguage: HelpArticle = {
       details: [
         'Security: each workspace\u2019s data is separated by row-level security and by checks in the application; secrets such as signing keys sit in a table nobody can query directly; passwords are hashed; traffic is encrypted; sessions use Secure cookies; and governance actions go in an append-only audit log.',
         'The Terms and the Security page describe two-factor as required for governance-level permissions such as approving documents or changing settings. In the app, your **Account** page shows **Required, not set up** or **Recommended**, depending on how enforcement is set for your workspace. Set it up either way.',
-        'To report a vulnerability, email security@scopegov.app and allow a reasonable time to fix it before disclosing.',
+        'To report a vulnerability, email support@scopegov.app with the subject \u201cSecurity report\u201d and allow a reasonable time to fix it before disclosing.',
         'Cookies: sign-in cookies (strictly necessary, for up to 400 days), a short-lived sign-in verification cookie, and a 30-day referral cookie named ss_ref. There are no advertising cookies and no cross-site tracking.',
         'The setup wizard remembers progress in your browser, and Paystack\u2019s own script loads when you open billing checkout.',
       ],
@@ -135,17 +135,17 @@ export const legalPagesInPlainLanguage: HelpArticle = {
     {
       symptom: 'A client asks you to delete or correct their personal data',
       meaning: 'You are the controller. ScopeGov will pass any request it receives to you.',
-      fix: 'Use the client, contact and project tools in ScopeGov, or ask privacy@scopegov.app for help with something you cannot do yourself.',
+      fix: 'Use the client, contact and project tools in ScopeGov, or ask legal@scopegov.app for help with something you cannot do yourself.',
     },
     {
       symptom: 'Your security team wants a questionnaire or evidence',
       meaning: 'The DPA offers a written questionnaire and points to the Security page.',
-      fix: 'Email privacy@scopegov.app. The pages do not claim any certification.',
+      fix: 'Email legal@scopegov.app. The pages do not claim any certification.',
     },
     {
       symptom: 'You want your data deleted early',
       meaning: 'You can ask at any time, and ScopeGov will do it unless the law requires it to keep a copy.',
-      fix: 'Email privacy@scopegov.app. Download what you need first.',
+      fix: 'Email legal@scopegov.app. Download what you need first.',
     },
     {
       symptom: 'You were told the Terms changed',
@@ -165,7 +165,7 @@ export const legalPagesInPlainLanguage: HelpArticle = {
   ],
   whatHappensNext: [
     'Using ScopeGov means you accept the Terms and Privacy Policy as they stand. Material changes are announced to owners first.',
-    'Questions go to the address that fits: legal@scopegov.app, privacy@scopegov.app, security@scopegov.app or support@scopegov.app.',
+    'Questions go to the address that fits: legal@scopegov.app for privacy, data and legal questions, or support@scopegov.app for everything else, including security reports.',
     'If a page changes, this guide may be out of date, so read the current page.',
   ],
   related: ['read-only-workspace', 'export-before-you-leave', 'forward-client-emails-to-guardian', 'mfa-set-up-two-factor'],

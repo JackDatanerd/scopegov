@@ -62,7 +62,7 @@ export default function SecurityPage() {
         <h2>Reporting a concern</h2>
         <p>
           If you believe you&rsquo;ve found a security issue in ScopeGov, please email{' '}
-          <a href="mailto:security@scopegov.app">security@scopegov.app</a> with details and, if possible,
+          <a href="mailto:support@scopegov.app?subject=Security%20report">support@scopegov.app</a> (subject &ldquo;Security report&rdquo;) with details and, if possible,
           steps to reproduce. We&rsquo;ll acknowledge reports and keep you updated as we investigate. Please
           give us a reasonable window to fix an issue before disclosing it publicly.
         </p>

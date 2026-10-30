@@ -58,7 +58,7 @@ export default function CookiesPage() {
         </p>
 
         <h2>Questions</h2>
-        <p>Email <a href="mailto:privacy@scopegov.app">privacy@scopegov.app</a>.</p>
+        <p>Email <a href="mailto:legal@scopegov.app?subject=Privacy%20request">legal@scopegov.app</a>.</p>
       </div>
     </article>
   )

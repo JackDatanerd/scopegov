@@ -128,7 +128,7 @@ export default function PrivacyPolicyPage() {
         </p>
 
         <h2 id="your-rights">8. Your rights</h2>
-        <p>Depending on where you&rsquo;re located, you may have the right to access, correct, export, or delete your personal data, and to object to or restrict certain processing. To exercise any of these, email <a href="mailto:privacy@scopegov.app">privacy@scopegov.app</a>. If you&rsquo;re a client or signer whose data was submitted by an agency using ScopeGov, we&rsquo;ll generally direct your request to that agency first, since they control the underlying relationship — but reach out and we&rsquo;ll help route it.</p>
+        <p>Depending on where you&rsquo;re located, you may have the right to access, correct, export, or delete your personal data, and to object to or restrict certain processing. To exercise any of these, email <a href="mailto:legal@scopegov.app?subject=Privacy%20request">legal@scopegov.app</a>. If you&rsquo;re a client or signer whose data was submitted by an agency using ScopeGov, we&rsquo;ll generally direct your request to that agency first, since they control the underlying relationship — but reach out and we&rsquo;ll help route it.</p>
 
         <h2 id="security">9. Security</h2>
         <p>
@@ -162,7 +162,7 @@ export default function PrivacyPolicyPage() {
         <p>We&rsquo;ll post material changes here with an updated date, and where required, notify workspace owners directly.</p>
 
         <h2 id="contact">13. Contact</h2>
-        <p>Questions about this policy or your data: <a href="mailto:privacy@scopegov.app">privacy@scopegov.app</a>.</p>
+        <p>Questions about this policy or your data: <a href="mailto:legal@scopegov.app?subject=Privacy%20request">legal@scopegov.app</a>.</p>
       </div>
     </article>
   )
