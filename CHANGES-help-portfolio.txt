@@ -1,0 +1,23 @@
+Help article: "Reading the Portfolio view: scope risk across every project" (category: guardian, order 8; Pro plan and above).
+Base: dcc263c. Content only; no product code touched. Checked against the code 2026-10-29.
+
+NEW   lib/help/articles/read-your-portfolio.ts  (gates; the four cards; how contract value at risk is worked out: 5% of contract per open flag x severity
+      100/50/20%, capped at the contract, plus exceptions; chart, By currency, severity bars; the four lists and their caps; weekly routine)
+
+REGISTER (lib/help/index.ts is NOT shipped, so it cannot overwrite other registrations). Run once from the repo root in Git Bash; safe to run twice:
+
+node - <<'JS'
+const fs = require('fs'); const p = 'lib/help/index.ts'; let s = fs.readFileSync(p, 'utf8')
+const name='readYourPortfolio', file='read-your-portfolio'
+if (s.includes(name)) { console.log(name + ': already registered') } else {
+  const imports = [...s.matchAll(/^import \{ \w+ \} from '\.\/articles\/[^']+'\n/gm)]; const last = imports[imports.length - 1]
+  const at = last.index + last[0].length
+  s = s.slice(0, at) + `import { ${name} } from './articles/${file}'\n` + s.slice(at)
+  const m = s.match(/export const ARTICLES: HelpArticle\[\] = \[\n([\s\S]*?)\n\]/)
+  const end = m.index + m[0].indexOf(m[1]) + m[1].length
+  s = s.slice(0, end) + `\n  ${name},` + s.slice(end); console.log(name + ': registered')
+}
+fs.writeFileSync(p, s)
+JS
+
+VERIFIED: tsc clean; full vitest suite passing with the article registered (on top of the pending guardian-settings and reports articles).
