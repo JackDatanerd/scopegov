@@ -48,7 +48,7 @@ const HTML_HINT_TAGS = new Set([
  * HTML_TAG_HINT and ANY_TAG) all backtrack to the END of the input for every `<tag ` start that has no closing `>`
  * (or, for style/script, no closing tag) - O(n^2). toPlainText runs on the WHOLE inbound email body BEFORE the 20k cap,
  * so a body of `<a x <a x <a x ...` (or `<style><style>...`) from anyone who can email a project address pinned a
- * function for seconds at ~100-200 KB (and Postmark redelivers after the timeout, so the retry hangs again).
+ * function for seconds at ~100-200 KB (and Resend redelivers after the timeout, so the retry hangs again).
  * The scanner below is linear for every input: a tag start either consumes text up to its `>` (so that text is never
  * rescanned) or proves there is no `>` left at all (remembered, so no later start searches again).
  */

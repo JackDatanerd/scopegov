@@ -52,7 +52,7 @@ export default function PrivacyPolicyPage() {
           <li><strong>Content you create.</strong> Statements of Work, change orders, invoices, client and project records, and any briefs, drafts, or comments you enter into the product.</li>
           <li><strong>Files you upload.</strong> Your profile photo and your agency&rsquo;s logo are stored in a public bucket, so anyone with the image&rsquo;s URL can view it, and a logo appears on the documents and client portal pages you send. Other uploaded files, such as attachments and evidence, are stored privately and are available only to people with access to that workspace.</li>
           <li><strong>Client &amp; signer data.</strong> Names, emails, and signatures of the people your agency invites to review or sign a document through the portal — provided by you. When someone signs or responds through the portal, we also record the details needed as evidence of the signature: their signature, the time, and their IP address and browser details.</li>
-          <li><strong>Forwarded correspondence.</strong> If you forward client emails to a project&rsquo;s Guardian inbox (via Postmark), we process the message content to check it against that project&rsquo;s signed scope.</li>
+          <li><strong>Forwarded correspondence.</strong> If you forward client emails to a project&rsquo;s Guardian inbox (received through Resend), we process the message content to check it against that project&rsquo;s signed scope.</li>
           <li><strong>Billing data.</strong> Handled by Paystack; we store the resulting subscription status and plan tier, not full card numbers.</li>
           <li><strong>Usage &amp; device data.</strong> IP address, browser/device information, and in-app activity, used for security (e.g. session integrity, audit logging) rather than marketing analytics. See our <a href="/legal/cookies">Cookie Policy</a> for the cookies we set.</li>
         </ul>
@@ -94,7 +94,7 @@ export default function PrivacyPolicyPage() {
             <tr><td>Anthropic</td><td>SOW drafting, Guardian classification</td><td>SOW text, forwarded message content</td></tr>
             <tr><td>OpenAI</td><td>Document embeddings for search</td><td>SOW and document text</td></tr>
             <tr><td>Resend</td><td>Transactional email delivery</td><td>Recipient email, notification content</td></tr>
-            <tr><td>Postmark</td><td>Inbound email parsing (Guardian)</td><td>Forwarded message content and headers</td></tr>
+            <tr><td>Resend (inbound)</td><td>Receiving forwarded email for Guardian</td><td>Forwarded message content and headers</td></tr>
             <tr><td>Paystack</td><td>Subscription billing (its checkout script loads from js.paystack.co when you open checkout)</td><td>Billing contact details; payment handled by Paystack directly</td></tr>
             <tr><td>Google</td><td>Optional &ldquo;Sign in with Google&rdquo;</td><td>Name, email address, and Google account identifier, only if you choose Google sign-in</td></tr>
             <tr><td>Cloudflare and GitHub</td><td>Triggering our scheduled background jobs</td><td>No customer content; scheduled requests to our own endpoints</td></tr>

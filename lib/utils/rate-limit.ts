@@ -45,7 +45,7 @@ const LIMITS: Record<string, { max: number; windowMinutes: number }> = {
   'guardian.check':        { max: 40, windowMinutes: 10 },
   // FIX (audit round 6): inbound email checks run the same embedding +
   // classification pipeline as guardian.check but have no user_id to key
-  // on (triggered by Postmark, not a session) — see checkAiRateLimitByProject.
+  // on (triggered by the inbound email webhook, not a session) — see checkAiRateLimitByProject.
   'guardian.inbound':      { max: 30, windowMinutes: 10 },
 }
 const DEFAULT_LIMIT = { max: 20, windowMinutes: 10 }

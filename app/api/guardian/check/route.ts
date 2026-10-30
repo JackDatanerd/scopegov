@@ -15,7 +15,7 @@ import { canReadProject } from '@/lib/utils/project-access'
 import { isTerminalStatus } from '@/lib/utils/project-status'
 import { claimAiRateSlot } from '@/lib/utils/rate-limit'
 
-// FIX (independent pass 11, section 13 - B2): 'email' is reserved for guardian/inbound (the Postmark webhook). This route
+// FIX (independent pass 11, section 13 - B2): 'email' is reserved for guardian/inbound (the inbound email webhook). This route
 // accepted it from any SUBMIT_GUARDIAN_CHECKS holder, and the "no signed SOW yet" backlog cap below deliberately counts
 // only NON-email rows (inbound has its own 200-row cap for email) - so a direct API call with source:'email' bypassed this
 // cap AND filled the inbound cap, after which genuine client emails were dropped (200 backlog_full) and lost.

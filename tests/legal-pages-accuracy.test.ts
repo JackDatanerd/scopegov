@@ -58,7 +58,7 @@ describe('legal pages — publish-ready and consistent with the code', () => {
 
   it('subprocessors for services the code actually calls are listed', () => {
     const privacy = read('app/legal/privacy/page.tsx')
-    for (const name of ['Supabase', 'Vercel', 'Anthropic', 'OpenAI', 'Resend', 'Postmark', 'Paystack', 'Google', 'Cloudflare']) {
+    for (const name of ['Supabase', 'Vercel', 'Anthropic', 'OpenAI', 'Resend', 'Paystack', 'Google', 'Cloudflare']) {
       expect(privacy, name).toContain(name)
     }
   })

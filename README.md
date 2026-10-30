@@ -4,7 +4,7 @@
 - **Framework:** Next.js 14 (App Router)
 - **Database:** Supabase (Postgres + RLS + pgvector)
 - **Auth:** Supabase Auth
-- **Email:** Resend (transactional) + Postmark (inbound)
+- **Email:** Resend (transactional + Guardian inbound; inbound runs in its own Resend team)
 - **Payments:** Paystack
 - **AI:** Anthropic Claude (SOW gen, Guardian classification) + OpenAI (embeddings)
 - **PDF:** Puppeteer (server-side, Node runtime)
@@ -170,7 +170,8 @@ OPENAI_API_KEY=                      ← for embeddings
 RESEND_API_KEY=
 RESEND_FROM_EMAIL=noreply@mail.scopegov.app
 RESEND_WEBHOOK_SECRET=               ← whsec_… signing secret for POST /api/webhooks/resend (bounce/complaint tracking)
-POSTMARK_INBOUND_WEBHOOK_SECRET=     ← Basic Auth password, see §4 (NOT an HMAC secret)
+RESEND_INBOUND_API_KEY=              ← Full-access key from the INBOUND Resend team, see §4
+RESEND_INBOUND_WEBHOOK_SECRET=       ← whsec_… signing secret of the inbound `email.received` webhook, see §4 (not the same as RESEND_WEBHOOK_SECRET)
 NEXT_PUBLIC_GUARDIAN_EMAIL_DOMAIN=guard.scopegov.app
 PAYSTACK_PUBLIC_KEY=
 PAYSTACK_SECRET_KEY=
@@ -218,9 +219,10 @@ INTEGRATIONS_ENCRYPTION_KEY_PREVIOUS=  ← optional. To rotate: move the current
 ```
 Type: MX
 Name: guard (or guard.scopegov.app)
-Value: inbound.postmarkapp.com
-Priority: 10
+Value: <copy the exact MX host + priority shown for guard.scopegov.app in the INBOUND Resend team's Domains page>
+Priority: <as shown by Resend; keep it the lowest-numbered MX on this subdomain>
 TTL: 3600
+# Also add the DKIM/SPF TXT records Resend shows for guard.scopegov.app so the domain verifies.
 ```
 
 ### 3.2 Email authentication
@@ -243,28 +245,30 @@ Value: v=DMARC1; p=quarantine; rua=mailto:dmarc@scopegov.app
 
 ---
 
-## 4. Postmark Setup
+## 4. Resend Inbound Setup (Guardian)
 
-**Postmark does not sign inbound webhooks with HMAC** — there is no "webhook
-secret" field to copy from its dashboard. Postmark's own recommended
-protection is HTTP Basic Auth (credentials embedded directly in the webhook
-URL) plus IP allowlisting. This app checks Basic Auth on every inbound
-request — set it up as follows:
+Guardian email arrives through Resend "Receiving". Resend POSTs a small Svix-signed `email.received` event to
+`/api/guardian/inbound`; the route then fetches the body, headers and attachments from the Resend API. Attachments are
+downloaded by the server, so the old 4.5 MB request-body limit no longer applies.
 
-- [ ] Generate a secret: `openssl rand -hex 32` → set as `POSTMARK_INBOUND_WEBHOOK_SECRET`
-- [ ] Create inbound server in Postmark
-- [ ] Set inbound webhook URL to: `https://postmark:<POSTMARK_INBOUND_WEBHOOK_SECRET>@app.scopegov.app/api/guardian/inbound`
-      (the username can be anything — `postmark` is just a convention; the
-      part after the colon must exactly match the env var above)
-- [ ] MX record configured (step 3.1)
-- [ ] Optional, defense-in-depth: allowlist Postmark's published webhook IPs
-      (see postmarkapp.com/support/article/800-ips-for-firewalls) at your
-      firewall/CDN layer — Postmark's own guidance is to combine this with
-      Basic Auth, not to rely on either alone
-- [ ] Verify by sending a real email to `proj-test1234@guard.scopegov.app` and
-      confirming it lands as a `guardian_checks` row, not a 401 in the logs —
-      a curl test against the URL with correct credentials only proves the
-      auth check works, not that Postmark itself is configured to send them
+**Use a separate Resend team for inbound.** Received mail counts against the same quota as sent mail, and project addresses
+are unauthenticated. In the same team as outbound, spam to a guard address could exhaust the quota that sends SOWs, invoices
+and reminders. A separate team has its own quota, API key, rate limit and webhook secret.
+
+- [ ] Create a second Resend team (team switcher, top-left of the dashboard). Name it e.g. `ScopeGov Inbound`.
+- [ ] In that team: Domains → Add Domain → `guard.scopegov.app`. If the dashboard offers it, turn **Sending off / Receiving on**
+      (this domain never sends).
+- [ ] Add the DNS records Resend shows (verification TXT/DKIM **and** the MX record, see §3.1). Wait until the domain shows *Verified* and *Receiving enabled*.
+- [ ] API Keys → Create API Key, permission **Full access** (reading received mail is not available to a sending-only key),
+      restricted to the `guard.scopegov.app` domain if the dashboard offers it → set as `RESEND_INBOUND_API_KEY`.
+- [ ] Webhooks → Add Webhook: endpoint `https://app.scopegov.app/api/guardian/inbound`, event **email.received** only.
+- [ ] Copy that webhook's signing secret (`whsec_…`) → `RESEND_INBOUND_WEBHOOK_SECRET`. It is per-webhook: do not reuse `RESEND_WEBHOOK_SECRET`.
+- [ ] Redeploy so the env vars are live, then send a real email to `proj-xxxxxxxx@guard.scopegov.app` (the project's Guardian address) and
+      confirm it lands as a `guardian_checks` row. In the Resend webhooks page the delivery should show `200`.
+- [ ] If a delivery failed (for example the env vars were missing), fix it and use **Replay** on the event in the Resend dashboard. Received mail is retained for 30 days.
+
+Response codes: `503` = `RESEND_INBOUND_WEBHOOK_SECRET` missing; `401` = bad signature; `500` = a fetch from Resend or a database write
+failed (Resend redelivers; nothing was stored). Everything else is `200`.
 
 ---
 
@@ -468,10 +472,9 @@ alerts but keeps the heartbeat. Every run is also appended to `cron_run_history`
    same project-visibility rule as the flag itself.
 
 
-## Guardian inbound size limit
+## Guardian inbound size limits
 
-Vercel rejects any request body over 4.5 MB (413 `FUNCTION_PAYLOAD_TOO_LARGE`) before the route runs. Postmark delivers inbound
-attachments base64-encoded inside the JSON body, so a client email whose attachments total more than about 3 MB never reaches
-`/api/guardian/inbound` (Postmark retries, then gives up) and no check is recorded. Manual evidence uploads are capped at 4 MB for
-the same reason (`lib/utils/upload-limits.ts`). To receive larger emails, put a small pre-processor (e.g. the existing Cloudflare
-Worker) in front of the webhook that removes `Attachments[].Content` above the limit and forwards the rest unchanged.
+Inbound attachments are downloaded from Resend's signed URLs by the route itself (see §4), so Vercel's 4.5 MB request-body cap does
+not apply to them. Limits that do apply: 10 MB per attachment, 30 MB per email, 10 attachments per email, and whatever maximum message
+size Resend's receiving server accepts. Manual evidence uploads remain capped at 4 MB (`lib/utils/upload-limits.ts`) because
+they go through a normal request body.

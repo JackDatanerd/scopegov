@@ -382,7 +382,7 @@ export async function classifyAndRecord(service: any, p: {
     })
   } catch (notifyErr) {
     // The flag exists and is visible in the Guardian tab; a notification hiccup
-    // must not turn the whole request into a 500 (which made Postmark re-deliver
+    // must not turn the whole request into a 500 (which made Resend re-deliver
     // the email and re-run the entire pipeline).
     console.error('Guardian flag notification failed:', notifyErr)
   }

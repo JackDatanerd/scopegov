@@ -122,7 +122,7 @@ export function extractUnquotedContent(text: string, opts: { isForward?: boolean
     const body = quoted ? t : raw
 
     if (SIGNATURE_DELIM.test(body.trimEnd())) {
-      // FIX (Guardian section 13, pass 14 - B5): a bare "--" (no trailing space - many clients and Postmark's text conversion strip it)
+      // FIX (Guardian section 13, pass 14 - B5): a bare "--" (no trailing space - many clients and text conversions strip it)
       // ended the scan too, so "Add dark mode.\n--\nAlso add Spanish." lost the second request. The real delimiter is "-- " and always
       // ends the scan; a bare "--" only does when what follows is signature-sized, otherwise it is just a separator line.
       const strict = /^--\s$/.test(body)

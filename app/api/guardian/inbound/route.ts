@@ -18,72 +18,54 @@ import { isWorkspaceLapsed } from '@/lib/billing/plans'
 import { EVIDENCE_BUCKET } from '@/lib/utils/storage-cleanup'
 import { ALLOWED_ATTACHMENT_TYPES, matchesDeclaredType, resolveAttachmentType } from '@/lib/utils/file-signature'
 import { sameEmail } from '@/lib/utils/escape-like'
+import {
+  parseReceivedEvent, recipientHeader, verifyInboundSignature, fetchReceivedEmail, listReceivedAttachments,
+  downloadReceivedAttachment, toSenderView, senderFailedAuthentication, InboundFetchError,
+  type InboundAttachmentFile,
+} from '@/lib/email/resend-inbound'
 
-// BUG-016: verify the Postmark inbound webhook before processing.
+// Guardian inbound email, delivered by Resend ("Receiving").
 //
-// FIX (deep audit, section 13 — flagship finding): this route used to
-// check an `x-postmark-signature` header against an HMAC-SHA256 digest —
-// a scheme Postmark has never implemented. Postmark's own docs are
-// explicit: "Postmark doesn't sign webhooks with HMAC. Protect the
-// endpoint with HTTP Basic Authentication and IP allowlisting." There is
-// no per-webhook signing secret to "copy" from Postmark's dashboard the
-// way the old comment (and the README) claimed — inbound auth is done by
-// embedding credentials directly in the webhook URL Postmark is
-// configured to POST to (https://<user>:<password>@host/path), which
-// Postmark then sends back as a standard `Authorization: Basic ...`
-// header on every request. Every prior audit round hardened the *compare*
-// (timing-safe equality, escaping the domain regex) without ever
-// verifying the mechanism itself against a real Postmark request — so
-// this route has almost certainly been rejecting 100% of genuine inbound
-// email with a 401 since the feature shipped. Switched to what Postmark
-// actually sends: HTTP Basic Auth, checked with a timing-safe comparison
-// on the password half (the username is caller-chosen and not itself a
-// secret — POSTMARK_INBOUND_WEBHOOK_SECRET is the value that must match).
-// See README §4 for the updated setup steps.
-function verifyPostmarkAuth(request: NextRequest): boolean {
-  const expectedPassword = process.env.POSTMARK_INBOUND_WEBHOOK_SECRET
-  if (!expectedPassword) return false
-
-  const authHeader = request.headers.get('authorization')
-  if (!authHeader?.startsWith('Basic ')) return false
-
-  let decoded: string
-  try { decoded = Buffer.from(authHeader.slice('Basic '.length), 'base64').toString('utf8') }
-  catch { return false }
-
-  // Basic Auth payload is "user:password" — the username is arbitrary
-  // (Postmark just echoes back whatever was in the configured URL), only
-  // the password half is the actual shared secret.
-  const sep = decoded.indexOf(':')
-  const password = sep === -1 ? decoded : decoded.slice(sep + 1)
-
-  const expected = Buffer.from(expectedPassword)
-  const actual   = Buffer.from(password)
-  if (expected.length !== actual.length) return false
-  return crypto.timingSafeEqual(expected, actual)
-}
+// Resend POSTs a small Svix-signed `email.received` event (ids, addresses, subject - no body). The body, headers and
+// attachments are then fetched from the Resend API (lib/email/resend-inbound.ts). Any failure to fetch answers 500 so
+// Resend redelivers; nothing is stored until the fetch has succeeded, so a redelivery is always safe.
+//
+// Auth: the Svix signature (HMAC over id.timestamp.body, 5-minute replay window) with RESEND_INBOUND_WEBHOOK_SECRET -
+// a per-endpoint secret distinct from RESEND_WEBHOOK_SECRET (the outbound delivery webhook). Missing secret = 503, bad
+// signature = 401.
+//
+// Replaces the Postmark inbound webhook (HTTP Basic Auth in the URL; attachments base64-inlined in the JSON, which
+// Vercel's 4.5 MB request cap made unreceivable above ~3 MB). See README section 4.
+// A Resend event older than this with a 404 on fetch is treated as expired (Resend keeps received mail 30 days).
+const EXPIRED_AFTER_MS = 60 * 60 * 1000
 
 export async function POST(request: NextRequest) {
   try {
-    if (!verifyPostmarkAuth(request)) {
-      console.warn('Postmark inbound auth failed')
+    const rawBody = await request.text()
+    const secret = process.env.RESEND_INBOUND_WEBHOOK_SECRET
+    if (!secret) {
+      console.error('Guardian inbound: RESEND_INBOUND_WEBHOOK_SECRET is not set')
+      return NextResponse.json({ error: 'Inbound webhook not configured' }, { status: 503 })
+    }
+    if (!verifyInboundSignature(rawBody, request.headers, secret)) {
+      console.warn('Guardian inbound: signature check failed')
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    const rawBody  = await request.text()
-    let payload: any
-    try { payload = JSON.parse(rawBody) }
+    let event: any
+    try { event = JSON.parse(rawBody) }
     catch { return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 }) }
+    const ev = parseReceivedEvent(event)
+    if (!ev) return NextResponse.json({ ok: true, message: 'Not an email.received event — ignored' })
 
-    // FIX (independent pass, section 13 - B1): these four headers go into source_metadata (jsonb), the flag's audit
+    // FIX (independent pass, section 13 - B1): these header-derived strings go into source_metadata (jsonb), the flag's audit
     // metadata and the retry path, but were the only inbound text not scrubbed. A NUL (or half an emoji) in a
     // Subject/From - trivial to craft with a MIME encoded-word - made the check insert fail, the route answered 500
-    // and Postmark redelivered it forever: the email was never stored or checked. Scrub and cap them like the body.
-    const toEmail    = truncateText(stripUnstorableText(String(payload.OriginalRecipient || payload.To || '')), 500)
-    const fromEmail  = truncateText(stripUnstorableText(String(payload.From || '')), 500)
-    const fromAddr   = truncateText(stripUnstorableText(senderEmail(payload)), 320)
-    const subject    = truncateText(stripUnstorableText(String(payload.Subject || '')), 1000)
-    const messageId  = typeof payload.MessageID === 'string' && payload.MessageID ? truncateText(stripUnstorableText(payload.MessageID), 200) : null
+    // and the provider redelivered it forever: the email was never stored or checked. Scrub and cap them like the body.
+    // Resend's own email id is the idempotency key: it is identical on every redelivery of the same event.
+    const toEmail    = truncateText(stripUnstorableText(recipientHeader(ev)), 500)
+    const subject    = truncateText(stripUnstorableText(ev.subject), 1000)
+    const messageId  = truncateText(stripUnstorableText(ev.emailId), 200)
 
     // Extract the project from the guardian address (proj-{8chars}@guard.scopegov.app).
     // matchGuardianAddress anchors the whole address (the old regex also matched
@@ -92,11 +74,6 @@ export async function POST(request: NextRequest) {
     const guardianPrefix = matchGuardianAddress(toEmail, guardianDomain)
     if (!guardianPrefix) {
       return NextResponse.json({ ok: true, message: 'Not a Guardian address — ignored' })
-    }
-
-    // Bounces / out-of-office / list mail would otherwise cost two AI calls each and raise junk flags.
-    if (isAutomatedMessage(payload)) {
-      return NextResponse.json({ ok: true, message: 'Automated message — skipped' })
     }
 
     const service = createServiceClient()
@@ -112,7 +89,7 @@ export async function POST(request: NextRequest) {
     const project = projects?.[0]
 
     if (!project) {
-      // A read error must be retried by Postmark (500), not swallowed as "no such project".
+      // A read error must be retried by Resend (500), not swallowed as "no such project".
       if (projectErr) {
         console.error('Guardian inbound: project fetch failed', projectErr)
         return NextResponse.json({ error: 'Internal error' }, { status: 500 })
@@ -123,18 +100,18 @@ export async function POST(request: NextRequest) {
 
     // A suspended / deleted workspace is gone everywhere else (session, portal, the stall crons) —
     // its project address must not keep spending AI, raising flags and emailing the team. Fail
-    // closed if the workspace row didn't come back. 200 so Postmark doesn't redeliver.
+    // closed if the workspace row didn't come back. 200 so Resend doesn't redeliver.
     if (!project.workspaces || project.workspaces.deleted_at)
       return NextResponse.json({ ok: true, message: 'Workspace inactive — message not processed' })
 
     // Archived / Complete projects accept no new checks. (There is deliberately NO auto-reply:
-    // Postmark inbound never sends one, and replying to an unauthenticated sender's
-    // address is a backscatter vector. The old comment claiming Postmark handles it was wrong.)
+    // inbound never sends one, and replying to an unauthenticated sender's
+    // address is a backscatter vector. A past comment claiming the provider handles it was wrong.)
     if (['Archived', 'Complete'].includes(project.status)) {
       return NextResponse.json({ ok: true, message: 'Project inactive — message not processed' })
     }
 
-    // Idempotency: Postmark re-delivers on any non-2xx (and after our own 500s). Without this a
+    // Idempotency: Resend re-delivers on any non-2xx (and after our own 500s). Without this a
     // redelivery re-ran the whole paid pipeline.
     if (messageId) {
       const { data: seen } = await (service as any).from('guardian_checks')
@@ -152,13 +129,37 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: true, message: 'Project paused — email not checked' })
     }
 
+    // ── Fetch the message (body, headers, attachments) from Resend ──
+    // Done after every cheap DB filter above, so a redelivery, an unknown address or a paused project costs no API call.
+    // Any failure throws -> 500 -> Resend redelivers, before anything has been stored. A 404 on an event more than an
+    // hour old means the message has expired on Resend's side: nothing a retry can fix, so acknowledge it.
+    let received: Awaited<ReturnType<typeof fetchReceivedEmail>>
+    let attachmentFiles: InboundAttachmentFile[] = []
+    try {
+      received = await fetchReceivedEmail(ev.emailId)
+      if (received.attachmentCount > 0) attachmentFiles = (await listReceivedAttachments(ev.emailId)).slice(0, 10)
+    } catch (e) {
+      const expired = e instanceof InboundFetchError && e.status === 404 && ev.eventAtMs !== null && Date.now() - ev.eventAtMs > EXPIRED_AFTER_MS
+      if (!expired) throw e
+      console.warn(`Guardian inbound: message ${ev.emailId} no longer available on Resend — acknowledged`)
+      return NextResponse.json({ ok: true, message: 'Message no longer available' })
+    }
+    const sender = toSenderView(ev, received)
+
+    // Bounces / out-of-office / list mail would otherwise cost two AI calls each and raise junk flags.
+    if (isAutomatedMessage(sender)) {
+      return NextResponse.json({ ok: true, message: 'Automated message — skipped' })
+    }
+
+    const fromEmail  = truncateText(stripUnstorableText(String(sender.From || '')), 500)
+    const fromAddr   = truncateText(stripUnstorableText(senderEmail(sender)), 320)
+
     // ── Build the text to classify ────────────────────────────
-    // Prefer Postmark's own reply-stripping; fall back to ours. The SUBJECT is part of the
+    // Resend has no reply-stripping field, so our own extractUnquotedContent does all of it. The SUBJECT is part of the
     // request ("Request: add a Spanish version") and used to be dropped entirely.
     const isForward = isForwardSubject(subject)
-    const stripped  = typeof payload.StrippedTextReply === 'string' ? toPlainText(payload.StrippedTextReply) : ''
-    const fullText  = payload.TextBody ? toPlainText(String(payload.TextBody)) : toPlainText(String(payload.HtmlBody || ''))
-    const bodyText  = (!isForward && stripped) ? stripped : extractUnquotedContent(fullText, { isForward })
+    const fullText  = received.text ? toPlainText(received.text) : toPlainText(received.html)
+    const bodyText  = extractUnquotedContent(fullText, { isForward })
     const subj      = cleanSubject(subject)
     let cleanContent = [subj ? `Subject: ${subj}` : '', bodyText].filter(Boolean).join('\n\n').trim()
     if (cleanContent.length > MAX_CHECK_CONTENT_CHARS) cleanContent = truncateText(cleanContent, MAX_CHECK_CONTENT_CHARS)
@@ -172,12 +173,16 @@ export async function POST(request: NextRequest) {
     const snapshot    = project.project_scope_snapshot // one-to-one → object
 
     // ── Sender recognition (informational — never blocks) ─────
-    const senderKnown = await isKnownSender(service, project.workspace_id, project.client_id, fromAddr)
-    const rawAttachments: any[] = Array.isArray(payload.Attachments) ? payload.Attachments.slice(0, 10) : []
-    const attachments = rawAttachments.map((a: any) => truncateText(stripUnstorableText(String(a?.Name || '')), 120)).filter(Boolean)
+    // A sender that fails DMARC (verified by Resend's receiving server, not the sender's own headers) is not "known"
+    // even when the From address matches the client: that is exactly what a spoofed From looks like.
+    const spoofed     = senderFailedAuthentication(received.authentication)
+    const senderKnown = !spoofed && await isKnownSender(service, project.workspace_id, project.client_id, fromAddr)
+    const attachments = attachmentFiles.map(a => truncateText(stripUnstorableText(a.filename), 120)).filter(Boolean)
     const sourceMetadata: Record<string, unknown> = {
       from: fromEmail, from_address: fromAddr, subject, to: toEmail,
-      ...(messageId ? { message_id: messageId } : {}),
+      message_id: messageId,
+      ...(received.rfcMessageId ? { rfc_message_id: truncateText(stripUnstorableText(received.rfcMessageId), 300) } : {}),
+      ...(received.authentication ? { authentication: received.authentication } : {}),
       sender_known: senderKnown,
       ...(attachments.length ? { attachments } : {}),
     }
@@ -192,39 +197,41 @@ export async function POST(request: NextRequest) {
       if (error) {
         // Unique (project, message_id) violation = a concurrent delivery of the same email won the race.
         if ((error as any).code === '23505') return { id: null as string | null, raced: true }
-        throw new Error(`Could not store check: ${error.message}`) // → 500 → Postmark redelivers (was: silent 200 = email lost)
+        throw new Error(`Could not store check: ${error.message}`) // → 500 → Resend redelivers (was: silent 200 = email lost)
       }
       return { id: data.id as string, raced: false }
     }
 
-    // FEATURE (independent pass round 2, section 13 — feature gap): Postmark's payload carries
-    // each attachment's base64 Content alongside its Name, but only the Name was ever kept
-    // (`attachments` above, in source_metadata) — the file itself was discarded. Best-effort: a
-    // bad/oversized/unrecognised attachment is skipped and logged, never turns a stored,
-    // otherwise-successful check into a 500 (which would make Postmark redeliver the whole email).
+    // FEATURE (independent pass round 2, section 13 — feature gap): the attachment files themselves are kept (not just their
+    // names). Best-effort: a bad/oversized/unrecognised attachment is skipped and logged, never turns a stored,
+    // otherwise-successful check into a 500 (which would make Resend redeliver the whole email, and the redelivery
+    // returns "Already processed" so the file could not be recovered that way anyway).
     // Same private bucket + magic-byte validation the manual flag/exception evidence upload uses
     // (lib/utils/file-signature.ts) — this is the same kind of file, just arriving by a different
     // door. Saved regardless of which branch below stores the row (queued-pending / rate-limited /
     // classified) — the client's evidence matters even for a check that isn't classified yet.
-    // NOTE (pass 14 - B1): the platform, not this constant, is the real ceiling. Vercel refuses a request body over 4.5 MB with a 413
-    // before this route runs, and Postmark sends attachments base64-encoded inside the JSON - so a mail whose attachments total more
-    // than ~3 MB never arrives here (Postmark retries, then gives up). That cannot be fixed inside this handler; see README
-    // "Guardian inbound size limit" for the options (a pre-processing Worker that drops attachment bodies over the limit).
-    const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024 // never reached above ~3 MB on Vercel - kept as a sanity bound
+    // Attachments are downloaded from Resend's signed URLs by this function, so they never ride in the webhook request:
+    // the old ~3 MB ceiling (Vercel's 4.5 MB body cap on base64-in-JSON) is gone and these limits are the real ones.
+    // The size is known from the listing before any bytes are fetched.
+    const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
+    const MAX_TOTAL_ATTACHMENT_BYTES = 30 * 1024 * 1024 // per email: bounds time and memory inside maxDuration
     const saveCheckAttachments = async (checkId: string) => {
-      for (const a of rawAttachments) {
+      let total = 0
+      for (const a of attachmentFiles) {
         try {
-          const name = truncateText(stripUnstorableText(String(a?.Name || '')), 200) || 'attachment'
+          const name = truncateText(stripUnstorableText(a.filename), 200) || 'attachment'
           // FIX (independent pass 5, section 13 - L1): some mail clients label a PDF / .docx / .eml
           // application/octet-stream (or send no type). The manual upload route resolves those from the extension;
           // this path took the declared type verbatim, so the file was silently dropped. Same resolver, and binary
           // types still have to pass the magic-byte check below.
-          const contentType = resolveAttachmentType(name, String(a?.ContentType || '').split(';')[0].trim().toLowerCase())
-          const b64 = typeof a?.Content === 'string' ? a.Content : null
-          if (!b64 || !ALLOWED_ATTACHMENT_TYPES.has(contentType)) continue
-          const buffer = Buffer.from(b64, 'base64')
-          if (buffer.length === 0 || buffer.length > MAX_ATTACHMENT_BYTES) continue
+          const contentType = resolveAttachmentType(name, String(a.contentType || '').split(';')[0].trim().toLowerCase())
+          if (!ALLOWED_ATTACHMENT_TYPES.has(contentType)) continue
+          if (a.size > MAX_ATTACHMENT_BYTES || total + a.size > MAX_TOTAL_ATTACHMENT_BYTES) continue
+          const buffer = await downloadReceivedAttachment(a, MAX_ATTACHMENT_BYTES)
+          if (!buffer || buffer.length === 0) continue
+          if (total + buffer.length > MAX_TOTAL_ATTACHMENT_BYTES) continue
           if (!matchesDeclaredType(contentType, buffer)) continue
+          total += buffer.length
           const rawExt = name.includes('.') ? (name.split('.').pop() || '') : ''
           const ext = rawExt.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 10) || 'bin'
           const storagePath = `${project.workspace_id}/guardian_check/${checkId}/${crypto.randomUUID()}.${ext}`
@@ -249,7 +256,7 @@ export async function POST(request: NextRequest) {
     // rate-limited) stored EVERY email — content up to 20k chars plus up to 10 MB per attachment — with no bound.
     // The project address is unauthenticated (sender recognition is informational, by design), so anyone who knows
     // or guesses it could grow the table and the evidence bucket without limit once the rate limit tripped. Cap the
-    // unclassified backlog per project; past the cap the mail is dropped with a 200 (a 5xx would only make Postmark
+    // unclassified backlog per project; past the cap the mail is dropped with a 200 (a 5xx would only make Resend
     // redeliver the flood) and logged. Legitimate volume never comes near it: the sweep drains the queue.
     const MAX_QUEUED_PER_PROJECT = 200
     const queueFull = async (): Promise<boolean> => {

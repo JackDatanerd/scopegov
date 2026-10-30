@@ -148,7 +148,7 @@ export function truncateText(text: string | null | undefined, maxLength: number)
  * Remove what Postgres cannot store in text/jsonb: NUL (U+0000) is deleted and an unpaired surrogate (half an
  * emoji) becomes U+FFFD. Valid surrogate pairs are untouched. Guardian text arrives from outside the app (inbound
  * email bodies, pasted client messages) and a single such character fails the whole insert with a generic 500 -
- * for an inbound email Postmark then redelivers into the same failure and the request is never recorded.
+ * for an inbound email Resend then redelivers into the same failure and the request is never recorded.
  */
 export function stripUnstorableText(text: string | null | undefined): string {
   if (!text) return ''

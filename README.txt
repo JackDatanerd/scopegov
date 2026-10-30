@@ -142,7 +142,7 @@ VERIFICATION DONE
 ------------------
 - Full adversarial pass across all ~90 API routes, all 41 tables' RLS,
   middleware/AAL2 enforcement, MFA flows, portal token routes (CO/SOW/
-  invoice), both webhooks (Paystack + Postmark), the approval engine,
+  invoice), both webhooks (Paystack + Resend inbound), the approval engine,
   cron auth, file uploads, notifications, every rich-text/plain-text
   sanitization write path, client components, and `npm audit`.
 - `npx tsc --noEmit` clean on every changed file.
