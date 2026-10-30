@@ -65,6 +65,8 @@ import { legalPagesInPlainLanguage } from './articles/legal-pages-in-plain-langu
 import { guardianSettings } from './articles/guardian-settings'
 import { readYourReports } from './articles/read-your-reports'
 import { readYourPortfolio } from './articles/read-your-portfolio'
+import { whatYourClientSeesCo } from './articles/what-your-client-sees-co'
+import { whatYourClientSeesInvoice } from './articles/what-your-client-sees-invoice'
 import type { HelpArticle, HelpCategory } from './types'
 
 export const ARTICLES: HelpArticle[] = [
@@ -130,6 +132,8 @@ export const ARTICLES: HelpArticle[] = [
   guardianSettings,
   readYourReports,
   readYourPortfolio,
+  whatYourClientSeesCo,
+  whatYourClientSeesInvoice,
 ]
 
 export function getArticle(slug: string): HelpArticle | null {

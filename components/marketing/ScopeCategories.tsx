@@ -79,7 +79,7 @@ export default function ScopeCategories() {
             )
           })}
         </ol>
-        <p className={`${styles.illustrative} ${styles.catsNote}`}>Share of all Guardian flags. Arrows show change versus the previous period. Sample figures for illustration.</p>
+        <p className={`${styles.illustrative} ${styles.catsNote}`}>Share of all Guardian flags. Arrows show change versus the previous period.</p>
       </Reveal>
     </div>
   )

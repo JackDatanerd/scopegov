@@ -1,0 +1,10 @@
+Help articles: "What does my client see when they open my change order..." (change-orders, order 6) and
+"What does my client see when they open my invoice, and how do they pay?" (invoicing, order 6).
+Base: e6b5bcd. Content only; no product code touched. Checked against the portal pages and email templates 2026-10-29.
+
+NEW   lib/help/articles/what-your-client-sees-co.ts       (email, page, the three choices, credit COs cannot be countered, accept/counter/decline wording, every dead-end message)
+NEW   lib/help/articles/what-your-client-sees-invoice.ts  (email, status badge, money block, no card button, "I've already paid this", "Question about this invoice?", contract position)
+EDIT  lib/help/index.ts  (+2 imports, +2 ARTICLES entries). Shipped whole, based on e6b5bcd. If you registered other articles since, delete this file
+      from the extracted files and add the two entries by hand; tests/help-registry-complete.test.ts will fail loudly if anything is missing.
+
+VERIFIED: tsc clean; full vitest suite passing (4639 tests).
