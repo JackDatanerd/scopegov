@@ -1,0 +1,8 @@
+Help article: "Reading your dashboard: what 'Needs attention' means and what to do about each item" (category: getting-started, order 6).
+Base: 574da8a. Content only; no product code touched.
+
+NEW   lib/help/articles/read-your-dashboard.ts  (the four cards; every Attention-register reason from lib/utils/attention.ts with its next step;
+      the Proactive risk alerts setting; in-progress list; activity log; why the dashboard differs by role; checked 2026-10-29)
+EDIT  lib/help/index.ts  (+1 import, +1 registry entry; if this file changed since 574da8a, add those two lines by hand instead of overwriting)
+
+VERIFIED: tsc clean; full vitest suite passing.
