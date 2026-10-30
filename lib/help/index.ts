@@ -62,6 +62,9 @@ import { mfaLostPhoneOrBackupCodes } from './articles/mfa-lost-phone-or-backup-c
 import { passwordResetAndChange } from './articles/password-reset-and-change'
 import { sessionsWhereYoureSignedIn } from './articles/sessions-where-youre-signed-in'
 import { legalPagesInPlainLanguage } from './articles/legal-pages-in-plain-language'
+import { guardianSettings } from './articles/guardian-settings'
+import { readYourReports } from './articles/read-your-reports'
+import { readYourPortfolio } from './articles/read-your-portfolio'
 import type { HelpArticle, HelpCategory } from './types'
 
 export const ARTICLES: HelpArticle[] = [
@@ -124,6 +127,9 @@ export const ARTICLES: HelpArticle[] = [
   passwordResetAndChange,
   sessionsWhereYoureSignedIn,
   legalPagesInPlainLanguage,
+  guardianSettings,
+  readYourReports,
+  readYourPortfolio,
 ]
 
 export function getArticle(slug: string): HelpArticle | null {

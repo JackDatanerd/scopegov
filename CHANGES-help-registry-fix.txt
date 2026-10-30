@@ -1,0 +1,9 @@
+Fix: Guardian settings, Reports and Portfolio were in the repo but NOT registered in lib/help/index.ts, so they did not appear in /help.
+Base: 353ba21. Help content/tests only; no product code touched.
+
+EDIT  lib/help/index.ts  (+3 imports, +3 ARTICLES entries: guardianSettings, readYourReports, readYourPortfolio). Shipped as a whole file, based on 353ba21.
+NEW   tests/help-registry-complete.test.ts  (fails if any file in lib/help/articles/ is not imported and listed in ARTICLES, so a forgotten registration can't be silent again)
+
+If you registered other new articles after 353ba21, do NOT overwrite index.ts: delete it from the extracted files before committing and add the three entries by hand.
+
+VERIFIED: the new test failed on 353ba21 naming exactly those three; tsc clean; full vitest suite passing after the fix (4627 tests).
