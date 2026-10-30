@@ -35,10 +35,17 @@ const nextConfig = {
       { key: 'Cache-Control', value: 'no-store, max-age=0' },
       { key: 'X-Frame-Options', value: 'DENY' },
     ]
+    // Signed-out pages that exist for a task, not as search results (a sign-in form, a one-time invite link, a
+    // password reset). Sent as a header rather than a robots.txt Disallow on purpose: a crawler that is disallowed
+    // never fetches the page, so it never sees a noindex and may still list the bare URL.
+    const noIndex = [{ key: 'X-Robots-Tag', value: 'noindex, nofollow' }]
     return [
       { source: '/:path*', headers: baseline },
       { source: '/portal/:path*', headers: tokenPages },
       { source: '/api/portal/:path*', headers: tokenPages },
+      { source: '/:page(login|forgot-password|reset-password|mfa-challenge|mfa-setup|onboarding)', headers: noIndex },
+      { source: '/invite/:path*', headers: noIndex },
+      { source: '/admin/:path*', headers: noIndex },
     ]
   },
   images: {

@@ -1,6 +1,7 @@
 import styles from '@/styles/legal.module.css'
 
 export const metadata = {
+  alternates: { canonical: '/legal/dpa' },
   title: 'Data Processing Addendum',
   description: 'Terms governing ScopeGov\'s processing of personal data on behalf of customers.',
 }

@@ -1,6 +1,7 @@
 import styles from '@/styles/legal.module.css'
 
 export const metadata = {
+  alternates: { canonical: '/legal/privacy' },
   title: 'Privacy Policy',
   description: 'How ScopeGov collects, uses, and protects your data.',
 }

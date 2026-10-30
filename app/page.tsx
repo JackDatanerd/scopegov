@@ -5,6 +5,7 @@ import MarketingHome from '@/components/marketing/MarketingHome'
 
 export const metadata: Metadata = {
   title: { absolute: 'ScopeGov — 83% of change orders get approved' },
+  alternates: { canonical: '/' },
   description: 'Guardian reads every client email against your signed Statement of Work, flags what is out of scope, and drafts the change order. 45,000+ SOWs, 30,000+ change orders, $36M recovered.',
 }
 

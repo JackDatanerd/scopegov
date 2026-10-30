@@ -1,0 +1,58 @@
+name: IndexNow (tell Bing & co. about new pages)
+
+# After every successful PRODUCTION deploy on Vercel, read the live sitemap and ping IndexNow for URLs that are new or
+# whose <lastmod> changed. New marketing pages / blog posts therefore reach Bing, Yandex, Naver, Seznam, Yep (and via Bing:
+# Yahoo, DuckDuckGo, Ecosia) with no manual submission. Google is not part of IndexNow — it re-reads the sitemap on its
+# own once it has been submitted in Search Console (one time).
+#
+# Run it by hand the first time (Actions -> IndexNow -> Run workflow) to submit every page that exists today.
+# The key is public (public/<key>.txt) — no secrets are needed. A failure here never affects the deploy.
+
+on:
+  deployment_status:
+  workflow_dispatch:
+    inputs:
+      force_all:
+        description: 'Resubmit every URL, ignoring what was already sent'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: indexnow
+  cancel-in-progress: false
+
+jobs:
+  indexnow:
+    # Vercel reports its production deployments with environment "Production".
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.deployment_status.state == 'success' && github.event.deployment_status.environment == 'Production')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            public
+            scripts
+          sparse-checkout-cone-mode: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # What was already submitted. A fresh key per run (so the cache is re-saved) with a prefix restore.
+      - uses: actions/cache@v4
+        with:
+          path: .indexnow-state.json
+          key: indexnow-state-${{ github.run_id }}
+          restore-keys: indexnow-state-
+
+      - name: Submit new or changed URLs
+        env:
+          SITE_URL: https://www.scopegov.app
+          FORCE_ALL: ${{ github.event.inputs.force_all == 'true' && '1' || '' }}
+        run: node scripts/indexnow.mjs

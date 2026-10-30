@@ -1,6 +1,7 @@
 import styles from '@/styles/legal.module.css'
 
 export const metadata = {
+  alternates: { canonical: '/legal/security' },
   title: 'Security',
   description: 'How ScopeGov protects workspace and client data.',
 }

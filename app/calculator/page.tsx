@@ -2,6 +2,7 @@ import PlanCalculator from '@/components/calculator/PlanCalculator'
 import { parseCalculatorParams } from '@/lib/billing/roi-url'
 
 export const metadata = {
+  alternates: { canonical: '/calculator' },
   title: 'What is scope creep costing you? · ScopeGov',
   description: 'Estimate what scope creep costs your agency each year and which ScopeGov plan fits. Every number is yours to edit.',
 }

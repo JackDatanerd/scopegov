@@ -1,6 +1,7 @@
 import styles from '@/styles/legal.module.css'
 
 export const metadata = {
+  alternates: { canonical: '/legal/cookies' },
   title: 'Cookie Policy',
   description: 'What cookies ScopeGov sets and why.',
 }

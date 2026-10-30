@@ -1,6 +1,7 @@
 import styles from '@/styles/legal.module.css'
 
 export const metadata = {
+  alternates: { canonical: '/legal/terms' },
   title: 'Terms of Service',
   description: 'The agreement governing use of ScopeGov.',
 }

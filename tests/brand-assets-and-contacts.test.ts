@@ -89,8 +89,8 @@ describe('manifest + SVG favicon', () => {
 })
 
 describe('sitemap', () => {
-  it('lists only public pages on the canonical host, homepage first', () => {
-    const urls = sitemap().map((e) => e.url)
+  it('lists only public pages on the canonical host, homepage first', async () => {
+    const urls = (await sitemap()).map((e) => e.url)
     expect(urls[0]).toBe('https://www.scopegov.app')
     for (const u of urls) {
       expect(u.startsWith('https://www.scopegov.app')).toBe(true)
@@ -98,11 +98,11 @@ describe('sitemap', () => {
     }
     expect(urls).toContain('https://www.scopegov.app/calculator')
   })
-  it('every listed path exists as a route', () => {
-    for (const e of sitemap()) {
+  it('every listed path exists as a route', async () => {
+    for (const e of await sitemap()) {
       const path = new URL(e.url).pathname
       if (path === '/') continue
-      const hits = ['app', 'app/(auth)'].map((b) => join(root, b, path, 'page.tsx')).filter(existsSync)
+      const hits = ['app', 'app/(auth)', 'app/(marketing)'].map((b) => join(root, b, path, 'page.tsx')).filter(existsSync)
       expect(hits.length, path).toBeGreaterThan(0)
     }
   })

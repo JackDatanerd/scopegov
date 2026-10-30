@@ -388,6 +388,7 @@ export const config = {
      * Match all request paths except:
      * - _next/static, _next/image (Next.js internals)
      * - favicon.ico, robots.txt, sitemap.xml (crawlers fetch these signed-out)
+     * - any .txt (the IndexNow ownership key /<key>.txt must be fetchable signed-out or every submission is rejected)
      * - Public assets
      *
      * FIX (Auth+MFA independent pass 6): /site.webmanifest and /browserconfig.xml
@@ -396,6 +397,6 @@ export const config = {
      * the manifest failed to parse and PWA install / tile metadata broke. Both are
      * static public files; exclude them like the images.
      */
-    '/((?!_next/static|_next/image|favicon.ico|robots.txt|sitemap.xml|.*\\.(?:svg|png|jpg|jpeg|gif|webp|webmanifest)$|browserconfig\\.xml$).*)',
+    '/((?!_next/static|_next/image|favicon.ico|robots.txt|sitemap.xml|.*\\.(?:svg|png|jpg|jpeg|gif|webp|webmanifest|txt)$|browserconfig\\.xml$).*)',
   ],
 }

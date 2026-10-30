@@ -1,0 +1,63 @@
+SEARCH INDEXING — sitemap auto-discovery, IndexNow, canonicals, noindex rules
+=============================================================================
+
+What this does
+--------------
+1. sitemap.xml now builds itself. Any page you create under  app/(marketing)/**/page.tsx  is listed automatically
+   (URL = folder path without route groups). Dynamic sections (a blog, [slug] routes) add ONE small function to
+   lib/seo/sources.ts. Nothing else to edit, nothing to resubmit anywhere.
+2. IndexNow: .github/workflows/indexnow.yml runs after every successful PRODUCTION deploy, reads the live sitemap and
+   tells Bing / Yandex / Naver / Seznam / Yep (and, through Bing, Yahoo / DuckDuckGo / Ecosia) about new or changed URLs.
+   scripts/indexnow.mjs does the work; public/28e21e4add6955d734c57ac5acf9ff06.txt is the (public) ownership key.
+3. Canonical URLs on /, /calculator, /signup and /legal/* point at https://www.scopegov.app, so app.scopegov.app (which
+   serves the same signed-out pages from the same deployment) is no longer a duplicate-content copy.
+4. X-Robots-Tag: noindex on /login, /forgot-password, /reset-password, /mfa-challenge, /mfa-setup, /onboarding,
+   /invite/*, /admin/*. /login is also removed from the sitemap.
+5. /signup gets its own title + description (app/(auth)/signup/layout.tsx; the page itself is a client component).
+6. Middleware matcher now lets signed-out requests fetch any .txt (needed for the IndexNow key; without it the key URL
+   is 307'd to /login and IndexNow rejects every submission). No app route ends in .txt (asserted by a test).
+
+Files
+-----
+ new   lib/seo/site.ts, lib/seo/public-pages.ts, lib/seo/sources.ts
+ new   scripts/indexnow.mjs
+ new   .github/workflows/indexnow.yml
+ new   public/28e21e4add6955d734c57ac5acf9ff06.txt
+ new   app/(auth)/signup/layout.tsx
+ new   tests/seo-indexing.test.ts
+ edit  app/sitemap.ts (now async, force-static; priority/changefreq dropped — Google ignores them)
+ edit  middleware.ts (matcher only: + txt)
+ edit  next.config.mjs (noindex header rules only)
+ edit  app/page.tsx, app/calculator/page.tsx, app/legal/{privacy,terms,dpa,security,cookies}/page.tsx (canonical only)
+ edit  tests/brand-assets-and-contacts.test.ts (sitemap() is async now; also looks in app/(marketing))
+ No migration. No env vars. No new dependencies.
+
+How to add pages later
+----------------------
+ Marketing page:  create app/(marketing)/pricing/page.tsx  -> /pricing is in the sitemap on the next deploy, and IndexNow
+                  announces it right after. Optional, only when you know the real date:
+                  export const lastModified = '2026-10-30'   (never faked; no date -> no <lastmod>)
+ Blog / [slug]:   register one source in lib/seo/sources.ts (example in that file).
+ Page in the wrong place: tests/seo-indexing.test.ts fails with a message saying where it belongs.
+ Note: the sitemap is generated at BUILD time. Content published without a redeploy needs a redeploy to appear.
+
+One-time steps only YOU can do (they need your logins / DNS)
+------------------------------------------------------------
+ A. Google Search Console -> Add property -> "Domain" -> scopegov.app -> add the DNS TXT record it shows.
+    (A Domain property covers www., app. and sign. at once.) Then Sitemaps -> submit  https://www.scopegov.app/sitemap.xml
+    Optional: URL Inspection on https://www.scopegov.app/ -> Request indexing.
+    Google has no public API for "index this URL" (the Indexing API is for job postings / live-stream pages only);
+    after the sitemap is submitted once, Google re-reads it by itself.
+ B. Bing Webmaster Tools -> sign in -> "Import from Google Search Console" (verifies in one click) -> Sitemaps -> submit the
+    same URL.
+ C. After this is merged and deployed: GitHub -> Actions -> "IndexNow" -> Run workflow (once) to submit today's pages.
+    From then on it runs by itself after each production deploy.
+ D. Optional: Yandex Webmaster (Yandex also takes IndexNow, so this is only for their reporting).
+
+Verified here
+-------------
+ tsc --noEmit clean; full vitest suite 386 files / 4663 tests passing; `next build` succeeds, /sitemap.xml prerenders as
+ static, the compiled middleware matcher includes the .txt exemption, the three header rules are in routes-manifest.
+ NOT verifiable from a sandbox: the GitHub Action itself (assumes Vercel reports production deployments as environment
+ "Production" via deployment_status — if the first production deploy after merging does not trigger it, run it by hand
+ with workflow_dispatch and tell me), and IndexNow's live response.
