@@ -1,0 +1,11 @@
+Help articles: "How do I search for a project, client, document or invoice?" (getting-started, order 9) and
+"How does the plan calculator work, and can I trust its number?" (billing-plans, order 5).
+Base: 1a6875b (upstream c8c9d9f is unrelated to lib/help). Content only; no product code touched. Checked against the code 2026-10-29.
+
+NEW   lib/help/articles/search-with-command-palette.ts  (Ctrl/Cmd+K is the only way to open search; 2-char minimum; what each type matches; caps; gating)
+NEW   lib/help/articles/plan-calculator-guide.ts        (who can open it; what it measures; every input; how the number is built; honest verdicts)
+EDIT  lib/help/index.ts  (+2 imports, +2 ARTICLES entries). Shipped whole; lib/help/index.ts is unchanged upstream since 1a6875b.
+      If you registered other articles since, delete it from the extracted files and add the two entries by hand;
+      tests/help-registry-complete.test.ts fails loudly if anything is missing.
+
+VERIFIED: tsc clean; full vitest suite passing (4657 tests).
