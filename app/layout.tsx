@@ -25,11 +25,12 @@ export const metadata: Metadata = {
   manifest: '/site.webmanifest',
   applicationName: 'ScopeGov',
   icons: {
+    // SVG first: browsers that support it draw it crisply at any size and zoom. The .ico (16/32/48 inside) is the fallback;
+    // it is declared 48x48 rather than 'any' because Chrome prefers an 'any' .ico over the SVG. The loose favicon-*.png files
+    // stay in /public for anything that requests them by path.
     icon: [
-      { url: '/favicon.ico', sizes: 'any' },
-      { url: '/favicon-16x16.png', sizes: '16x16', type: 'image/png' },
-      { url: '/favicon-32x32.png', sizes: '32x32', type: 'image/png' },
-      { url: '/favicon-48x48.png', sizes: '48x48', type: 'image/png' },
+      { url: '/icon.svg', sizes: 'any', type: 'image/svg+xml' },
+      { url: '/favicon.ico', sizes: '48x48' },
     ],
     apple: [
       { url: '/apple-touch-icon.png', sizes: '180x180', type: 'image/png' },

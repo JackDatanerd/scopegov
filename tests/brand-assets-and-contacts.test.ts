@@ -26,6 +26,8 @@ describe('favicon / icon set', () => {
     'public/android-chrome-192x192.png': [192, 192],
     'public/android-chrome-512x512.png': [512, 512],
     'public/mstile-150x150.png': [150, 150],
+    'public/android-chrome-maskable-192x192.png': [192, 192],
+    'public/android-chrome-maskable-512x512.png': [512, 512],
     'public/og-image.png': [1200, 630],
   }
   it('every PNG has the dimensions its name and metadata promise', () => {
@@ -52,6 +54,37 @@ describe('favicon / icon set', () => {
     const src = read('components/marketing/HomeMark.tsx')
     expect(src).not.toMatch(/M8 1\.5 2\.5 3\.6/) // old shield path
     expect(src).toContain('viewBox="0 0 64 64"')
+  })
+})
+
+describe('manifest + SVG favicon', () => {
+  const manifest = JSON.parse(read('public/site.webmanifest')) as { icons: { src: string; sizes: string; purpose?: string }[] }
+  it('every manifest icon file exists and matches its declared size', () => {
+    for (const ic of manifest.icons) {
+      const [w, h] = ic.sizes.split('x').map(Number)
+      expect(pngSize('public' + ic.src), ic.src).toEqual([w, h])
+    }
+  })
+  it('has "any" and "maskable" icons as separate entries (never the combined purpose)', () => {
+    const purposes = manifest.icons.map((i) => i.purpose)
+    expect(purposes).toContain('any')
+    expect(purposes).toContain('maskable')
+    expect(purposes.every((p) => p === 'any' || p === 'maskable')).toBe(true)
+  })
+  it('maskable icons are opaque full-bleed (corner pixel is brand green, not transparent)', () => {
+    for (const s of [192, 512]) {
+      const b = readFileSync(join(root, `public/android-chrome-maskable-${s}x${s}.png`))
+      expect(b[25], 'colour type 2 = RGB, no alpha').toBe(2)
+    }
+  })
+  it('icon.svg exists and layout declares it ahead of the .ico fallback', () => {
+    expect(existsSync(join(root, 'public/icon.svg'))).toBe(true)
+    const layout = read('app/layout.tsx')
+    const svgAt = layout.indexOf("'/icon.svg'")
+    const icoAt = layout.indexOf("'/favicon.ico'")
+    expect(svgAt).toBeGreaterThan(-1)
+    expect(icoAt).toBeGreaterThan(svgAt)
+    expect(layout).not.toMatch(/favicon\.ico',\s*sizes: 'any'/)
   })
 })
 

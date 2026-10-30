@@ -1,0 +1,15 @@
+CHANGES — favicon completion: maskable icons + SVG favicon (Oct 30 2026)
+
+Follow-up to CHANGES-homepage-brand-assets.txt. Completes the icon set so it does not need revisiting.
+
+- public/android-chrome-maskable-192x192.png, -512x512.png (new): opaque, full-bleed brand green with the scale inside Android's
+  safe zone (verified against a circular crop). Android adaptive icons crop to the OS shape, so the rounded/transparent "any"
+  icons would otherwise sit on a white or black plate.
+- public/site.webmanifest: icons split into separate "any" and "maskable" entries (never the combined purpose string).
+- public/icon.svg (new): scalable favicon, sharp at any tab size or zoom.
+- app/layout.tsx: icons.icon now lists /icon.svg (sizes any) then /favicon.ico (declared 48x48, since Chrome picks an
+  'any' .ico over the SVG). The 16/32/48 PNG <link>s are dropped from metadata; the files stay in /public for direct requests.
+- tests/brand-assets-and-contacts.test.ts: +4 tests (manifest icons exist at declared sizes, any/maskable entries, maskable
+  icons are opaque RGB, SVG declared before the .ico fallback).
+
+Verified: tsc --noEmit clean; full vitest run passes.
