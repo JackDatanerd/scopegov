@@ -50,6 +50,7 @@ import { changeOrCancelPlan } from './articles/change-or-cancel-plan'
 import { readOnlyWorkspace } from './articles/read-only-workspace'
 import { exportBeforeYouLeave } from './articles/export-before-you-leave'
 import { readYourDashboard } from './articles/read-your-dashboard'
+import { notificationsGuide } from './articles/notifications-guide'
 import type { HelpArticle, HelpCategory } from './types'
 
 export const ARTICLES: HelpArticle[] = [
@@ -100,6 +101,7 @@ export const ARTICLES: HelpArticle[] = [
   readOnlyWorkspace,
   exportBeforeYouLeave,
   readYourDashboard,
+  notificationsGuide,
 ]
 
 export function getArticle(slug: string): HelpArticle | null {

@@ -1,0 +1,8 @@
+Help article: "Notifications: why you did or did not get one, and how to tune them" (category: getting-started, order 7).
+Base: 948eb9a. Content only; no product code touched.
+
+NEW   lib/help/articles/notifications-guide.ts  (bell and Notifications page; Settings > Notifications Email/Bell switches and the bell-only list;
+      which permission receives which event; admin Workspace defaults and Lock; 90/180-day retention; checked 2026-10-29)
+EDIT  lib/help/index.ts  (+1 import, +1 registry entry; if this file changed since 948eb9a, add those two lines by hand instead of overwriting)
+
+VERIFIED: tsc clean; full vitest suite passing.
