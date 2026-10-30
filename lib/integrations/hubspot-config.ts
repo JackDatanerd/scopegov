@@ -13,8 +13,14 @@ import { signOAuthState, verifyOAuthState, type OAuthState, type StateCheck } fr
 
 export const HUBSPOT_AUTH_URL = 'https://app.hubspot.com/oauth/authorize'
 export const HUBSPOT_API = 'https://api.hubapi.com'
-export const HUBSPOT_TOKEN_URL = `${HUBSPOT_API}/oauth/v1/token`
+// OAuth API version 2026-03. The v1 endpoints (/oauth/v1/token, /access-tokens, /refresh-tokens) are DEPRECATED by HubSpot on 2027-02-16 and
+// then return errors, so nothing here may call them. Secrets and tokens travel in the form BODY, never in the URL (v3+ rejects URL placement).
+export const HUBSPOT_OAUTH_VERSION = '2026-03'
+export const HUBSPOT_TOKEN_URL = `${HUBSPOT_API}/oauth/${HUBSPOT_OAUTH_VERSION}/token`
+export const HUBSPOT_INTROSPECT_URL = `${HUBSPOT_API}/oauth/${HUBSPOT_OAUTH_VERSION}/token/introspect`
+export const HUBSPOT_REVOKE_URL = `${HUBSPOT_API}/oauth/${HUBSPOT_OAUTH_VERSION}/token/revoke`
 export const HUBSPOT_SCOPES = [
+  'oauth',
   'crm.objects.contacts.read', 'crm.objects.contacts.write',
   'crm.objects.companies.read', 'crm.objects.companies.write',
   'crm.objects.deals.read', 'crm.objects.deals.write',

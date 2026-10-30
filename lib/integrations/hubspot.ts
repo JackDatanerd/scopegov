@@ -3,7 +3,7 @@
 // Minimal HubSpot CRM client plus the mapping from HubSpot's answers to outcomes. Server-only. Every call goes through an
 // injectable `HubspotCaller`, so the whole sync is testable without HubSpot. Only api.hubapi.com is ever contacted.
 
-import { HUBSPOT_API, HUBSPOT_TOKEN_URL } from './hubspot-config'
+import { HUBSPOT_TOKEN_URL, HUBSPOT_REVOKE_URL } from './hubspot-config'
 
 export interface HubspotRequest { method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'; url: string; headers?: Record<string, string>; json?: unknown; form?: Record<string, string>; timeoutMs?: number }
 export interface HubspotResponse { status: number; json: any; retryAfter: string | null }
@@ -37,7 +37,7 @@ export type HubspotVerdict =
   | { outcome: 'rule_off'; error: string; reason: string }
   | { outcome: 'connection_off'; error: string; reason: string }
 
-const msgOf = (j: any): string => String(j?.message || j?.error_description || j?.error || '').slice(0, 300)
+const msgOf = (j: any): string => String(j?.error_description || j?.message || j?.error || '').slice(0, 300)
 
 export function classifyHubspot(res: Pick<HubspotResponse, 'status' | 'json'>): HubspotVerdict {
   const s = res.status, cat = String(res.json?.category || ''), msg = msgOf(res.json)
@@ -54,7 +54,8 @@ export function classifyHubspot(res: Pick<HubspotResponse, 'status' | 'json'>): 
 
 /** Token endpoint failures. BAD_REFRESH_TOKEN / invalid_grant = access revoked -> reconnect. */
 export function classifyHubspotToken(res: Pick<HubspotResponse, 'status' | 'json'>): HubspotVerdict {
-  const code = String(res.json?.status || res.json?.error || '')
+  // The 2026-03 API returns standard OAuth fields (error, error_description) AND HubSpot's own (status, message): read both.
+  const code = [res.json?.error, res.json?.status].filter(Boolean).join(' ')
   if (res.status === 400 || res.status === 401 || res.status === 403) {
     if (/BAD_REFRESH_TOKEN|invalid_grant|BAD_AUTH_CODE|invalid_client|BAD_CLIENT/i.test(code) || /refresh token|revoked|expired/i.test(msgOf(res.json)))
       return { outcome: 'connection_off', error: `HubSpot: ${code || 'token refused'}`, reason: 'HubSpot needs to be reconnected (access was revoked or expired).' }
@@ -82,7 +83,7 @@ export async function hubspotAccessToken(
 
 /** Best-effort revoke of a refresh token at HubSpot (disconnect). */
 export async function revokeHubspotToken(refreshToken: string, call: HubspotCaller = hubspotCall): Promise<void> {
-  try { await call({ method: 'DELETE', url: `${HUBSPOT_API}/oauth/v1/refresh-tokens/${encodeURIComponent(refreshToken)}` }) } catch { /* forgotten locally regardless */ }
+  try { await call({ method: 'POST', url: HUBSPOT_REVOKE_URL, form: { token: refreshToken } }) } catch { /* forgotten locally regardless */ }
 }
 
 // ── deal pipelines ───────────────────────────────────────────────────────────

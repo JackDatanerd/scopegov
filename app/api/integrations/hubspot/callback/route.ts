@@ -8,7 +8,7 @@ import { logAudit } from '@/lib/utils/audit'
 import { integrationAllowed } from '@/lib/integrations/plans'
 import { encryptSecret, integrationCryptoConfigured } from '@/lib/integrations/crypto'
 import { hubspotCall, revokeHubspotToken } from '@/lib/integrations/hubspot'
-import { HUBSPOT_API, HUBSPOT_EVENT_PERMISSIONS, HUBSPOT_SCOPES, HUBSPOT_TOKEN_URL, hubspotConfigured, hubspotRedirectUri, verifyHubspotState } from '@/lib/integrations/hubspot-config'
+import { HUBSPOT_API, HUBSPOT_EVENT_PERMISSIONS, HUBSPOT_INTROSPECT_URL, HUBSPOT_SCOPES, HUBSPOT_TOKEN_URL, hubspotConfigured, hubspotRedirectUri, verifyHubspotState } from '@/lib/integrations/hubspot-config'
 
 // Where HubSpot sends the browser back after "Connect app". Everything that matters is re-checked against the LIVE session: the signed
 // state must be valid, unexpired and name the same workspace and person who is signed in now. The person lands on Settings ->
@@ -41,9 +41,12 @@ export async function GET(request: NextRequest) {
     if (ex.status !== 200 || typeof b?.access_token !== 'string' || typeof b?.refresh_token !== 'string') { console.error('HubSpot token exchange refused:', b?.status || b?.error || `HTTP ${ex.status}`); return back(request, 'failed') }
 
     // Who and what did we just get access to? (Also proves every scope we need was granted.)
-    const info = await hubspotCall({ method: 'GET', url: `${HUBSPOT_API}/oauth/v1/access-tokens/${encodeURIComponent(b.access_token)}` })
+    // Token introspection (POST, token in the BODY). The v1 GET endpoint put the token in the URL and is deprecated.
+    const info = await hubspotCall({ method: 'POST', url: HUBSPOT_INTROSPECT_URL, form: {
+      client_id: process.env.HUBSPOT_CLIENT_ID!, client_secret: process.env.HUBSPOT_CLIENT_SECRET!, token: b.access_token, token_type_hint: 'access_token',
+    } })
     const granted: string[] = Array.isArray(info.json?.scopes) ? info.json.scopes : []
-    if (info.status !== 200 || !info.json?.hub_id) { await revokeHubspotToken(b.refresh_token, hubspotCall); return back(request, 'failed') }
+    if (info.status !== 200 || info.json?.active === false || !info.json?.hub_id) { await revokeHubspotToken(b.refresh_token, hubspotCall); return back(request, 'failed') }
     if (HUBSPOT_SCOPES.some(s => !granted.includes(s))) { await revokeHubspotToken(b.refresh_token, hubspotCall); return back(request, 'scope') }
     const hubId = String(info.json.hub_id)
 

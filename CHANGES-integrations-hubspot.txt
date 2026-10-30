@@ -5,6 +5,25 @@ ${NEXT_PUBLIC_APP_URL}/api/integrations/hubspot/callback, the SIX scopes crm.obj
 3) set HUBSPOT_CLIENT_ID + HUBSPOT_CLIENT_SECRET in Vercel  4) deploy  5) test with a free HubSpot TEST ACCOUNT first.
 No new cron (the every-minute integration-delivery cron does the work).
 
+!! v2 CORRECTION (supersedes the first HubSpot archive; apply THIS one — it contains every HubSpot file, whole)
+While writing the setup guide I checked HubSpot's CURRENT docs and found two things my first version got wrong:
+ 1. OAuth v1 is deprecated. HubSpot retires /oauth/v1/token, /oauth/v1/access-tokens and /oauth/v1/refresh-tokens on 2027-02-16 (then they
+    return errors) and my code used all three: it would have worked at launch and broken in ~3.5 months. Now: POST /oauth/2026-03/token
+    (exchange + refresh), POST /oauth/2026-03/token/introspect (token in the BODY, with client credentials; the connect callback also
+    refuses an `active:false` token), POST /oauth/2026-03/token/revoke on disconnect. Secrets and tokens are never in a URL (the newer API
+    rejects that). Token errors are read from the standard `error` field as well as HubSpot's `status`. The test fake now answers 410 to any
+    /oauth/v1/ call, and regression tests assert every OAuth call is 2026-03, POST, body-only; four mutants that restore the old calls are caught.
+ 2. The SCOPES: the authorize URL now also sends `oauth` (HubSpot's new apps declare it as a required scope and require every scope sent in the
+    URL to be declared as required). A test parses the app-hsmeta.json example in integrations/hubspot/README.md and fails if its
+    requiredScopes differ from the scopes the code sends.
+ 3. The SETUP in my first README was out of date: HubSpot disabled creating new "legacy public apps" in the UI (2026-05-26 new accounts /
+    2026-06-23 existing); new apps are made with the Projects platform + CLI (`hs project create`, app-hsmeta.json). integrations/hubspot/README.md
+    is rewritten, including the 25-INSTALL CAP on unlisted marketplace-distribution apps (customer #26 cannot connect until a Marketplace listing
+    is approved) — plan for that if you expect many HubSpot customers.
+Also updated from current docs: integrations/zapier (Node 22+, public listing is requested in the web UI, needs 3 users with a live Zap) and
+integrations/google-drive (Google Auth Platform tabs: Branding / Audience / Data Access / Clients). Nothing else changed.
+HubSpot CRM calls remain /crm/v3 and /crm/v4; HubSpot is moving to date-based API versions, so skim its changelog before launch.
+
 !! BEFORE YOU APPLY — READ THIS (I could not verify main this round)
 Midway through this round the repository stopped being readable to me (an anonymous `git clone`/`fetch` of
 github.com/JackDatanerd/scopegov now asks for a username — it looks private). Everything below was built and tested against
@@ -54,7 +73,7 @@ HOW
 - Migration 171: kind 'hubspot' (no signing secret, needs a connection, one rule per connection); ref types company/contact/deal/note;
   an index so the nightly cleanup can prune note refs (30 days).
 
-TESTS (tests/integrations-hubspot.test.ts, 92; tests/helpers/fake-hubspot.ts)
+TESTS (tests/integrations-hubspot.test.ts, 98; tests/helpers/fake-hubspot.ts)
 - Config/state/URL allow-list/classification/token caching; the engine end to end (create, link-not-overwrite, amounts opt-in, stages,
   later events, idempotency, backfill, escaping, orphan adoption, all three heals, every refusal without touching HubSpot, every HubSpot
   failure); the worker (incl. no-streak); every route (connect, callback in 14 variants, disconnect, rule edit, pipelines, backfill, overview).

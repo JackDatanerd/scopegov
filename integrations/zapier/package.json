@@ -6,5 +6,5 @@
   "main": "index.js",
   "scripts": { "validate": "zapier validate", "test": "node test.js" },
   "dependencies": { "zapier-platform-core": "19.2.1" },
-  "engines": { "node": ">=18" }
+  "engines": { "node": ">=22" }
 }

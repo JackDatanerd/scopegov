@@ -130,6 +130,44 @@ describe('access tokens', () => {
   })
 })
 
+describe('HubSpot OAuth API version (v1 is deprecated on 2027-02-16)', () => {
+  const OAUTH = (hs: FakeHubspot) => hs.calls.filter(c => c.url.includes('/oauth/'))
+  it('every OAuth call — connect, refresh, introspect, revoke — uses the 2026-03 API, with secrets and tokens in the BODY and never the URL', async () => {
+    routeWorld({ conn: null, rule: null }); const hs = h.hs as FakeHubspot; hs.exchange = GOOD_EXCHANGE
+    const st = signHubspotState({ ws: WS, uid: USER })
+    await callback(new NextRequest(`http://localhost/api/integrations/hubspot/callback?code=abc&state=${st}`))          // exchange + introspect
+    const w = world(); await run(w, evt('sow.signed'))                                                                     // refresh
+    await disconnect()                                                                                                     // revoke (token forgotten even if it fails)
+    const oauth = OAUTH(hs); expect(oauth.length).toBeGreaterThanOrEqual(4)
+    for (const c of oauth) {
+      const u = new URL(c.url)
+      expect(u.pathname, c.url).toMatch(/^\/oauth\/2026-03\/token(\/(introspect|revoke))?$/); expect(u.search, c.url).toBe(''); expect(c.method).toBe('POST'); expect(c.form).toBeTruthy()
+    }
+    expect(oauth.some(c => c.url.endsWith('/token/introspect'))).toBe(true); expect(oauth.some(c => c.url.endsWith('/token/revoke'))).toBe(true)
+    expect(hs.calls.some(c => c.url.includes('/oauth/v1/'))).toBe(false)
+  })
+  it('token introspection sends the client credentials and the token type in the body', async () => {
+    routeWorld({ conn: null, rule: null }); const hs = h.hs as FakeHubspot; hs.exchange = GOOD_EXCHANGE
+    await callback(new NextRequest(`http://localhost/api/integrations/hubspot/callback?code=abc&state=${signHubspotState({ ws: WS, uid: USER })}`))
+    expect(hs.calls.find(c => c.url.endsWith('/token/introspect'))!.form).toEqual({ client_id: 'hs-cid', client_secret: 'hs-secret', token: 'CJSh-access', token_type_hint: 'access_token' })
+  })
+  it('disconnect revokes with a POST carrying the refresh token in the body', async () => {
+    routeWorld(); const hs = h.hs as FakeHubspot; await disconnect()
+    const rv = hs.calls.find(c => c.url.endsWith('/token/revoke'))!; expect(rv.method).toBe('POST'); expect(rv.form).toEqual({ token: 'rt-hs' }); expect(rv.url).not.toContain('rt-hs')
+  })
+  it('an inactive token at connect time is refused (and revoked), not trusted', async () => {
+    routeWorld({ conn: null, rule: null }); const hs = h.hs as FakeHubspot; hs.exchange = GOOD_EXCHANGE
+    const orig = hs.call.bind(hs); hs.call = async (r: any) => { const res = await orig(r); return r.url.endsWith('/token/introspect') ? { ...res, json: { ...res.json, active: false } } : res }
+    expect(await (async () => { const r = await callback(new NextRequest(`http://localhost/api/integrations/hubspot/callback?code=abc&state=${signHubspotState({ ws: WS, uid: USER })}`)); return new URL(r.headers.get('location')!).searchParams.get('hubspot') })()).toBe('failed')
+    expect(tbl('integration_connections')).toHaveLength(0); expect(hs.revoked).toEqual(['na1-refresh-token'])
+  })
+  it('a revoked grant is recognised from the STANDARD OAuth error field as well as HubSpot\'s own', () => {
+    expect(classifyHubspotToken({ status: 400, json: { error: 'invalid_grant', error_description: 'refresh token is invalid, expired or revoked' } }).outcome).toBe('connection_off')
+    expect(classifyHubspotToken({ status: 400, json: { status: 'BAD_REFRESH_TOKEN', message: 'x' } }).outcome).toBe('connection_off')
+    expect(classifyHubspotToken({ status: 400, json: { error: 'invalid_request', error_description: 'missing parameter' } }).outcome).toBe('permanent')
+  })
+})
+
 describe('names and escaping', () => {
   it('splits a person name; escapes HTML', () => {
     expect(splitName('Jane Doe')).toEqual({ firstname: 'Jane', lastname: 'Doe' }); expect(splitName('Mary Ann van Dyke')).toEqual({ firstname: 'Mary Ann van', lastname: 'Dyke' })
@@ -666,10 +704,16 @@ describe('GET /integrations overview: the HubSpot block', () => {
 })
 
 describe('docs stay honest', () => {
-  it('the HubSpot README names the exact redirect path and every scope the code requests', () => {
+  it('the app-hsmeta.json example in the README declares EXACTLY the scopes the authorize URL sends (a mismatch breaks every install)', () => {
     const md = fs.readFileSync(path.join(__dirname, '..', 'integrations', 'hubspot', 'README.md'), 'utf8')
-    expect(md).toContain('/api/integrations/hubspot/callback')
-    for (const s of HUBSPOT_SCOPES) expect(md, s).toContain(s)
-    expect(md).not.toMatch(/crm\.schemas/)
+    const json = JSON.parse(/```json\s*([\s\S]*?)```/.exec(md)![1])
+    expect([...json.auth.requiredScopes].sort()).toEqual([...HUBSPOT_SCOPES].sort())
+    expect(json.auth.optionalScopes).toEqual([]); expect(json.auth.type).toBe('oauth')
+    expect(json.auth.redirectUrls[0]).toMatch(/\/api\/integrations\/hubspot\/callback$/)
+    expect(JSON.stringify(json)).not.toMatch(/crm\.schemas/)
+  })
+  it('the README explains the 2026 platform change and the 25-install cap', () => {
+    const md = fs.readFileSync(path.join(__dirname, '..', 'integrations', 'hubspot', 'README.md'), 'utf8')
+    expect(md).toMatch(/legacy public apps/i); expect(md).toContain('hs project create'); expect(md).toMatch(/25 installs/); expect(md).toContain('2027-02-16')
   })
 })

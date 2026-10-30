@@ -22,6 +22,7 @@ export class FakeHubspot {
   associations: Array<{ from: string; fromId: string; to: string; toId: string }> = []
   pipelines: any[] = [PIPELINE]
   calls: HubspotRequest[] = []
+  oauthCalls: HubspotRequest[] = []
   tokensIssued = 0
   revoked: string[] = []
   seq = 100
@@ -42,13 +43,21 @@ export class FakeHubspot {
   call: HubspotCaller = async (req) => {
     this.calls.push(req)
     const url = new URL(req.url), p = url.pathname
-    if (p === '/oauth/v1/token') {
-      if (req.form?.grant_type === 'authorization_code') return this.exchange ? this.ok(this.exchange) : this.err(400, 'BAD_AUTH_CODE', 'invalid code')
-      if (this.tokenError) return { status: 400, json: { status: this.tokenError, message: 'refresh token is invalid' }, retryAfter: null }
+    // OAuth API 2026-03. The deprecated v1 endpoints are REJECTED here, so a test fails if the code ever calls one.
+    if (p.startsWith('/oauth/v1/')) return { status: 410, json: { status: 'error', message: 'OAuth v1 is deprecated', error: 'unsupported_version' }, retryAfter: null }
+    this.oauthCalls.push(req)
+    if (/[?&](client_secret|token|refresh_token|code)=/.test(url.search) || /\/token\/[^/]+$/.test(p) && !/\/(introspect|revoke)$/.test(p)) return this.err(400, 'BAD_REQUEST', 'sensitive values must be in the request body, not the URL')
+    if (p === '/oauth/2026-03/token' && req.method === 'POST') {
+      if (req.form?.grant_type === 'authorization_code') return this.exchange ? this.ok(this.exchange) : { status: 400, json: { error: 'invalid_grant', error_description: 'bad code', status: 'BAD_AUTH_CODE' }, retryAfter: null }
+      if (this.tokenError) return { status: 400, json: { error: 'invalid_grant', error_description: 'refresh token is invalid, expired or revoked', status: this.tokenError, message: 'refresh token is invalid, expired or revoked' }, retryAfter: null }
       return this.ok({ access_token: `hs-at-${++this.tokensIssued}`, refresh_token: req.form?.refresh_token, expires_in: 1800 })
     }
-    if (p.startsWith('/oauth/v1/access-tokens/')) return this.tokenInfo ? this.ok(this.tokenInfo) : this.err(404, 'NOT_FOUND', 'token not found')
-    if (p.startsWith('/oauth/v1/refresh-tokens/') && req.method === 'DELETE') { this.revoked.push(decodeURIComponent(p.split('/').pop()!)); return this.ok({}, 204) }
+    if (p === '/oauth/2026-03/token/introspect' && req.method === 'POST') {
+      if (!req.form?.client_id || !req.form?.client_secret || !req.form?.token || !req.form?.token_type_hint) return this.err(400, 'BAD_REQUEST', 'missing introspect fields')
+      return this.tokenInfo ? this.ok({ active: true, token_use: 'access_token', ...this.tokenInfo }) : this.err(404, 'NOT_FOUND', 'token not found')
+    }
+    if (p === '/oauth/2026-03/token/revoke' && req.method === 'POST') { this.revoked.push(String(req.form?.token || '')); return this.ok({}, 204) }
+    if (p.startsWith('/oauth/')) return this.err(404, 'NOT_FOUND', `unknown oauth path ${p}`)
 
     if (this.serverError > 0) { this.serverError--; return this.ok({}, 503) }
     if (this.rateLimited > 0) { this.rateLimited--; return this.err(429, 'RATE_LIMITS', 'You have reached your secondly limit.') }
