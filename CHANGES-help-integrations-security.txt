@@ -1,0 +1,19 @@
+Help centre: Integrations and security articles (section 10). Base: ed025bba. Content only; no product code touched.
+
+NEW (lib/help/articles/), category "integrations-security"
+ 1 slack-updates-in-channel                 How do I get ScopeGov updates into a Slack channel?                 (Pro+)
+ 2 hubspot-sync-signed-sows                 How do I sync signed SOWs and payments to HubSpot?                  (Pro+)
+ 3 google-drive-archive-signed-documents    How do I keep a copy of every signed SOW in Google Drive?           (Pro+)
+ 4 webhooks-send-events-to-your-system      How do I send ScopeGov events to my own system with a webhook?      (Starter+)
+ 5 zapier-connect-scopegov                  How do I connect ScopeGov to Zapier?                                (Starter+)
+ 6 api-keys-create-and-revoke               What are API keys, and how do I create or revoke one?               (Starter+)
+ 7 mfa-set-up-two-factor                    How do I set up two-factor authentication?
+ 8 mfa-lost-phone-or-backup-codes           I lost my phone or my authenticator code. How do I get back in?
+ 9 password-reset-and-change                I forgot my password, or I want to change it. What do I do?
+10 sessions-where-youre-signed-in           How do I see where I'm signed in, and sign out other devices?
+11 legal-pages-in-plain-language            What do ScopeGov's Terms, Privacy Policy and other legal pages mean in plain language?
+
+EDIT lib/help/index.ts: +11 imports, +11 registry entries (after notificationsGuide). If index.ts changed since ed025bba,
+add those 22 lines by hand instead of overwriting.
+
+VERIFIED: tsc --noEmit clean; full vitest 4593 passed; every **bold** label and every quoted error message grepped against the code.

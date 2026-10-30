@@ -51,6 +51,17 @@ import { readOnlyWorkspace } from './articles/read-only-workspace'
 import { exportBeforeYouLeave } from './articles/export-before-you-leave'
 import { readYourDashboard } from './articles/read-your-dashboard'
 import { notificationsGuide } from './articles/notifications-guide'
+import { slackUpdatesInChannel } from './articles/slack-updates-in-channel'
+import { hubspotSyncSignedSows } from './articles/hubspot-sync-signed-sows'
+import { googleDriveArchiveSignedDocuments } from './articles/google-drive-archive-signed-documents'
+import { webhooksSendEventsToYourSystem } from './articles/webhooks-send-events-to-your-system'
+import { zapierConnectScopegov } from './articles/zapier-connect-scopegov'
+import { apiKeysCreateAndRevoke } from './articles/api-keys-create-and-revoke'
+import { mfaSetUpTwoFactor } from './articles/mfa-set-up-two-factor'
+import { mfaLostPhoneOrBackupCodes } from './articles/mfa-lost-phone-or-backup-codes'
+import { passwordResetAndChange } from './articles/password-reset-and-change'
+import { sessionsWhereYoureSignedIn } from './articles/sessions-where-youre-signed-in'
+import { legalPagesInPlainLanguage } from './articles/legal-pages-in-plain-language'
 import type { HelpArticle, HelpCategory } from './types'
 
 export const ARTICLES: HelpArticle[] = [
@@ -102,6 +113,17 @@ export const ARTICLES: HelpArticle[] = [
   exportBeforeYouLeave,
   readYourDashboard,
   notificationsGuide,
+  slackUpdatesInChannel,
+  hubspotSyncSignedSows,
+  googleDriveArchiveSignedDocuments,
+  webhooksSendEventsToYourSystem,
+  zapierConnectScopegov,
+  apiKeysCreateAndRevoke,
+  mfaSetUpTwoFactor,
+  mfaLostPhoneOrBackupCodes,
+  passwordResetAndChange,
+  sessionsWhereYoureSignedIn,
+  legalPagesInPlainLanguage,
 ]
 
 export function getArticle(slug: string): HelpArticle | null {
