@@ -401,7 +401,7 @@ WITH expected(migration, kind, parent, name) AS (VALUES
   ('001_initial_schema', 'table', '', 'workspace_members'),
   ('001_initial_schema', 'table', '', 'workspace_notification_defaults'),
   ('001_initial_schema', 'table', '', 'workspaces'),
-  ('001_initial_schema', 'trigger', 'auth', 'on_auth_user_created'),
+  ('001_initial_schema', 'trigger', 'auth.users', 'on_auth_user_created'),
   ('001_initial_schema', 'trigger', 'workspace_members', 'trg_member_effective_permissions'),
   ('001_initial_schema', 'trigger', 'roles', 'trg_role_permissions_propagate'),
   ('001_initial_schema', 'type', '', 'plan_tier'),
@@ -741,8 +741,8 @@ WITH expected(migration, kind, parent, name) AS (VALUES
   ('064_auth_rls_independent_pass_fixes', 'function', '', 'propagate_role_permissions'),
   ('064_auth_rls_independent_pass_fixes', 'index', '', 'auth_attempts_lookup'),
   ('064_auth_rls_independent_pass_fixes', 'table', '', 'auth_attempts'),
-  ('064_auth_rls_independent_pass_fixes', 'trigger', 'auth', 'on_auth_user_email_changed'),
-  ('064_auth_rls_independent_pass_fixes', 'trigger', 'auth', 'on_auth_user_password_changed'),
+  ('064_auth_rls_independent_pass_fixes', 'trigger', 'auth.users', 'on_auth_user_email_changed'),
+  ('064_auth_rls_independent_pass_fixes', 'trigger', 'auth.users', 'on_auth_user_password_changed'),
   ('066_workspace_defaults_one_global_row', 'index', '', 'workspace_defaults_one_global'),
   ('067_team_settings_round', 'column', 'deactivated_member_projects', 'added_at'),
   ('067_team_settings_round', 'column', 'deactivated_member_projects', 'added_by'),
@@ -1048,7 +1048,7 @@ WHERE NOT CASE e.kind
   WHEN 'column'   THEN EXISTS (SELECT 1 FROM information_schema.columns c WHERE c.table_schema = 'public' AND c.table_name = e.parent AND c.column_name = e.name)
   WHEN 'function' THEN EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public' AND p.proname = e.name)
   WHEN 'index'    THEN EXISTS (SELECT 1 FROM pg_indexes i WHERE i.schemaname = 'public' AND i.indexname = e.name)
-  WHEN 'trigger'  THEN EXISTS (SELECT 1 FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE NOT t.tgisinternal AND n.nspname = 'public' AND c.relname = e.parent AND t.tgname = e.name)
+  WHEN 'trigger'  THEN EXISTS (SELECT 1 FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE NOT t.tgisinternal AND n.nspname = (CASE WHEN position('.' in e.parent) > 0 THEN split_part(e.parent, '.', 1) ELSE 'public' END) AND c.relname = (CASE WHEN position('.' in e.parent) > 0 THEN split_part(e.parent, '.', 2) ELSE e.parent END) AND t.tgname = e.name)
   WHEN 'policy'   THEN EXISTS (SELECT 1 FROM pg_policies p WHERE p.schemaname = 'public' AND p.tablename = e.parent AND p.policyname = e.name)
   WHEN 'type'     THEN EXISTS (SELECT 1 FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace WHERE n.nspname = 'public' AND t.typname = e.name)
   ELSE true END

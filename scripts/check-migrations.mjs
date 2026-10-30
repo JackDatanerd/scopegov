@@ -25,9 +25,9 @@ const strip = sql => sql
   .replace(/\$([A-Za-z_]*)\$[\s\S]*?\$\1\$/g, ' $$ ')   // function bodies and DO blocks
   .replace(/'(?:[^']|'')*'/g, "''")                    // string literals
 
-const id = s => s.replace(/^"|"$/g, '').replace(/^public\./i, '').replace(/"/g, '').toLowerCase()
+const id = s => s.replace(/"/g, '').replace(/^public\./i, '').toLowerCase()   // keeps other schemas, e.g. auth.users
 const IDENT = String.raw`(?:"[^"]+"|[A-Za-z_][A-Za-z0-9_]*)`
-const QNAME = String.raw`(?:(?:public\.)?${IDENT})`
+const QNAME = String.raw`(?:${IDENT}\.)?${IDENT}`
 
 const objs = new Map()      // key -> { kind, name, parent, mig }
 const put = (kind, name, parent, mig) => objs.set(`${kind}|${parent || ''}|${name}`, { kind, name, parent: parent || '', mig })
@@ -102,7 +102,7 @@ WHERE NOT CASE e.kind
   WHEN 'column'   THEN EXISTS (SELECT 1 FROM information_schema.columns c WHERE c.table_schema = 'public' AND c.table_name = e.parent AND c.column_name = e.name)
   WHEN 'function' THEN EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public' AND p.proname = e.name)
   WHEN 'index'    THEN EXISTS (SELECT 1 FROM pg_indexes i WHERE i.schemaname = 'public' AND i.indexname = e.name)
-  WHEN 'trigger'  THEN EXISTS (SELECT 1 FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE NOT t.tgisinternal AND n.nspname = 'public' AND c.relname = e.parent AND t.tgname = e.name)
+  WHEN 'trigger'  THEN EXISTS (SELECT 1 FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE NOT t.tgisinternal AND n.nspname = (CASE WHEN position('.' in e.parent) > 0 THEN split_part(e.parent, '.', 1) ELSE 'public' END) AND c.relname = (CASE WHEN position('.' in e.parent) > 0 THEN split_part(e.parent, '.', 2) ELSE e.parent END) AND t.tgname = e.name)
   WHEN 'policy'   THEN EXISTS (SELECT 1 FROM pg_policies p WHERE p.schemaname = 'public' AND p.tablename = e.parent AND p.policyname = e.name)
   WHEN 'type'     THEN EXISTS (SELECT 1 FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace WHERE n.nspname = 'public' AND t.typname = e.name)
   ELSE true END
