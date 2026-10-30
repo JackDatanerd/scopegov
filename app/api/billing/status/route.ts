@@ -11,7 +11,7 @@ export const runtime = 'nodejs'
 import { NextResponse } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { createServiceClient } from '@/lib/supabase/server'
-import { effectivePlanTier } from '@/lib/billing/plans'
+import { effectivePlanTier, isWorkspaceLapsed } from '@/lib/billing/plans'
 
 export async function GET() {
   try {
@@ -22,7 +22,7 @@ export async function GET() {
 
     const service = createServiceClient()
     const [ws, billing] = await Promise.all([
-      (service as any).from('workspaces').select('plan_tier, trial_ends_at').eq('id', session.workspaceId).maybeSingle(),
+      (service as any).from('workspaces').select('plan_tier, trial_ends_at, lapsed_at').eq('id', session.workspaceId).maybeSingle(),
       (service as any).from('billing')
         .select('paystack_subscription_code, plan_interval, current_period_end, cancels_at_period_end, grace_period_started_at')
         .eq('workspace_id', session.workspaceId).maybeSingle(),
@@ -40,6 +40,10 @@ export async function GET() {
       cancelsAtPeriodEnd: !!billing.data?.cancels_at_period_end,
       graceStartedAt: billing.data?.grace_period_started_at ?? null,
       hasSubscription: !!billing.data?.paystack_subscription_code,
+      // FIX (Billing — stuck "confirming"): a read-only workspace that buys the plan it already shows as (Solo, with an
+      // interval left over from an earlier test purchase) changes neither tier nor interval, so the Billing tab's poll
+      // had nothing to see and ran its full 90 seconds. Leaving the lapse is the signal that actually happens.
+      lapsed: ws.data ? isWorkspaceLapsed(ws.data.plan_tier, ws.data.trial_ends_at, ws.data.lapsed_at) : false,
     })
   } catch (err) {
     console.error('Billing status error:', err)

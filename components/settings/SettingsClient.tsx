@@ -1965,6 +1965,9 @@ function BillingTab({ workspace, billing, planUsage = null, aiDraftUsage = null,
   // After Paystack's popup reports success the plan only changes once the
   // webhook lands; this tracks that wait (see confirmPayment below).
   const [confirming, setConfirming] = useState(false)
+  // FIX (Billing — stuck "confirming"): set when the wait ran out without the plan becoming active. The tab used to
+  // reload into the old plan as if nothing had happened; it now says the payment is not yet applied and what to do.
+  const [confirmTimedOut, setConfirmTimedOut] = useState(false)
 
   useEffect(() => {
     // Members without MANAGE_BILLING render <Restricted /> below and used to
@@ -2059,25 +2062,49 @@ function BillingTab({ workspace, billing, planUsage = null, aiDraftUsage = null,
   // (cancels_at_period_end = true) changes neither tier, interval nor grace — the only thing the webhook
   // flips is the cancel flag (a new subscription replaces the cancelling one). Without watching it, the
   // "confirming" screen ran the full 90 seconds for what is a few-second round trip.
-  async function confirmPayment(before: { planTier: string | null; planInterval: string | null; graceStartedAt: string | null; cancelsAtPeriodEnd?: boolean }) {
-    setConfirming(true)
+  async function confirmPayment(
+    before: { planTier: string | null; planInterval: string | null; graceStartedAt: string | null; cancelsAtPeriodEnd?: boolean; lapsed?: boolean; hasSubscription?: boolean },
+    reference?: string | null,
+  ) {
+    setConfirming(true); setConfirmTimedOut(false)
     const deadline = Date.now() + 90_000
+    let activated = false
+    let lastRecovery = 0
     while (Date.now() < deadline) {
       await new Promise(r => setTimeout(r, 3000))
       try {
-        const res = await fetch('/api/billing/status')
+        const res = await fetch('/api/billing/status', { cache: 'no-store' })
         if (res.ok) {
           const st = await res.json()
           if (
             st.planTier !== before.planTier ||
             st.planInterval !== before.planInterval ||
             (before.graceStartedAt !== null && st.graceStartedAt === null) ||
-            (before.cancelsAtPeriodEnd === true && st.cancelsAtPeriodEnd === false)
-          ) break
+            (before.cancelsAtPeriodEnd === true && st.cancelsAtPeriodEnd === false) ||
+            // A read-only workspace that buys the plan it already shows as changes neither tier nor interval — the
+            // lapse lifting (or a first subscription appearing) is what actually happens.
+            (before.lapsed === true && st.lapsed === false) ||
+            (before.hasSubscription === false && st.hasSubscription === true)
+          ) { activated = true; break }
         }
       } catch { /* keep polling */ }
+      // FIX (Billing — stuck "confirming"): the plan is applied by Paystack's webhook. When it has not landed after a
+      // few seconds (not registered for this key's mode, signature mismatch, an outage) the payment would sit unapplied
+      // for good. Ask the server to check the payment with Paystack directly and apply it; harmless if the webhook
+      // is simply slow. Retried every ~9s with the reference the popup returned.
+      if (reference && Date.now() - lastRecovery >= 9000) {
+        lastRecovery = Date.now()
+        try {
+          const r = await fetch('/api/billing/confirm', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reference }),
+          })
+          const j = await r.json().catch(() => ({}))
+          if (r.ok && j.state === 'applied') { activated = true; break }
+        } catch { /* keep polling */ }
+      }
     }
-    window.location.reload()
+    if (activated) { window.location.reload(); return }
+    setConfirming(false); setConfirmTimedOut(true)
   }
 
   async function handleUpgrade(planKey: string, intervalOverride?: 'monthly' | 'annual') {
@@ -2142,6 +2169,8 @@ function BillingTab({ workspace, billing, planUsage = null, aiDraftUsage = null,
         planInterval: (billing?.plan_interval ?? null) as string | null,
         graceStartedAt: (billing?.grace_period_started_at ?? null) as string | null,
         cancelsAtPeriodEnd: !!billing?.cancels_at_period_end,
+        lapsed,
+        hasSubscription,
       }
       const handler = (window as any).PaystackPop.setup({
         key:      json.publicKey,
@@ -2149,7 +2178,7 @@ function BillingTab({ workspace, billing, planUsage = null, aiDraftUsage = null,
         plan:     json.planCode,
         currency: 'USD',
         metadata: json.metadata,
-        callback: () => { void confirmPayment(before) },
+        callback: (response: any) => { void confirmPayment(before, typeof response?.reference === 'string' ? response.reference : null) },
         onClose: () => {},
       })
       handler.openIframe()
@@ -2190,6 +2219,13 @@ function BillingTab({ workspace, billing, planUsage = null, aiDraftUsage = null,
         <div className="banner banner-warn" style={{ marginBottom: 14, alignItems: 'center' }}>
           <span className="spin spin-dark" style={{ marginRight: 10 }} />
           <span>Payment received — confirming your plan. This page will refresh as soon as it&apos;s active.</span>
+        </div>
+      )}
+
+      {confirmTimedOut && (
+        <div className="banner banner-warn" style={{ marginBottom: 14, alignItems: 'center', justifyContent: 'space-between' }}>
+          <span>Your payment went through, but we couldn&apos;t confirm the plan yet. Nothing is lost — reload to check again, and if it still shows no plan, contact support@scopegov.app with the time of the payment.</span>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={() => window.location.reload()}>Reload</button>
         </div>
       )}
 

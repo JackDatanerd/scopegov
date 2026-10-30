@@ -263,3 +263,105 @@ export async function cancelPaystackSubscription(billing: {
     return { ok: false, alreadyCancelled: false, error: e instanceof Error ? e.message : 'Could not reach Paystack' }
   }
 }
+
+// FIX (Billing — payment stuck on "confirming your plan"): every state change in this app waited for a webhook, so a
+// payment whose webhook never arrived (no URL registered for the key's mode, a signing-key mismatch, an outage) left
+// the customer charged and the workspace untouched, with nothing in the app able to notice. These two reads let the
+// server ask Paystack directly what happened (lib/billing/recover-checkout.ts). Read-only.
+export interface PaystackTransactionInfo {
+  status: string | null          // success | failed | abandoned | ...
+  reference: string | null
+  amount: number | null          // subunit
+  currency: string | null
+  paidAt: string | null
+  channel: string | null
+  email: string | null
+  customerCode: string | null
+  customerId: number | string | null
+  planCode: string | null
+  planId: number | string | null
+  metadata: Record<string, unknown> | null
+  authorization: Record<string, unknown> | null
+}
+
+export async function verifyPaystackTransaction(
+  reference: string,
+): Promise<{ ok: true; tx: PaystackTransactionInfo } | { ok: false; notFound: boolean; error: string }> {
+  try {
+    const resp = await paystackFetch(`https://api.paystack.co/transaction/verify/${encodeURIComponent(reference)}`, {
+      headers: { 'Authorization': `Bearer ${process.env.PAYSTACK_SECRET_KEY}` },
+    })
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => resp.statusText)
+      return { ok: false, notFound: resp.status === 404, error: text }
+    }
+    const body = await resp.json().catch(() => null)
+    const d = body?.data
+    if (!d) return { ok: false, notFound: false, error: 'Empty response from Paystack' }
+    // A plan transaction reports the plan as a code string, an object, or (plan_object) both, depending on the API
+    // version — accept each rather than depend on one.
+    const planObj = (d.plan_object && typeof d.plan_object === 'object') ? d.plan_object
+      : (d.plan && typeof d.plan === 'object') ? d.plan : null
+    const planCode: string | null =
+      (typeof d.plan === 'string' && d.plan) ? d.plan : (planObj?.plan_code ?? null)
+    return {
+      ok: true,
+      tx: {
+        status: d.status ?? null,
+        reference: d.reference ?? null,
+        amount: typeof d.amount === 'number' ? d.amount : null,
+        currency: d.currency ?? null,
+        paidAt: d.paid_at ?? d.paidAt ?? null,
+        channel: d.channel ?? null,
+        email: d.customer?.email ?? null,
+        customerCode: d.customer?.customer_code ?? null,
+        customerId: d.customer?.id ?? null,
+        planCode,
+        planId: planObj?.id ?? null,
+        metadata: d.metadata && typeof d.metadata === 'object' ? d.metadata : null,
+        authorization: d.authorization && typeof d.authorization === 'object' ? d.authorization : null,
+      },
+    }
+  } catch (e) {
+    return { ok: false, notFound: false, error: e instanceof Error ? e.message : 'Could not reach Paystack' }
+  }
+}
+
+export interface PaystackSubscriptionListItem {
+  subscriptionCode: string
+  emailToken: string | null
+  status: string | null
+  nextPaymentDate: string | null
+  planCode: string | null
+  customerCode: string | null
+  createdAt: string | null
+}
+
+/** A customer's subscriptions, newest first. `ok:false` when Paystack could not be read. */
+export async function listPaystackSubscriptionsForCustomer(
+  customerId: number | string,
+): Promise<{ ok: true; subs: PaystackSubscriptionListItem[] } | { ok: false; error: string }> {
+  try {
+    const resp = await paystackFetch(`https://api.paystack.co/subscription?customer=${encodeURIComponent(String(customerId))}&perPage=50`, {
+      headers: { 'Authorization': `Bearer ${process.env.PAYSTACK_SECRET_KEY}` },
+    })
+    if (!resp.ok) return { ok: false, error: await resp.text().catch(() => resp.statusText) }
+    const body = await resp.json().catch(() => null)
+    const rows: any[] = Array.isArray(body?.data) ? body.data : []
+    const subs: PaystackSubscriptionListItem[] = rows
+      .filter(r => typeof r?.subscription_code === 'string' && r.subscription_code)
+      .map(r => ({
+        subscriptionCode: r.subscription_code,
+        emailToken: r.email_token ?? null,
+        status: r.status ?? null,
+        nextPaymentDate: r.next_payment_date ?? null,
+        planCode: (r.plan && typeof r.plan === 'object' ? r.plan.plan_code : null) ?? null,
+        customerCode: (r.customer && typeof r.customer === 'object' ? r.customer.customer_code : null) ?? null,
+        createdAt: r.createdAt ?? r.created_at ?? null,
+      }))
+      .sort((a, b) => Date.parse(b.createdAt || '') - Date.parse(a.createdAt || '') || 0)
+    return { ok: true, subs }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : 'Could not reach Paystack' }
+  }
+}
