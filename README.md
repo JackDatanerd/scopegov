@@ -208,6 +208,12 @@ INTEGRATIONS_ENCRYPTION_KEY_PREVIOUS=  ← optional. To rotate: move the current
 ```
 
 ### 2.2 Domains
+- **Which host serves the app.** `https://www.scopegov.app` serves it directly. `https://scopegov.app` answers every request, POSTs included,
+  with a `308` to `www`. A browser follows that without trouble (the auth cookies are scoped to `.scopegov.app` for exactly this hop), but
+  **a server-to-server caller must use `https://www.scopegov.app`**: webhooks (Resend, Paystack), the cron worker's `TARGET_BASE_URL`, the
+  Zapier integration, and anyone calling the public API. Most of them do not follow redirects, and those that do drop the `Authorization`
+  header when the redirect crosses hosts. Quick check, expecting `401`, not `308`:
+  `curl.exe -s -o NUL -w "%{http_code}\n" -X POST https://www.scopegov.app/api/cron/integration-delivery`
 - `app.scopegov.app` → main app
 - `sign.scopegov.app` → client portal (same Vercel deployment, different domain)
 
@@ -261,7 +267,7 @@ and reminders. A separate team has its own quota, API key, rate limit and webhoo
 - [ ] Add the DNS records Resend shows (verification TXT/DKIM **and** the MX record, see §3.1). Wait until the domain shows *Verified* and *Receiving enabled*.
 - [ ] API Keys → Create API Key, permission **Full access** (reading received mail is not available to a sending-only key),
       restricted to the `guard.scopegov.app` domain if the dashboard offers it → set as `RESEND_INBOUND_API_KEY`.
-- [ ] Webhooks → Add Webhook: endpoint `https://app.scopegov.app/api/guardian/inbound`, event **email.received** only.
+- [ ] Webhooks → Add Webhook: endpoint `https://www.scopegov.app/api/guardian/inbound` (not the bare `scopegov.app`: it 308-redirects to `www`, and Resend treats a redirect as a failed delivery), event **email.received** only.
 - [ ] Copy that webhook's signing secret (`whsec_…`) → `RESEND_INBOUND_WEBHOOK_SECRET`. It is per-webhook: do not reuse `RESEND_WEBHOOK_SECRET`.
 - [ ] Redeploy so the env vars are live, then send a real email to `proj-xxxxxxxx@guard.scopegov.app` (the project's Guardian address) and
       confirm it lands as a `guardian_checks` row. In the Resend webhooks page the delivery should show `200`.
@@ -273,7 +279,7 @@ failed (Resend redelivers; nothing was stored). Everything else is `200`.
 ---
 
 ## 5. Paystack Setup
-- [ ] Add webhook URL: `https://app.scopegov.app/api/billing/webhook`
+- [ ] Add webhook URL: `https://www.scopegov.app/api/billing/webhook` (the host that serves the app directly: Paystack does not follow redirects, and `scopegov.app` redirects to `www`)
 - [ ] Ensure all events enabled: `subscription.create`, `charge.success`, `subscription.disable`, `invoice.payment_failed`
 - [ ] Get all plan codes and add to env vars
 - [ ] Use live keys in production (not test)

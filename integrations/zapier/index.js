@@ -7,7 +7,9 @@
 const events = require('./events.json')
 const { version } = require('./package.json')
 
-const BASE = process.env.SCOPEGOV_API_BASE || 'https://scopegov.app'
+// MUST be the host that serves the app directly. https://scopegov.app answers every request with a 308 to https://www.scopegov.app,
+// and an HTTP client drops the Authorization header when a redirect crosses hosts, so an apex base would reject every API key.
+const BASE = process.env.SCOPEGOV_API_BASE || 'https://www.scopegov.app'
 
 const withApiKey = (request, z, bundle) => {
   request.headers = request.headers || {}
