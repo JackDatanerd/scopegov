@@ -1,4 +1,5 @@
 // app/(app)/settings/approvals/page.tsx
+import HelpLink from '@/components/help/HelpLink'
 import { getSessionStrict, hasPermission } from '@/lib/auth/session'
 import { createServiceClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
@@ -165,7 +166,7 @@ export default async function ApprovalWorkflowsPage() {
               <i className="ti ti-arrow-left" style={{ fontSize: 11 }} /> Settings
             </Link>
           </div>
-          <h1 className="page-title">Approval Workflows</h1>
+          <h1 className="page-title">Approval Workflows<HelpLink slug="build-approval-workflow" title="Help: setting up an approval workflow" /></h1>
           <p className="page-sub">Configure who signs off on SOWs, change orders and invoices before they reach a client</p>
         </div>
         <Link href="/approvals">

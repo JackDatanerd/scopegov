@@ -1,4 +1,5 @@
 'use client'
+import HelpLink from '@/components/help/HelpLink'
 import { useState, useEffect, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { formatCurrency, formatDate } from '@/lib/utils/format'
@@ -110,7 +111,7 @@ function ReportsPageInner() {
     <div className="page" style={{ maxWidth: 980 }}>
       <div className="page-hd">
         <div>
-          <h1 className="page-title">Reports</h1>
+          <h1 className="page-title">Reports<HelpLink slug="read-your-reports" title="Help: reading your reports" /></h1>
           <p className="page-sub">Scope governance and financial performance</p>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>

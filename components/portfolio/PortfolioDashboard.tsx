@@ -1,4 +1,5 @@
 'use client'
+import HelpLink from '@/components/help/HelpLink'
 import { useState, useEffect, useMemo } from 'react'
 import type React from 'react'
 import Link from 'next/link'
@@ -179,7 +180,7 @@ export default function PortfolioDashboard({ canViewFinancials, agencyName, canO
     <div className="page" style={{ maxWidth: 1080 }}>
       <div className="page-hd">
         <div>
-          <h1 className="page-title">Portfolio</h1>
+          <h1 className="page-title">Portfolio<HelpLink slug="read-your-portfolio" title="Help: reading the Portfolio view" /></h1>
           <p className="page-sub">
             Scope-governance rollup across every project · {agencyName}
           </p>

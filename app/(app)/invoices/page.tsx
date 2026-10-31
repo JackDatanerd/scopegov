@@ -2,6 +2,7 @@
 // Phase 4a: workspace-wide invoice registry, mirrors /sow's pattern.
 // Phase 4: portfolio reconciliation strip for VIEW_ALL_PROJECTS users.
 
+import HelpLink from '@/components/help/HelpLink'
 import { MEMBER_PROJECT_EMBED_SUFFIX, scopeToMemberProjects } from '@/lib/utils/member-project-scope'
 import { getSessionStrict, hasPermission } from '@/lib/auth/session'
 import { createServiceClient } from '@/lib/supabase/server'
@@ -224,7 +225,7 @@ export default async function InvoicesPage({ searchParams }: {
     <div className="page" style={{ maxWidth: 1040 }}>
       <div className="page-hd">
         <div>
-          <h1 className="page-title">Invoices</h1>
+          <h1 className="page-title">Invoices<HelpLink slug="create-an-invoice" title="Help: creating an invoice" /></h1>
           <p className="page-sub">Client invoicing across your workspace — ScopeGov tracks status, your agency collects the payment</p>
         </div>
         {canExport && (

@@ -1,4 +1,5 @@
 'use client'
+import HelpLink from '@/components/help/HelpLink'
 import { useState, useMemo } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
@@ -168,7 +169,7 @@ export default function ClientsClient({ clients, canCreate, canViewFinancials, c
       {/* Header */}
       <div className="page-hd">
         <div>
-          <h1 className="page-title">Clients</h1>
+          <h1 className="page-title">Clients<HelpLink slug="adding-a-client" title="Help: adding a client" /></h1>
           <p className="page-sub">
             {clients.length - archivedCount} active client{clients.length - archivedCount !== 1 ? 's' : ''}
             {archivedCount > 0 ? ` · ${archivedCount} archived` : ''}

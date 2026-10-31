@@ -61,3 +61,9 @@
   .dd { grid-template-columns: 1fr; }
   .audience { gap: 10px 20px; }
 }
+
+/* HelpLink: the small "?" placed next to a screen title or setting (components/help/HelpLink.tsx). Inherits nothing from the heading it sits in. */
+.helpLink { display: inline-flex; align-items: center; gap: 5px; margin-left: 8px; vertical-align: middle; color: var(--text-3); font-size: 15px; font-weight: 400; line-height: 1; letter-spacing: 0; text-transform: none; text-decoration: none; opacity: .75; transition: color .12s, opacity .12s; }
+.helpLink:hover, .helpLink:focus-visible { color: var(--gold); opacity: 1; }
+.helpLink i { font-size: 1em; }
+.helpLinkLabel { font-size: 12px; margin-left: 0; }

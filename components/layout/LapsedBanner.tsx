@@ -1,3 +1,4 @@
+import HelpLink from '@/components/help/HelpLink'
 import Link from 'next/link'
 
 // The app-wide notice on a read-only (lapsed) workspace: a trial or subscription that has ended, or a non-payment
@@ -13,6 +14,7 @@ export default function LapsedBanner({ canManageBilling }: { canManageBilling: b
           {canManageBilling
             ? 'Your trial or subscription has ended. Everything is safe — you can still view and export all of it. Choose a plan to create and send again.'
             : 'Your trial or subscription has ended. Everything is safe and can still be viewed and exported. Ask a workspace admin with billing access to choose a plan.'}
+          {' '}<HelpLink slug="read-only-workspace" label="What does read-only mean?" />
         </p>
       </div>
       {canManageBilling && (

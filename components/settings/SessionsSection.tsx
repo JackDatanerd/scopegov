@@ -4,6 +4,7 @@
 // last activity — from auth.sessions via /api/auth/sessions), lets the person end
 // any one they don't recognise, or all of the others at once.
 
+import HelpLink from '@/components/help/HelpLink'
 import { useCallback, useEffect, useState } from 'react'
 
 interface SessionRow {
@@ -67,7 +68,7 @@ export default function SessionsSection() {
 
   return (
     <div className="settings-section">
-      <div className="settings-section-title">Sessions</div>
+      <div className="settings-section-title">Sessions<HelpLink slug="sessions-where-youre-signed-in" title="Help: where you are signed in" /></div>
       <p style={{ fontSize: 13, color: 'var(--text-2)', marginBottom: 12 }}>
         Where your account is signed in right now. If you don&apos;t recognise one, sign it out and change your password.
       </p>

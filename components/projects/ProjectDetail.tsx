@@ -3,6 +3,7 @@
 //      shows modal, posts to /api/projects/[id]/members
 
 'use client'
+import HelpLink from '@/components/help/HelpLink'
 import { effectiveFormStructure } from '@/lib/sow/payment-structure'
 import { retainerSuggestion, type BriefBillingSignals } from '@/lib/sow/brief-signals'
 import { useState, useEffect, useRef } from 'react'
@@ -1052,9 +1053,12 @@ function SowTab({ project, sows, amendments, permissions, router, pendingApprova
                     </button>
                   )}
                   {currentSow.status === 'draft' && permissions.sendSow && !pendingApproval && (
-                    <button className="btn btn-primary btn-sm" onClick={handleSendSow} disabled={sending}>
-                      {sending ? <span className="spin" /> : <><i className="ti ti-send" style={{ fontSize: 12 }} /> Send to client</>}
-                    </button>
+                    <>
+                      <button className="btn btn-primary btn-sm" onClick={handleSendSow} disabled={sending}>
+                        {sending ? <span className="spin" /> : <><i className="ti ti-send" style={{ fontSize: 12 }} /> Send to client</>}
+                      </button>
+                      <HelpLink slug="why-cant-i-send-sow" title="Help: why a SOW will not send" />
+                    </>
                   )}
                   {currentSow.status === 'draft' && pendingApproval && pendingApproval.sendFailed && pendingApproval.canManage && permissions.sendSow && (
                     <>
@@ -1977,7 +1981,7 @@ function GuardianHistoryPanel({ projectId, canRetry, onFlagCreated }: { projectI
   return (
     <div className="surface surface-p" style={{ marginBottom: 16 }}>
       <div className="sec-hd" style={{ marginBottom: 10 }}>
-        <div className="sec-title">Check history</div>
+        <div className="sec-title">Check history<HelpLink slug="check-client-message-verdict" title="Help: reading a Guardian verdict" /></div>
       </div>
       {loading ? (
         <div style={{ fontSize: 12, color: 'var(--text-3)', padding: '8px 0' }}>Loading…</div>

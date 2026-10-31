@@ -9,6 +9,7 @@
 // state here means it survives tab switches regardless of refresh timing.
 
 'use client'
+import HelpLink from '@/components/help/HelpLink'
 import { fetchWithStepUp } from '@/lib/client/step-up'
 import InfoTip from '@/components/ui/InfoTip'
 import { useState, useEffect, useRef } from 'react'
@@ -725,7 +726,7 @@ function AccountTab({ session, supabase, router, mfaMandatory, mfaRecommended }:
 
   return (
     <div>
-      <h2 style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 22, fontWeight: 400, marginBottom: 20 }}>Account settings</h2>
+      <h2 style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 22, fontWeight: 400, marginBottom: 20 }}>Account settings<HelpLink slug="password-reset-and-change" title="Help: changing or resetting your password" /></h2>
       {msg && <div className="auth-success" style={{ marginBottom: 14 }}>{msg}</div>}
       {err && <div className="auth-error"  style={{ marginBottom: 14 }}>{err}</div>}
       <div className="settings-section">
@@ -910,7 +911,7 @@ function WorkspaceTab({ form, setForm, permissions, onSave, saving, slugChangedA
 
   return (
     <div>
-      <h2 style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 22, fontWeight: 400, marginBottom: 20 }}>Workspace settings</h2>
+      <h2 style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 22, fontWeight: 400, marginBottom: 20 }}>Workspace settings<HelpLink slug="workspace-setup" title="Help: setting up your workspace" /></h2>
       <div className="settings-section">
         <div className="settings-section-title">Identity</div>
         <div className="f2">
@@ -1355,7 +1356,7 @@ function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, logo
 
   return (
     <div>
-      <h2 style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 22, fontWeight: 400, marginBottom: 20 }}>Branding</h2>
+      <h2 style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 22, fontWeight: 400, marginBottom: 20 }}>Branding<HelpLink slug="workspace-setup" title="Help: setting up your workspace" /></h2>
       <div className="settings-section">
         <div className="settings-section-title">Agency logo & colour</div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 20 }}>
@@ -1683,7 +1684,7 @@ function DefaultsTab({ form, setForm, permissions, onSave, saving, setTab, globa
 
   return (
     <div>
-      <h2 style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 22, fontWeight: 400, marginBottom: 20 }}>SOW defaults</h2>
+      <h2 style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 22, fontWeight: 400, marginBottom: 20 }}>SOW defaults<HelpLink slug="workspace-setup" title="Help: setting up your workspace" /></h2>
       <div className="settings-section">
         <div className="settings-section-title">Default SOW settings</div>
         <p style={{ fontSize: 13, color: 'var(--text-2)', marginBottom: 18, lineHeight: 1.6 }}>
@@ -1772,7 +1773,7 @@ function GuardianTab({ form, setForm, permissions, onSave, saving, currency }: a
 
   return (
     <div>
-      <h2 style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 22, fontWeight: 400, marginBottom: 20 }}>Guardian settings</h2>
+      <h2 style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 22, fontWeight: 400, marginBottom: 20 }}>Guardian settings<HelpLink slug="guardian-settings" title="Help: choosing a Guardian sensitivity tier" /></h2>
       <div className="settings-section">
         <div className="settings-section-title">Classification sensitivity</div>
         <p style={{ fontSize: 13, color: 'var(--text-2)', marginBottom: 18, lineHeight: 1.6 }}>
@@ -2213,7 +2214,7 @@ function BillingTab({ workspace, billing, planUsage = null, aiDraftUsage = null,
 
   return (
     <div>
-      <h2 style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 22, fontWeight: 400, marginBottom: 20 }}>Billing & plan</h2>
+      <h2 style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 22, fontWeight: 400, marginBottom: 20 }}>Billing & plan<HelpLink slug="change-or-cancel-plan" title="Help: switching plans, cards and cancelling" /></h2>
 
       {confirming && (
         <div className="banner banner-warn" style={{ marginBottom: 14, alignItems: 'center' }}>
@@ -2520,7 +2521,7 @@ function NotificationsTab({ permissions, workspaceId }: { permissions: { manageW
 
   return (
     <div>
-      <h2 style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 22, fontWeight: 400, marginBottom: 20 }}>Notifications</h2>
+      <h2 style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 22, fontWeight: 400, marginBottom: 20 }}>Notifications<HelpLink slug="notifications-guide" title="Help: notifications and how to tune them" /></h2>
       <div className="settings-section">
         <div className="settings-section-title">Email notifications</div>
         {loadErr && <p className="ferr">{loadErr}</p>}
@@ -2814,7 +2815,7 @@ function DangerTab({ workspace, permissions, session }: any) {
 
   return (
     <div>
-      <h2 style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 22, fontWeight: 400, color: 'var(--red)', marginBottom: 20 }}>Danger zone</h2>
+      <h2 style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 22, fontWeight: 400, color: 'var(--red)', marginBottom: 20 }}>Danger zone<HelpLink slug="export-before-you-leave" title="Help: exporting your data and what deleting does" /></h2>
       {err && <div className="auth-error" style={{ marginBottom: 14 }}>{err}</div>}
       {isOwner && <TransferOwnershipSection workspaceId={workspace?.id} />}
       {/* FIX (Workspace lifecycle independent pass — B3): only the owner (or, once the owner is gone, a

@@ -4,6 +4,7 @@
 // native integrations (Slack, Zapier, HubSpot, Google Drive) will plug into. Talks to /api/workspace/integrations/*.
 // Secrets (a webhook's signing secret, an API key) are shown exactly once, in a banner, right after creation.
 
+import HelpLink from '@/components/help/HelpLink'
 import { useCallback, useEffect, useState } from 'react'
 import { fetchWithStepUp } from '@/lib/client/step-up'
 import { useDialogs } from '@/components/ui/Dialogs'
@@ -220,7 +221,7 @@ export default function IntegrationsSection() {
       )}
 
       <div className="settings-section" style={{ marginBottom: 16 }}>
-        <div className="settings-section-title">Slack</div>
+        <div className="settings-section-title">Slack<HelpLink slug="slack-updates-in-channel" title="Help: Slack updates in a channel" /></div>
         {!data.slack.allowed ? (
           <div style={subtle}>{data.lapsed ? 'Reactivate your subscription to use Slack.' : `Slack needs the ${data.nativeMinPlan} plan or above.`}</div>
         ) : !data.slack.configured ? (
@@ -285,7 +286,7 @@ export default function IntegrationsSection() {
       </div>
 
       <div className="settings-section" style={{ marginBottom: 16 }}>
-        <div className="settings-section-title">HubSpot</div>
+        <div className="settings-section-title">HubSpot<HelpLink slug="hubspot-sync-signed-sows" title="Help: syncing signed SOWs to HubSpot" /></div>
         {!data.hubspot.allowed ? (
           <div style={subtle}>{data.lapsed ? 'Reactivate your subscription to use HubSpot.' : `HubSpot needs the ${data.nativeMinPlan} plan or above.`}</div>
         ) : !data.hubspot.configured ? (
@@ -355,7 +356,7 @@ export default function IntegrationsSection() {
       </div>
 
       <div className="settings-section" style={{ marginBottom: 16 }}>
-        <div className="settings-section-title">Google Drive</div>
+        <div className="settings-section-title">Google Drive<HelpLink slug="google-drive-archive-signed-documents" title="Help: archiving signed documents to Google Drive" /></div>
         {!data.drive.allowed ? (
           <div style={subtle}>{data.lapsed ? 'Reactivate your subscription to use Google Drive.' : `Google Drive needs the ${data.nativeMinPlan} plan or above.`}</div>
         ) : !data.drive.configured ? (
@@ -412,7 +413,7 @@ export default function IntegrationsSection() {
       </div>
 
       <div className="settings-section">
-        <div className="settings-section-title">Webhooks</div>
+        <div className="settings-section-title">Webhooks<HelpLink slug="webhooks-send-events-to-your-system" title="Help: sending events to your system" /></div>
         <div style={{ ...subtle, marginBottom: 10 }}>
           ScopeGov sends a signed JSON POST to your URL when something happens (a SOW is signed, a Guardian flag is raised, an invoice is paid…).
           Verify the <code>X-ScopeGov-Signature</code> header (HMAC-SHA256 of <code>timestamp.body</code> with your signing secret) and de-duplicate on <code>X-ScopeGov-Delivery</code>.
@@ -464,7 +465,7 @@ export default function IntegrationsSection() {
       </div>
 
       <div className="settings-section" style={{ marginTop: 16 }}>
-        <div className="settings-section-title">Zapier</div>
+        <div className="settings-section-title">Zapier<HelpLink slug="zapier-connect-scopegov" title="Help: connecting ScopeGov to Zapier" /></div>
         <div style={{ ...subtle, marginBottom: 10 }}>
           Zapier connects with an API key (below). Add ScopeGov in Zapier, paste the key when asked, and pick a trigger such as “Invoice Paid”.
           Each active Zap that uses a ScopeGov trigger appears here; turning the Zap off in Zapier removes it.
@@ -485,7 +486,7 @@ export default function IntegrationsSection() {
       </div>
 
       <div className="settings-section" style={{ marginTop: 16 }}>
-        <div className="settings-section-title">API keys</div>
+        <div className="settings-section-title">API keys<HelpLink slug="api-keys-create-and-revoke" title="Help: creating and revoking API keys" /></div>
         <div style={{ ...subtle, marginBottom: 10 }}>Keys let tools like Zapier act for this workspace. Treat one like a password; revoke it if it leaks.</div>
         {data.apiKeys.length === 0 && <div style={subtle}>No API keys yet.</div>}
         {data.apiKeys.map(k => (

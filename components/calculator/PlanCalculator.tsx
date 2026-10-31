@@ -1,4 +1,5 @@
 'use client'
+import HelpLink from '@/components/help/HelpLink'
 import { useMemo, useState } from 'react'
 import Link from 'next/link'
 import styles from '@/styles/calculator.module.css'
@@ -67,7 +68,7 @@ export default function PlanCalculator({ mode, measured, defaults, canManageBill
   return (
     <div className={styles.calc}>
       <div className={styles.hd}>
-        <h1 className={styles.title}>What is scope creep costing you?</h1>
+        <h1 className={styles.title}>What is scope creep costing you?{mode === 'app' && <HelpLink slug="plan-calculator-guide" title="Help: how the plan calculator works" />}</h1>
         <p className={styles.sub}>
           An estimate, built from your numbers, of the work you give away and what a ScopeGov plan could win back.
           Every figure below is editable and every assumption is listed, so you can check the maths yourself.

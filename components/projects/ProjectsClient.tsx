@@ -1,4 +1,5 @@
 'use client'
+import HelpLink from '@/components/help/HelpLink'
 import { useState, useMemo, useEffect } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
@@ -153,7 +154,7 @@ export default function ProjectsClient({ projects, canCreate, canViewFinancials,
       {/* Header */}
       <div className="page-hd">
         <div>
-          <h1 className="page-title">Projects</h1>
+          <h1 className="page-title">Projects<HelpLink slug="first-project" title="Help: your first project, end to end" /></h1>
           <p className="page-sub">{projects.length} on record · {attentionCount > 0 ? `${attentionCount} need attention` : 'all clear'}</p>
         </div>
         {canCreate && (

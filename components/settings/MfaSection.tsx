@@ -1,5 +1,6 @@
 // components/settings/MfaSection.tsx
 'use client'
+import HelpLink from '@/components/help/HelpLink'
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { fetchWithStepUp } from '@/lib/client/step-up'
@@ -84,6 +85,7 @@ export default function MfaSection({ mandatory, recommended = false }: { mandato
     <div className="settings-section">
       <div className="settings-section-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         Two-factor authentication
+        <HelpLink slug="mfa-set-up-two-factor" title="Help: setting up two-factor authentication" />
         {status.enrolled ? (
           <span style={{ fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 20, background: 'var(--green-lt)', color: 'var(--green)' }}>Enabled</span>
         ) : mandatory ? (

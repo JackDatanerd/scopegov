@@ -1,4 +1,5 @@
 'use client'
+import HelpLink from '@/components/help/HelpLink'
 import { effectiveFormStructure } from '@/lib/sow/payment-structure'
 import { retainerSuggestion, type BriefBillingSignals } from '@/lib/sow/brief-signals'
 import { describeBilling } from '@/lib/sow/billing-summary'
@@ -510,7 +511,7 @@ function NewProjectPageInner() {
         {/* STEP 0: Basics */}
         {step === 0 && (
           <form onSubmit={handleBasicsSubmit}>
-            <h2 style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 24, fontWeight: 400, marginBottom: 20 }}>Project basics</h2>
+            <h2 style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 24, fontWeight: 400, marginBottom: 20 }}>Project basics<HelpLink slug="first-project" title="Help: your first project, end to end" /></h2>
             {error && <div className="auth-error">{error}</div>}
 
             <div className="fgrp">
@@ -750,7 +751,7 @@ function NewProjectPageInner() {
         {/* STEP 1: Brief */}
         {step === 1 && (
           <div>
-            <h2 style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 24, fontWeight: 400, marginBottom: 6 }}>Scope brief</h2>
+            <h2 style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 24, fontWeight: 400, marginBottom: 6 }}>Scope brief<HelpLink slug="first-project" title="Help: your first project, end to end" /></h2>
             <p style={{ fontSize: 13, color: 'var(--text-3)', marginBottom: 20 }}>
               This becomes your SOW. Be specific — Guardian uses it to detect scope creep.
             </p>

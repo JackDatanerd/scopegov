@@ -4,6 +4,7 @@
 // C13: role edit modal (carried forward from previous batch)
 
 'use client'
+import HelpLink from '@/components/help/HelpLink'
 import { fetchWithStepUp } from '@/lib/client/step-up'
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
@@ -461,7 +462,7 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
     <div className="page" style={{ maxWidth: 960 }}>
       <div className="page-hd">
         <div>
-          <h1 className="page-title">Team</h1>
+          <h1 className="page-title">Team<HelpLink slug="permissions-decoder" title="Help: finding the permission behind a missing button" /></h1>
           <p className="page-sub">
             {members.length} active
             {/* The page only loads pending invites for viewers who can invite; for everyone else the list is empty

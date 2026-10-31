@@ -1,5 +1,6 @@
 // components/approvals/ApprovalsClient.tsx
 'use client'
+import HelpLink from '@/components/help/HelpLink'
 import { useState, useEffect, useCallback, useRef } from 'react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
@@ -295,7 +296,7 @@ export default function ApprovalsClient({ session, canViewAll, canManageWorkflow
     <div className="page">
       <div className="page-hd">
         <div>
-          <h1 className="page-title">Approvals</h1>
+          <h1 className="page-title">Approvals<HelpLink slug="approve-or-reject-document" title="Help: approving or rejecting a document" /></h1>
           <p className="page-sub">Sign-offs required before a SOW, change order or invoice reaches the client</p>
         </div>
         {canManageWorkflows && (

@@ -1,3 +1,4 @@
+import HelpLink from '@/components/help/HelpLink'
 import { getSessionStrict, hasPermission } from '@/lib/auth/session'
 import { createServiceClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
@@ -332,6 +333,7 @@ export default async function DashboardPage() {
                 <div className="sec-title" style={{ color: 'var(--amber)' }}>
                   <i className="ti ti-alert-circle" style={{ marginRight: 5 }} />
                   Attention register ({attention.length})
+                  <HelpLink slug="read-your-dashboard" title="Help: reading your dashboard" />
                 </div>
                 <Link href="/projects?filter=attention" style={{ fontSize: 11, color: 'var(--green)' }}>
                   {attention.length > 6 ? `View all ${attention.length} →` : 'All projects →'}

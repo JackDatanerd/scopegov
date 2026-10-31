@@ -1,5 +1,6 @@
 // components/notifications/NotificationsClient.tsx
 'use client'
+import HelpLink from '@/components/help/HelpLink'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
@@ -167,7 +168,7 @@ export default function NotificationsClient() {
     <div className="page">
       <div className="page-hd">
         <div>
-          <h1 className="page-title">Notifications</h1>
+          <h1 className="page-title">Notifications<HelpLink slug="notifications-guide" title="Help: notifications and how to tune them" /></h1>
           <p className="page-sub">
             {unreadCount > 0 ? `${unreadCount} unread` : 'You\u2019re all caught up'}
             {' · '}

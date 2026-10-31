@@ -1,0 +1,18 @@
+Contextual help links: a small "?" beside screens and settings that opens the matching help article in a new tab. PRODUCT CHANGE (UI only; no API, data or permission changes).
+Base: cc60166.
+
+NEW   components/help/HelpLink.tsx            one reusable link: opens /help/<slug> in a new tab (never costs a wizard or form), accessible name, no state, no registry import
+NEW   tests/help-contextual-links.test.ts     every link points at a published article, has a tooltip/label, never appears on a public page; calculator link only in the signed-in version
+EDIT  styles/help.module.css                  +.helpLink styles (quiet "?" that inherits nothing from its heading)
+
+EDIT (one-line insertions plus the import): 32 links in 17 existing files
+  Screen titles:   Projects, Team, Invoices, Clients, Approvals, Reports, Portfolio, Notifications, Approval Workflows (settings), Plan calculator (signed-in only)
+  Dashboard:       "Attention register"
+  New project:     "Project basics" and "Scope brief" steps
+  Project page:    beside "Send to client" (Why a SOW will not send); Guardian "Check history"
+  Settings tabs:   Account, Workspace, Branding, SOW defaults, Guardian, Billing & plan, Notifications, Danger zone; Two-factor; Sessions
+  Integrations:    Slack, HubSpot, Google Drive, Webhooks, Zapier, API keys (each to its own article)
+  Read-only banner: "What does read-only mean?"
+
+Not done on purpose: links inside error messages (errors reach the UI as plain strings; linking needs structured error codes from the API, a larger change).
+VERIFIED: tsc clean; full vitest suite passing (4685 tests); rendered and checked visually in headings, section titles and the banner.
