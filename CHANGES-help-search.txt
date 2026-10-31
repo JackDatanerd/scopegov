@@ -1,0 +1,15 @@
+Help search: a search box on /help that finds articles as you type. PRODUCT CHANGE (help page only; no API, data or permission changes).
+Base: 8c3475f.
+
+NEW   lib/help/search.ts               pure ranking: title > problem symptoms > **bold** UI labels > summary > step titles > short answer.
+                                       Ignores case, accents, apostrophes and filler words; matches word forms (delete/deleting) and word starts;
+                                       every word must match, else any word; small synonym list (2fa, co, login, price...).
+NEW   components/help/HelpSearch.tsx   client component: shows the normal category list until you type 2+ characters, then ranked results.
+                                       Runs in the browser over a ~87 KB index passed by the page; no request per keystroke. Esc clears.
+NEW   tests/help-search.test.ts        34 tests: every article is found first by its exact title; every article's every symptom surfaces it in the top 5;
+                                       representative real queries; index is plain text; payload stays small; page is wired.
+EDIT  app/(app)/help/page.tsx          builds the index and wraps the category list in <HelpSearch>
+EDIT  styles/help.module.css           search box, results and empty-state styles
+EDIT  lib/help/AUTHORING.md            how readers find an article (write symptoms as people type them; bold real button names)
+
+VERIFIED: tsc clean; full vitest suite passing (4719 tests); search box, results and empty state rendered and checked visually.

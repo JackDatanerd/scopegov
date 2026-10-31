@@ -52,3 +52,12 @@ billing-plans, integrations-security. A category appears on the Help home page o
 > Write the next help article for ScopeGov: "<title>". Read `lib/help/AUTHORING.md` and `lib/help/articles/first-project.ts`
 > first and match them exactly. Verify every UI label and every claim against the code. Add it to `lib/help/index.ts`,
 > run tsc and the help tests, and deliver it as a tarball in our usual workflow.
+
+## Search (how readers find your article)
+
+The Help home page has a search box (`lib/help/search.ts`). It reads, strongest first: the **title**, each problem's **symptom**, the button and field names you wrote in `**bold**`, the **summary**, the **step titles** and the **short answer**.
+
+- Write titles and symptoms the way a stuck person would type them ("I can't find the Send button"), not as feature names.
+- Wrap every real button, tab and field name in `**bold**`. It is what makes "send to client" or "copy signing link" find your article.
+- `tests/help-search.test.ts` enforces this for every article: typing its exact title must return it first, and typing any of its symptoms must surface it in the top 5. A new article that cannot be found fails the suite.
+- If readers use a word your article does not (for example "2FA" for "two-factor"), add it to `SYNONYMS` in `lib/help/search.ts`.
